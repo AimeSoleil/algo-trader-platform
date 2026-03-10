@@ -1,0 +1,11 @@
+[project]
+name = "monitoring-service"
+version = "0.1.0"
+description = "Monitoring Service - 指标与健康检查"
+requires-python = ">=3.11"
+dependencies = [
+    "algo-trader-shared",
+    "fastapi",
+    "uvicorn[standard]",
+    "prometheus-client",
+]

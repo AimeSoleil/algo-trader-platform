@@ -1,0 +1,87 @@
+syntax = "proto3";
+
+package algo_trader.data;
+
+option go_package = "algo_trader/data";
+
+// ── Messages ──────────────────────────────────────────────
+
+message StockQuoteRequest {
+  string symbol = 1;
+}
+
+message StockQuoteResponse {
+  string symbol = 1;
+  double price = 2;
+  double open = 3;
+  double high = 4;
+  double low = 5;
+  int64 volume = 6;
+  string timestamp = 7;
+}
+
+message OptionChainRequest {
+  string symbol = 1;
+  string expiry = 2;          // optional: filter by expiry date (YYYY-MM-DD)
+}
+
+message OptionContractMsg {
+  string symbol = 1;
+  string underlying = 2;
+  string expiry = 3;
+  double strike = 4;
+  string option_type = 5;     // "call" / "put"
+  double last_price = 6;
+  double bid = 7;
+  double ask = 8;
+  int64 volume = 9;
+  int64 open_interest = 10;
+  double iv = 11;
+  double delta = 12;
+  double gamma = 13;
+  double theta = 14;
+  double vega = 15;
+  string timestamp = 16;
+}
+
+message OptionChainResponse {
+  string underlying = 1;
+  double underlying_price = 2;
+  repeated OptionContractMsg contracts = 3;
+  string timestamp = 4;
+}
+
+message HistoricalBarsRequest {
+  string symbol = 1;
+  string start_date = 2;      // YYYY-MM-DD
+  string end_date = 3;        // YYYY-MM-DD
+  string interval = 4;        // "1min" / "5min" / "1d"
+}
+
+message BarMsg {
+  string symbol = 1;
+  string timestamp = 2;
+  double open = 3;
+  double high = 4;
+  double low = 5;
+  double close = 6;
+  int64 volume = 7;
+  double vwap = 8;
+}
+
+message HistoricalBarsResponse {
+  repeated BarMsg bars = 1;
+}
+
+// ── Service ───────────────────────────────────────────────
+
+service DataService {
+  // 盘中：从内存缓存获取实时行情
+  rpc GetRealtimeQuote(StockQuoteRequest) returns (StockQuoteResponse);
+  
+  // 盘中：从内存缓存获取最新期权链
+  rpc GetRealtimeOptionChain(OptionChainRequest) returns (OptionChainResponse);
+  
+  // 盘后：从 TimescaleDB 获取历史K线
+  rpc GetHistoricalBars(HistoricalBarsRequest) returns (HistoricalBarsResponse);
+}

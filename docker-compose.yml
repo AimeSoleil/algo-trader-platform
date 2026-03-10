@@ -1,0 +1,226 @@
+version: "3.9"
+
+services:
+  timescaledb:
+    image: timescale/timescaledb:latest-pg16
+    container_name: algo_timescaledb
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_DB: algo_trader
+      POSTGRES_USER: trader
+      POSTGRES_PASSWORD: trader_dev
+    volumes:
+      - timescaledb_data:/var/lib/postgresql/data
+    networks:
+      - algo_trader_net
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U trader -d algo_trader"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  postgres:
+    image: postgres:16
+    container_name: algo_postgres
+    ports:
+      - "5433:5432"
+    environment:
+      POSTGRES_DB: algo_trader_biz
+      POSTGRES_USER: trader
+      POSTGRES_PASSWORD: trader_dev
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - algo_trader_net
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U trader -d algo_trader_biz"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  redis:
+    image: redis:7-alpine
+    container_name: algo_redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    networks:
+      - algo_trader_net
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  rabbitmq:
+    image: rabbitmq:3-management-alpine
+    container_name: algo_rabbitmq
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+    environment:
+      RABBITMQ_DEFAULT_USER: trader
+      RABBITMQ_DEFAULT_PASS: trader_dev
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq
+    networks:
+      - algo_trader_net
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  minio:
+    image: minio/minio:latest
+    container_name: algo_minio
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    command: server /data --console-address ":9001"
+    volumes:
+      - minio_data:/data
+    networks:
+      - algo_trader_net
+
+  data_service:
+    build:
+      context: .
+      dockerfile: services/data_service/Dockerfile
+    container_name: algo_data_service
+    env_file:
+      - .env
+    environment:
+      CACHE_DIR: /tmp/algo_trader_cache
+      PYTHONPATH: /app
+    ports:
+      - "8001:8001"
+    depends_on:
+      timescaledb:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    networks:
+      - algo_trader_net
+
+  signal_service:
+    build:
+      context: .
+      dockerfile: services/signal_service/Dockerfile
+    container_name: algo_signal_service
+    env_file:
+      - .env
+    environment:
+      PYTHONPATH: /app
+    ports:
+      - "8002:8002"
+    depends_on:
+      timescaledb:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    networks:
+      - algo_trader_net
+
+  analysis_service:
+    build:
+      context: .
+      dockerfile: services/analysis_service/Dockerfile
+    container_name: algo_analysis_service
+    env_file:
+      - .env
+    environment:
+      PYTHONPATH: /app
+    ports:
+      - "8003:8003"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    networks:
+      - algo_trader_net
+
+  execution_service:
+    build:
+      context: .
+      dockerfile: services/execution_service/Dockerfile
+    container_name: algo_execution_service
+    env_file:
+      - .env
+    environment:
+      PYTHONPATH: /app
+    ports:
+      - "8004:8004"
+    depends_on:
+      data_service:
+        condition: service_started
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - algo_trader_net
+
+  portfolio_service:
+    build:
+      context: .
+      dockerfile: services/portfolio_service/Dockerfile
+    container_name: algo_portfolio_service
+    env_file:
+      - .env
+    environment:
+      PYTHONPATH: /app
+    ports:
+      - "8005:8005"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - algo_trader_net
+
+  monitoring_service:
+    build:
+      context: .
+      dockerfile: services/monitoring_service/Dockerfile
+    container_name: algo_monitoring_service
+    env_file:
+      - .env
+    environment:
+      PYTHONPATH: /app
+    ports:
+      - "8006:8006"
+    depends_on:
+      timescaledb:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    networks:
+      - algo_trader_net
+
+networks:
+  algo_trader_net:
+    driver: bridge
+
+volumes:
+  timescaledb_data:
+  postgres_data:
+  redis_data:
+  rabbitmq_data:
+  minio_data:

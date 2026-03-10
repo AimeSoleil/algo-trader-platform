@@ -1,0 +1,18 @@
+[project]
+name = "data-service"
+version = "0.1.0"
+description = "Data Service - option chain and stock data fetching, caching, and batch persistence"
+requires-python = ">=3.11"
+dependencies = [
+    "algo-trader-shared",
+    "fastapi",
+    "uvicorn[standard]",
+    "grpcio",
+    "grpcio-tools",
+    "yfinance>=0.2",
+    "py-vollib-vectorized",
+    "pandas>=2.0",
+    "pyarrow",
+    "apscheduler>=3.10",
+    "celery[redis]",
+]

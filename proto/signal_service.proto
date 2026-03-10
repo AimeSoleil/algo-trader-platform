@@ -1,0 +1,59 @@
+syntax = "proto3";
+
+package algo_trader.signal;
+
+option go_package = "algo_trader/signal";
+
+message SignalRequest {
+  string symbol = 1;
+  string date = 2;           // YYYY-MM-DD
+}
+
+message OptionIndicatorsMsg {
+  double iv_rank = 1;
+  double iv_percentile = 2;
+  double current_iv = 3;
+  double historical_iv_30d = 4;
+  double pcr_volume = 5;
+  double pcr_oi = 6;
+  double iv_skew = 7;
+  double term_structure_slope = 8;
+}
+
+message StockIndicatorsMsg {
+  double rsi_14 = 1;
+  double macd = 2;
+  double macd_signal = 3;
+  double ema_20 = 4;
+  double ema_50 = 5;
+  double sma_200 = 6;
+  double atr_14 = 7;
+  string trend = 8;
+  double trend_strength = 9;
+}
+
+message SignalFeaturesResponse {
+  string symbol = 1;
+  string date = 2;
+  double close_price = 3;
+  OptionIndicatorsMsg option_indicators = 4;
+  StockIndicatorsMsg stock_indicators = 5;
+  double signal_score = 6;
+  string signal_type = 7;
+  string volatility_regime = 8;
+  repeated string suggested_strategies = 9;
+}
+
+message BatchSignalRequest {
+  repeated string symbols = 1;
+  string date = 2;
+}
+
+message BatchSignalResponse {
+  repeated SignalFeaturesResponse features = 1;
+}
+
+service SignalService {
+  rpc GetSignalFeatures(SignalRequest) returns (SignalFeaturesResponse);
+  rpc GetBatchSignalFeatures(BatchSignalRequest) returns (BatchSignalResponse);
+}

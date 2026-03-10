@@ -1,0 +1,57 @@
+[project]
+name = "algo-trader-platform"
+version = "0.1.0"
+description = "期权聚焦型量化交易平台"
+requires-python = ">=3.11"
+dependencies = [
+    "pydantic>=2.0",
+    "pydantic-settings>=2.0",
+    "sqlalchemy[asyncio]>=2.0",
+    "alembic",
+    "asyncpg",
+    "redis[hiredis]",
+    "celery[redis]",
+    "grpcio",
+    "grpcio-tools",
+    "protobuf",
+    "fastapi",
+    "uvicorn[standard]",
+    "httpx",
+    "structlog",
+    "python-dotenv",
+    "pyyaml",
+]
+
+[dependency-groups]
+dev = [
+    "pytest",
+    "pytest-asyncio",
+    "pytest-cov",
+    "ruff",
+    "mypy",
+    "black",
+]
+
+[tool.uv.workspace]
+members = ["shared", "services/*"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "N", "W", "UP", "B", "SIM"]
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = true
+disallow_incomplete_defs = true
+check_untyped_defs = true
+no_implicit_optional = true
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"

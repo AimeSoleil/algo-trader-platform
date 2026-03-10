@@ -1,0 +1,11 @@
+[project]
+name = "portfolio-service"
+version = "0.1.0"
+description = "Portfolio Service - 持仓查询与绩效归因"
+requires-python = ">=3.11"
+dependencies = [
+    "algo-trader-shared",
+    "fastapi",
+    "uvicorn[standard]",
+    "celery[redis]",
+]

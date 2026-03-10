@@ -1,0 +1,16 @@
+[project]
+name = "analysis-service"
+version = "0.1.0"
+description = "Analysis Service - LLM-powered trading blueprint generation"
+requires-python = ">=3.11"
+dependencies = [
+    "algo-trader-shared",
+    "fastapi",
+    "uvicorn[standard]",
+    "openai>=1.66.0",
+    "celery[redis]",
+]
+
+[project.optional-dependencies]
+copilot = ["copilot-sdk"]
+dev = ["pytest", "pytest-asyncio"]

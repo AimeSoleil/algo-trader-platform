@@ -1,0 +1,14 @@
+[project]
+name = "algo-trader-shared"
+version = "0.1.0"
+description = "Shared models, config, and utilities for algo-trader-platform"
+requires-python = ">=3.11"
+dependencies = [
+    "pydantic>=2.0",
+    "pydantic-settings>=2.0",
+    "sqlalchemy[asyncio]>=2.0",
+    "asyncpg",
+    "redis[hiredis]",
+    "structlog",
+    "pyyaml",
+]

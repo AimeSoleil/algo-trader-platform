@@ -1,0 +1,19 @@
+[project]
+name = "signal-service"
+version = "0.1.0"
+description = "Signal Service - post-market batch feature computation"
+requires-python = ">=3.11"
+dependencies = [
+    "algo-trader-shared",
+    "fastapi",
+    "uvicorn[standard]",
+    "grpcio",
+    "pandas>=2.0",
+    "numpy",
+    "scipy",
+    "ta-lib-bin",
+    "celery[redis]",
+]
+
+[project.optional-dependencies]
+dev = ["pytest", "pytest-asyncio"]
