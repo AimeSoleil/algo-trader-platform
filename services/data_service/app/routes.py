@@ -5,7 +5,7 @@ from datetime import date
 from typing import Literal
 
 from celery.result import AsyncResult
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
 from sqlalchemy import text
 
@@ -89,76 +89,164 @@ async def update_mode_config(req: ModeSwitchRequest):
     }
 
 
-@router.get("/data/{symbol}")
-async def get_symbol_data(
+@router.get("/data/{symbol}/stock")
+async def list_stock_daily(
     symbol: str,
-    source: Literal["db", "intraday"] | None = None,
+    start_date: date | None = Query(None, description="Filter by trading_date >= start_date"),
+    end_date: date | None = Query(None, description="Filter by trading_date <= end_date"),
+    page: int = Query(1, ge=1, description="Page number (1-based)"),
+    page_size: int = Query(100, ge=1, le=1000, description="Items per page"),
 ):
-    """获取标的数据
+    """查询 stock_daily 日线列表，支持日期范围过滤 + 分页"""
+    sym = symbol.upper()
+    offset = (page - 1) * page_size
 
-    source=intraday : 返回盘中 L1 缓存的期权链快照
-    source=db / 默认 : 返回 DB 中最新 daily 股票 + 期权数据
-    """
-    normalized_symbol = symbol.upper()
+    conditions = ["symbol = :symbol"]
+    params: dict = {"symbol": sym}
+    if start_date is not None:
+        conditions.append("trading_date >= :start_date")
+        params["start_date"] = start_date
+    if end_date is not None:
+        conditions.append("trading_date <= :end_date")
+        params["end_date"] = end_date
 
-    if source is None:
-        current_mode = get_current_mode()
-        source = "intraday" if "intraday" in current_mode else "db"
+    where = " AND ".join(conditions)
 
-    if source == "intraday":
-        chain = cache.get_realtime_option_chain(normalized_symbol) or []
-        if not chain:
-            raise HTTPException(
-                status_code=404,
-                detail=f"No intraday option chain cached for {normalized_symbol}",
-            )
-        return {
-            "symbol": normalized_symbol,
-            "source": "intraday",
-            "option_chain": chain,
-        }
-
-    # source == "db" — 从 TimescaleDB 获取最新数据
     async with get_timescale_session() as session:
-        stock_row = (
+        total_count = (
+            await session.execute(
+                text(f"SELECT COUNT(*) FROM stock_daily WHERE {where}"),
+                params,
+            )
+        ).scalar() or 0
+
+        rows = (
             await session.execute(
                 text(
-                    """
+                    f"""
                     SELECT symbol, trading_date, open, high, low, close, volume
                     FROM stock_daily
-                    WHERE symbol = :symbol
+                    WHERE {where}
                     ORDER BY trading_date DESC
-                    LIMIT 1
+                    LIMIT :limit OFFSET :offset
                     """
                 ),
-                {"symbol": normalized_symbol},
-            )
-        ).mappings().first()
-
-        option_rows = (
-            await session.execute(
-                text(
-                    """
-                    SELECT underlying, symbol, snapshot_date, expiry, strike, option_type,
-                           last_price, bid, ask, volume, open_interest, iv, delta, gamma, theta, vega
-                    FROM option_daily
-                    WHERE underlying = :symbol
-                    ORDER BY snapshot_date DESC, expiry ASC, strike ASC
-                    LIMIT 200
-                    """
-                ),
-                {"symbol": normalized_symbol},
+                {**params, "limit": page_size, "offset": offset},
             )
         ).mappings().all()
 
-    if stock_row is None and not option_rows:
-        raise HTTPException(status_code=404, detail=f"No data for {normalized_symbol}")
+    if total_count == 0:
+        raise HTTPException(status_code=404, detail=f"No stock data for {sym}")
+
+    total_pages = (total_count + page_size - 1) // page_size
 
     return {
-        "symbol": normalized_symbol,
-        "source": "db",
-        "daily_stock": dict(stock_row) if stock_row else None,
-        "daily_option_chain": [dict(row) for row in option_rows],
+        "symbol": sym,
+        "data": [dict(r) for r in rows],
+        "pagination": {
+            "page": page,
+            "page_size": page_size,
+            "total_items": total_count,
+            "total_pages": total_pages,
+        },
+    }
+
+
+@router.get("/data/{symbol}/options")
+async def list_option_daily(
+    symbol: str,
+    snapshot_date: date | None = Query(None, description="Filter by snapshot_date (default: latest)"),
+    expiry: date | None = Query(None, description="Filter by expiry date"),
+    option_type: Literal["call", "put"] | None = Query(None, description="Filter by option type"),
+    min_strike: float | None = Query(None, description="Filter strike >= min_strike"),
+    max_strike: float | None = Query(None, description="Filter strike <= max_strike"),
+    min_volume: int | None = Query(None, ge=0, description="Filter volume >= min_volume"),
+    min_open_interest: int | None = Query(None, ge=0, description="Filter open_interest >= min_open_interest"),
+    page: int = Query(1, ge=1, description="Page number (1-based)"),
+    page_size: int = Query(500, ge=1, le=5000, description="Items per page"),
+):
+    """查询 option_daily 期权链列表，支持多维过滤 + 分页"""
+    sym = symbol.upper()
+    offset = (page - 1) * page_size
+
+    async with get_timescale_session() as session:
+        # Resolve snapshot_date: default to latest
+        effective_date = snapshot_date
+        if effective_date is None:
+            latest = (
+                await session.execute(
+                    text("SELECT MAX(snapshot_date) FROM option_daily WHERE underlying = :symbol"),
+                    {"symbol": sym},
+                )
+            ).scalar()
+            if latest is None:
+                raise HTTPException(status_code=404, detail=f"No option data for {sym}")
+            effective_date = latest
+
+        # Build dynamic WHERE
+        conditions = ["underlying = :symbol", "snapshot_date = :snap_date"]
+        params: dict = {"symbol": sym, "snap_date": effective_date}
+
+        if expiry is not None:
+            conditions.append("expiry = :expiry")
+            params["expiry"] = expiry
+        if option_type is not None:
+            conditions.append("option_type = :option_type")
+            params["option_type"] = option_type
+        if min_strike is not None:
+            conditions.append("strike >= :min_strike")
+            params["min_strike"] = min_strike
+        if max_strike is not None:
+            conditions.append("strike <= :max_strike")
+            params["max_strike"] = max_strike
+        if min_volume is not None:
+            conditions.append("volume >= :min_volume")
+            params["min_volume"] = min_volume
+        if min_open_interest is not None:
+            conditions.append("open_interest >= :min_oi")
+            params["min_oi"] = min_open_interest
+
+        where = " AND ".join(conditions)
+
+        total_count = (
+            await session.execute(
+                text(f"SELECT COUNT(*) FROM option_daily WHERE {where}"),
+                params,
+            )
+        ).scalar() or 0
+
+        rows = (
+            await session.execute(
+                text(
+                    f"""
+                    SELECT underlying, symbol, snapshot_date, expiry, strike, option_type,
+                           last_price, bid, ask, volume, open_interest, iv,
+                           delta, gamma, theta, vega
+                    FROM option_daily
+                    WHERE {where}
+                    ORDER BY expiry ASC, strike ASC, option_type ASC
+                    LIMIT :limit OFFSET :offset
+                    """
+                ),
+                {**params, "limit": page_size, "offset": offset},
+            )
+        ).mappings().all()
+
+    if total_count == 0:
+        raise HTTPException(status_code=404, detail=f"No option data for {sym}")
+
+    total_pages = (total_count + page_size - 1) // page_size
+
+    return {
+        "symbol": sym,
+        "data": [dict(r) for r in rows],
+        "pagination": {
+            "snapshot_date": str(effective_date),
+            "page": page,
+            "page_size": page_size,
+            "total_items": total_count,
+            "total_pages": total_pages,
+        },
     }
 
 

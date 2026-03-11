@@ -13,6 +13,12 @@
 - Health: `GET /api/v1/health`
 - Manual collect: `POST /api/v1/collect`
 - Task status: `GET /api/v1/collect/{task_id}`
+- Stock daily bars: `GET /data/{symbol}/stock`
+  - Filters: `start_date`, `end_date`
+  - Pagination: `page`, `page_size`
+- Option chain: `GET /data/{symbol}/options`
+  - Filters: `snapshot_date`, `expiry`, `option_type`, `min_strike`, `max_strike`, `min_volume`, `min_open_interest`
+  - Pagination: `page`, `page_size`
 
 ## Manual start (without Docker)
 From repo root:
