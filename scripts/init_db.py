@@ -44,6 +44,22 @@ async def create_hypertables() -> None:
 
     async with engine.begin() as conn:
         await conn.execute(text("CREATE EXTENSION IF NOT EXISTS timescaledb"))
+        # 兼容旧 schema：若存在仅基于 id 的主键，Timescale 会拒绝创建 hypertable。
+        # 需要先去掉不含分区列 timestamp 的主键/唯一索引。
+        await conn.execute(text("ALTER TABLE IF EXISTS stock_1min_bars DROP CONSTRAINT IF EXISTS stock_1min_bars_pkey"))
+        await conn.execute(text("ALTER TABLE IF EXISTS option_5min_snapshots DROP CONSTRAINT IF EXISTS option_5min_snapshots_pkey"))
+        await conn.execute(
+            text(
+                "CREATE UNIQUE INDEX IF NOT EXISTS ux_stock_1min_bars_symbol_timestamp "
+                "ON stock_1min_bars(symbol, \"timestamp\")"
+            )
+        )
+        await conn.execute(
+            text(
+                "CREATE UNIQUE INDEX IF NOT EXISTS ux_option_5min_snapshots_symbol_timestamp "
+                "ON option_5min_snapshots(symbol, \"timestamp\")"
+            )
+        )
         await conn.execute(
             text(
                 """

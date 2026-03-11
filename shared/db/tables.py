@@ -33,7 +33,6 @@ class StockBar(TimescaleBase):
     """股票1分钟K线"""
     __tablename__ = "stock_1min_bars"
 
-    id = Column(BigInteger, primary_key=True, autoincrement=True)
     symbol = Column(String(20), nullable=False)
     timestamp = Column(DateTime(timezone=True), nullable=False)
     open = Column(Float, nullable=False)
@@ -53,7 +52,6 @@ class OptionSnapshot(TimescaleBase):
     """期权5分钟快照"""
     __tablename__ = "option_5min_snapshots"
 
-    id = Column(BigInteger, primary_key=True, autoincrement=True)
     underlying = Column(String(20), nullable=False)
     symbol = Column(String(50), nullable=False)  # OCC option symbol
     timestamp = Column(DateTime(timezone=True), nullable=False)
