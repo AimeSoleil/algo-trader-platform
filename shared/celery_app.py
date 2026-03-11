@@ -10,10 +10,15 @@ from shared.config.settings import get_settings
 def create_celery_app() -> Celery:
     settings = get_settings()
 
+    # Celery result backend: Redis DB 1
+    # Strip trailing db number from base URL (e.g. redis://host:6379/0 → redis://host:6379)
+    # then append /1 so results go to a separate DB.
+    redis_base = settings.redis.url.rsplit("/", 1)[0]
+
     app = Celery(
         "algo_trader",
         broker=settings.rabbitmq.url,
-        backend=f"{settings.redis.url}/1",  # Use Redis DB 1 for results
+        backend=f"{redis_base}/1",
     )
 
     app.conf.update(
