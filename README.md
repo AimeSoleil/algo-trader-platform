@@ -24,10 +24,10 @@ docker compose up -d
 uv sync
 
 # 4) 初始化双数据库与 Timescale hypertable
-uv run python scripts/init_db.py
+uv run python -m scripts.init_db
 
 # 5) 初始化 watchlist
-uv run python scripts/seed_watchlist.py
+uv run python -m scripts.seed_watchlist
 
 # 6) 启动 Celery workers + beat（可选）
 ./scripts/run_workers.sh

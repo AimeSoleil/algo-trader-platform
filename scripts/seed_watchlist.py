@@ -2,8 +2,14 @@
 from __future__ import annotations
 
 import asyncio
+import sys
+from pathlib import Path
 
 from sqlalchemy import text
+
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
 
 from shared.config.settings import get_settings
 from shared.db.session import close_all_engines, get_postgres_engine
