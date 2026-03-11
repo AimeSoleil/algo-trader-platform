@@ -20,6 +20,19 @@ MIN_DAYS_TO_EXPIRY = 1
 MAX_IV = 5.0  # Filter out unreasonable IV
 
 
+def _safe_int(val, default: int = 0) -> int:
+    """Convert to int, treating NaN / None / non-numeric as *default*."""
+    if val is None:
+        return default
+    try:
+        f = float(val)
+        if pd.isna(f):
+            return default
+        return int(f)
+    except (ValueError, TypeError):
+        return default
+
+
 def _fetch_option_chain_sync(symbol: str) -> OptionChainSnapshot | None:
     """同步获取期权链（在线程池中执行）"""
     try:
@@ -76,8 +89,8 @@ def _fetch_option_chain_sync(symbol: str) -> OptionChainSnapshot | None:
                             last_price=float(row.get("lastPrice", 0)),
                             bid=float(row.get("bid", 0)),
                             ask=float(row.get("ask", 0)),
-                            volume=int(row.get("volume", 0) or 0),
-                            open_interest=int(row.get("openInterest", 0) or 0),
+                            volume=_safe_int(row.get("volume")),
+                            open_interest=_safe_int(row.get("openInterest")),
                             greeks=OptionGreeks(iv=iv),
                             timestamp=now,
                         )
