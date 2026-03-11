@@ -5,16 +5,13 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 
-from services.data_service.app.cache import MarketHoursCache
+from services.data_service.app.cache import cache
 from services.data_service.app.routes import router
 from services.data_service.app.scheduler import start_data_scheduler, stop_scheduler
 from shared.config import get_settings
 from shared.utils import get_logger, setup_logging
 
 logger = get_logger("data_service")
-
-# Global cache instance
-cache = MarketHoursCache()
 
 
 @asynccontextmanager

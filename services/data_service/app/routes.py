@@ -9,7 +9,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 from sqlalchemy import text
 
-from services.data_service.app.main import cache
+from services.data_service.app.cache import cache
 from services.data_service.app.scheduler import (
     get_current_mode,
     get_data_service_config,

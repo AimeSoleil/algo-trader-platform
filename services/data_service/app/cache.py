@@ -109,3 +109,7 @@ class MarketHoursCache:
         """清空 L1 内存缓存（收盘后调用）"""
         self.latest_quotes.clear()
         self.latest_option_chains.clear()
+
+
+# ── 模块级单例 ─────────────────────────────────────────────
+cache = MarketHoursCache()
