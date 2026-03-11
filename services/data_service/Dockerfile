@@ -1,25 +1,43 @@
-FROM python:3.11-slim
+FROM python:3.11-slim AS builder
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1
 
 WORKDIR /app
 
-# Install system dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy shared library first (for caching)
 COPY shared/ /app/shared/
 COPY config/ /app/config/
-
-# Copy service
 COPY services/data_service/ /app/services/data_service/
 
-# Install dependencies
-RUN pip install --no-cache-dir -e /app/shared && \
-    pip install --no-cache-dir -e /app/services/data_service
+RUN pip install --upgrade pip setuptools wheel && \
+    pip install -e /app/shared && \
+    pip install -e /app/services/data_service
 
-# Create cache directory
-RUN mkdir -p /tmp/algo_trader_cache
+
+FROM python:3.11-slim
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1
+
+WORKDIR /app
+
+RUN groupadd --system app && useradd --system --gid app --create-home app
+
+COPY --from=builder /usr/local /usr/local
+COPY shared/ /app/shared/
+COPY config/ /app/config/
+COPY services/data_service/ /app/services/data_service/
+
+RUN mkdir -p /tmp/algo_trader_cache && \
+    chown -R app:app /app /tmp/algo_trader_cache
+
+USER app
 
 EXPOSE 8001
 
