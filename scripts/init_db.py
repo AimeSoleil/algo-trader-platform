@@ -210,7 +210,7 @@ async def apply_retention_policies() -> None:
                     f"""
                     SELECT add_retention_policy(
                         'stock_1min_bars',
-                        INTERVAL '{stock_days} days',
+                        INTERVAL '{int(stock_days)} days',
                         if_not_exists => TRUE
                     );
                     """
@@ -222,7 +222,7 @@ async def apply_retention_policies() -> None:
                     f"""
                     SELECT add_retention_policy(
                         'option_5min_snapshots',
-                        INTERVAL '{option_days} days',
+                        INTERVAL '{int(option_days)} days',
                         if_not_exists => TRUE
                     );
                     """

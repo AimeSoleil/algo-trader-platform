@@ -141,28 +141,18 @@ async def apply_intraday_retention(stock_days: int, option_days: int) -> None:
         if stock_days > 0:
             await session.execute(
                 text(
-                    """
-                    SELECT add_retention_policy(
-                        'stock_1min_bars',
-                        INTERVAL :window,
-                        if_not_exists => TRUE
-                    )
-                    """
-                ),
-                {"window": f"{stock_days} days"},
+                    f"SELECT add_retention_policy("
+                    f"'stock_1min_bars', INTERVAL '{int(stock_days)} days', "
+                    f"if_not_exists => TRUE)"
+                )
             )
         if option_days > 0:
             await session.execute(
                 text(
-                    """
-                    SELECT add_retention_policy(
-                        'option_5min_snapshots',
-                        INTERVAL :window,
-                        if_not_exists => TRUE
-                    )
-                    """
-                ),
-                {"window": f"{option_days} days"},
+                    f"SELECT add_retention_policy("
+                    f"'option_5min_snapshots', INTERVAL '{int(option_days)} days', "
+                    f"if_not_exists => TRUE)"
+                )
             )
         await session.commit()
 
