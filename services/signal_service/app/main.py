@@ -7,6 +7,8 @@ from fastapi import FastAPI
 
 from shared.utils import setup_logging, get_logger
 
+from services.signal_service.app.routes import router
+
 logger = get_logger("signal_service")
 
 
@@ -25,12 +27,7 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-
-@app.get("/api/v1/signals/{symbol}")
-async def get_signal_features(symbol: str, date: str | None = None):
-    """查询某标的的信号特征"""
-    from services.signal_service.app.queries import query_signal_features
-    return await query_signal_features(symbol, date)
+app.include_router(router, prefix="/api/v1")
 
 
 @app.get("/health")

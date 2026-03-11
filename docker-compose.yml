@@ -214,6 +214,27 @@ services:
     networks:
       - algo_trader_net
 
+  gateway:
+    build:
+      context: .
+      dockerfile: services/gateway_service/Dockerfile
+    container_name: algo_gateway
+    env_file:
+      - .env
+    environment:
+      PYTHONPATH: /app
+    ports:
+      - "8000:8000"
+    depends_on:
+      - data_service
+      - signal_service
+      - analysis_service
+      - execution_service
+      - portfolio_service
+      - monitoring_service
+    networks:
+      - algo_trader_net
+
 networks:
   algo_trader_net:
     driver: bridge

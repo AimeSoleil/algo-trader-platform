@@ -12,5 +12,4 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-copilot = ["copilot-sdk"]
 dev = ["pytest", "pytest-asyncio"]

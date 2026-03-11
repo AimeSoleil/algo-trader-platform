@@ -35,6 +35,12 @@ dev = [
 [tool.uv.workspace]
 members = ["shared", "services/*"]
 
+[tool.uv]
+package = false
+
+[tool.uv.sources]
+algo-trader-shared = { workspace = true }
+
 [tool.ruff]
 line-length = 120
 target-version = "py311"

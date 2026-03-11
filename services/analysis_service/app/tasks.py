@@ -51,7 +51,10 @@ async def _generate_blueprint_async(trading_date_str: str | None = None) -> dict
         logger.warning("blueprint.no_signals", date=str(td))
         return {"error": "No signal features available", "date": str(td)}
 
-    # 2) 读取前日执行摘要（如有）
+    # 2) 获取当前持仓（优先从 Portfolio Service 读取）
+    current_positions = await _fetch_current_positions(td)
+
+    # 3) 读取前日执行摘要（如有）
     previous_execution = None
     yesterday = td - timedelta(days=1)
     async with get_postgres_session() as session:
@@ -66,15 +69,15 @@ async def _generate_blueprint_async(trading_date_str: str | None = None) -> dict
         if row:
             previous_execution = row[0]
 
-    # 3) 调用 LLM 生成蓝图
+    # 4) 调用 LLM 生成蓝图
     adapter = LLMAdapter()
     blueprint = await adapter.generate_blueprint(
         signal_features=signal_features,
-        current_positions=None,  # TODO: read from portfolio service
+        current_positions=current_positions,
         previous_execution=previous_execution,
     )
 
-    # 4) 写入 DB
+    # 5) 写入 DB
     async with get_postgres_session() as session:
         await session.execute(
             text(
@@ -107,3 +110,227 @@ async def _generate_blueprint_async(trading_date_str: str | None = None) -> dict
         "plans_count": len(blueprint.symbol_plans),
         "provider": blueprint.model_provider,
     }
+
+
+# ── Manual single-symbol analysis ─────────────────────────────
+
+
+@celery_app.task(
+    name="analysis_service.tasks.manual_analyze",
+    bind=True,
+    max_retries=1,
+)
+def manual_analyze(self, symbol: str, trading_date: str | None = None) -> dict:
+    """Manually trigger LLM analysis for a single symbol.
+
+    Reads the symbol's signal features from DB, fetches positions,
+    generates a blueprint containing only that symbol, and stores it
+    with ``status='manual'``.
+    """
+    return asyncio.run(_manual_analyze_async(self, symbol.upper(), trading_date))
+
+
+async def _manual_analyze_async(task, symbol: str, trading_date_str: str | None = None) -> dict:
+    from services.analysis_service.app.llm.adapter import LLMAdapter
+
+    td = date.fromisoformat(trading_date_str) if trading_date_str else date.today()
+
+    task.update_state(state="PROGRESS", meta={"step": "reading_signals", "symbol": symbol})
+
+    # 1) 读取指定 symbol 的信号特征
+    signal_features: list[SignalFeatures] = []
+    async with get_postgres_session() as session:
+        result = await session.execute(
+            text(
+                "SELECT features_json FROM signal_features "
+                "WHERE date = :date AND symbol = :symbol"
+            ),
+            {"date": td, "symbol": symbol},
+        )
+        for row in result.fetchall():
+            try:
+                sf = SignalFeatures.model_validate_json(row[0])
+                signal_features.append(sf)
+            except Exception as e:
+                logger.warning("manual_analyze.signal_parse_error", symbol=symbol, error=str(e))
+
+    if not signal_features:
+        logger.warning("manual_analyze.no_signals", symbol=symbol, date=str(td))
+        return {
+            "error": f"No signal features for {symbol} on {td}",
+            "symbol": symbol,
+            "date": str(td),
+        }
+
+    # 2) 获取当前持仓
+    task.update_state(state="PROGRESS", meta={"step": "fetching_positions", "symbol": symbol})
+    current_positions = await _fetch_current_positions(td)
+
+    # 3) 读取前日执行摘要
+    previous_execution = None
+    yesterday = td - timedelta(days=1)
+    async with get_postgres_session() as session:
+        result = await session.execute(
+            text(
+                "SELECT execution_summary FROM llm_trading_blueprint "
+                "WHERE trading_date = :date AND status = 'completed'"
+            ),
+            {"date": yesterday},
+        )
+        row = result.fetchone()
+        if row:
+            previous_execution = row[0]
+
+    # 4) 调用 LLM 生成蓝图
+    task.update_state(state="PROGRESS", meta={"step": "generating_blueprint", "symbol": symbol})
+    adapter = LLMAdapter()
+    blueprint = await adapter.generate_blueprint(
+        signal_features=signal_features,
+        current_positions=current_positions,
+        previous_execution=previous_execution,
+    )
+
+    # 5) 以 status='manual' 写入 DB（不覆盖正常的 daily blueprint）
+    import uuid as _uuid
+
+    manual_id = f"manual-{symbol.lower()}-{_uuid.uuid4().hex[:8]}"
+    async with get_postgres_session() as session:
+        await session.execute(
+            text(
+                "INSERT INTO llm_trading_blueprint "
+                "(id, trading_date, generated_at, model_provider, model_version, "
+                " blueprint_json, status) "
+                "VALUES (:id, :trading_date, :generated_at, :model_provider, "
+                " :model_version, :blueprint_json, 'manual')"
+            ),
+            {
+                "id": manual_id,
+                "trading_date": blueprint.trading_date,
+                "generated_at": blueprint.generated_at,
+                "model_provider": blueprint.model_provider,
+                "model_version": blueprint.model_version,
+                "blueprint_json": blueprint.model_dump_json(),
+            },
+        )
+
+    logger.info(
+        "manual_analyze.generated",
+        symbol=symbol,
+        trading_date=str(blueprint.trading_date),
+        plans=len(blueprint.symbol_plans),
+        provider=blueprint.model_provider,
+        id=manual_id,
+    )
+    return {
+        "symbol": symbol,
+        "trading_date": str(blueprint.trading_date),
+        "blueprint_id": manual_id,
+        "plans_count": len(blueprint.symbol_plans),
+        "provider": blueprint.model_provider,
+        "blueprint": blueprint.model_dump(),
+    }
+
+
+# ── Position fetching with fallback ──────────────────────────
+
+
+async def _fetch_current_positions(td: date) -> dict:
+    """Fetch current positions from Portfolio Service.
+
+    Fallback priority:
+      1. Live open positions from ``positions`` table (via portfolio service logic).
+      2. If none found — derive positions from yesterday's *completed* blueprint
+         (i.e. the plans that were entered but not yet exited).
+      3. If neither available — return an empty-positions dict.
+    """
+    # ── Attempt 1: live positions from portfolio service ──
+    try:
+        from services.portfolio_service.app.service import get_positions
+
+        positions_data = await get_positions()
+        if positions_data.get("count", 0) > 0:
+            logger.info(
+                "blueprint.positions_from_portfolio",
+                count=positions_data["count"],
+            )
+            return {
+                "source": "portfolio_service",
+                **positions_data,
+            }
+    except Exception as e:
+        logger.warning("blueprint.portfolio_fetch_failed", error=str(e))
+
+    # ── Attempt 2: infer from recent blueprint ──
+    # Walk back up to 3 days for weekends / holidays
+    for lookback in range(4):
+        check_date = td - timedelta(days=1 + lookback)
+        try:
+            async with get_postgres_session() as session:
+                result = await session.execute(
+                    text(
+                        "SELECT blueprint_json FROM llm_trading_blueprint "
+                        "WHERE trading_date = :date AND status IN ('completed', 'active')"
+                    ),
+                    {"date": check_date},
+                )
+                row = result.fetchone()
+                if row and row[0]:
+                    import json as _json
+
+                    bp_data = _json.loads(row[0]) if isinstance(row[0], str) else row[0]
+                    inferred = _infer_positions_from_blueprint(bp_data)
+                    if inferred["count"] > 0:
+                        logger.info(
+                            "blueprint.positions_from_previous_blueprint",
+                            blueprint_date=str(check_date),
+                            count=inferred["count"],
+                        )
+                        return {
+                            "source": "previous_blueprint",
+                            "blueprint_date": str(check_date),
+                            **inferred,
+                        }
+        except Exception as e:
+            logger.warning(
+                "blueprint.prev_blueprint_fetch_failed",
+                date=str(check_date),
+                error=str(e),
+            )
+
+    logger.info("blueprint.no_existing_positions")
+    return {
+        "source": "none",
+        "count": 0,
+        "positions": [],
+        "aggregates": {},
+    }
+
+
+def _infer_positions_from_blueprint(bp_data: dict) -> dict:
+    """Extract entered-but-not-exited plans from a completed blueprint.
+
+    These serve as a proxy for "current positions" when the portfolio
+    service has no live data.
+    """
+    positions: list[dict] = []
+    for plan in bp_data.get("symbol_plans", []):
+        if plan.get("is_entered") and not plan.get("is_exited"):
+            legs_summary = []
+            for leg in plan.get("legs", []):
+                legs_summary.append({
+                    "expiry": leg.get("expiry"),
+                    "strike": leg.get("strike"),
+                    "option_type": leg.get("option_type"),
+                    "side": leg.get("side"),
+                    "quantity": leg.get("quantity", 1),
+                })
+            positions.append({
+                "underlying": plan.get("underlying"),
+                "strategy_type": plan.get("strategy_type"),
+                "direction": plan.get("direction"),
+                "legs": legs_summary,
+                "confidence": plan.get("confidence", 0),
+                "entry_fill_prices": plan.get("entry_fill_prices", []),
+                "realized_pnl": plan.get("realized_pnl", 0),
+            })
+    return {"count": len(positions), "positions": positions}

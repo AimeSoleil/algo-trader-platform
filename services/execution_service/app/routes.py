@@ -20,7 +20,7 @@ class ManualOverrideRequest(BaseModel):
     reason: str | None = None
 
 
-@router.get("/api/v1/blueprint/status")
+@router.get("/blueprint/status")
 async def blueprint_status(trading_date: date = Query(alias="date")):
     async with get_postgres_session() as session:
         result = await session.execute(
@@ -57,7 +57,7 @@ async def blueprint_status(trading_date: date = Query(alias="date")):
     }
 
 
-@router.post("/api/v1/blueprint/load")
+@router.post("/blueprint/load")
 async def load_blueprint(trading_date: date = Query(alias="date")):
     blueprint = await load_blueprint_for_date(trading_date)
     if not blueprint:
@@ -76,7 +76,7 @@ async def load_blueprint(trading_date: date = Query(alias="date")):
     }
 
 
-@router.post("/api/v1/override")
+@router.post("/override")
 async def manual_override(payload: ManualOverrideRequest):
     runtime_state.paused = payload.action == "pause"
     runtime_state.manual_override_reason = payload.reason
@@ -89,11 +89,4 @@ async def manual_override(payload: ManualOverrideRequest):
     }
 
 
-@router.get("/health")
-async def health_check():
-    return {
-        "status": "ok",
-        "service": "execution_service",
-        "runtime_status": runtime_state.status,
-        "paused": runtime_state.paused,
-    }
+

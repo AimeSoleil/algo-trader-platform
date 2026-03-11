@@ -17,7 +17,7 @@ from shared.models.signal import SignalFeatures
 from shared.utils import get_logger
 
 from services.analysis_service.app.llm.base import LLMProviderBase
-from services.analysis_service.app.llm.prompts import build_blueprint_prompt
+from services.analysis_service.app.llm.prompts import SYSTEM_PROMPT, build_blueprint_prompt
 
 logger = get_logger("openai_provider")
 
@@ -44,27 +44,6 @@ def _build_skill_bundle() -> str:
                 arcname = f"trading-analysis/{path.relative_to(_SKILL_DIR)}"
                 zf.write(path, arcname)
     return base64.b64encode(buf.getvalue()).decode("ascii")
-
-
-# ---------------------------------------------------------------------------
-# System prompt — kept minimal; analysis logic lives in SKILL.md
-# ---------------------------------------------------------------------------
-
-SYSTEM_PROMPT = """\
-You are a professional options quantitative strategist at an institutional trading desk.
-
-The trading-analysis skill is mounted in your environment.  Read its SKILL.md, \
-follow the workflow, load references based on the market context in the data, \
-and produce a next-day Trading Blueprint.
-
-Rules:
-1. Output ONLY valid JSON — no markdown fences, no comments, no extra text.
-2. Every condition must be mechanically evaluable with concrete numeric thresholds.
-3. Every option leg must be fully defined (expiry, strike, option_type, side, quantity).
-4. Every symbol_plan MUST include at least one stop-loss exit condition.
-5. The reasoning field must reference which indicators and reference analyses drove the decision.
-6. Respect all portfolio-level risk limits from the risk-management reference.
-"""
 
 
 # ---------------------------------------------------------------------------

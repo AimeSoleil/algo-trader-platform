@@ -12,21 +12,12 @@ from shared.models.signal import SignalFeatures
 from shared.utils import get_logger
 
 from services.analysis_service.app.llm.base import LLMProviderBase
-from services.analysis_service.app.llm.prompts import build_blueprint_prompt
+from services.analysis_service.app.llm.prompts import SYSTEM_PROMPT, build_blueprint_prompt
 
 logger = get_logger("copilot_provider")
 
 # Directory containing the trading-analysis/ skill subdirectory
 _SKILLS_DIR = str(Path(__file__).resolve().parents[1] / "skills")
-
-# Minimal instruction prefix — the skill itself provides the full workflow
-_SYSTEM_INSTRUCTION = """\
-You are a professional options quantitative strategist. The trading-analysis \
-skill is loaded. Follow its SKILL.md workflow, read the relevant references, \
-and output a next-day Trading Blueprint as strict JSON (no markdown fences, \
-no extra text). Every symbol_plan must include stop-loss conditions.
-"""
-
 
 class CopilotProvider(LLMProviderBase):
     """Copilot SDK provider with native skill mounting.
@@ -82,7 +73,7 @@ class CopilotProvider(LLMProviderBase):
         prompt = build_blueprint_prompt(
             signal_features, current_positions, previous_execution
         )
-        full_prompt = f"{_SYSTEM_INSTRUCTION}\n\n{prompt}"
+        full_prompt = f"{SYSTEM_PROMPT}\n\n{prompt}"
 
         max_retries = 3
         for attempt in range(max_retries):

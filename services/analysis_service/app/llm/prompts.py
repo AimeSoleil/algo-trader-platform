@@ -14,6 +14,33 @@ from typing import Any
 from shared.models.signal import SignalFeatures
 
 # ---------------------------------------------------------------------------
+# System prompt (shared by all LLM providers)
+# ---------------------------------------------------------------------------
+
+SYSTEM_PROMPT = """\
+You are a professional options quantitative strategist at an institutional trading desk.
+
+The trading-analysis skill is mounted in your environment.  Read its SKILL.md, \
+follow the workflow, load references based on the market context in the data, \
+and produce a next-day Trading Blueprint.
+
+Rules:
+1. Output ONLY valid JSON — no markdown fences, no comments, no extra text.
+2. Every condition must be mechanically evaluable with concrete numeric thresholds.
+3. Every option leg must be fully defined (expiry, strike, option_type, side, quantity).
+4. Every symbol_plan MUST include at least one stop-loss exit condition.
+5. The reasoning field must reference which indicators and reference analyses drove the decision.
+6. Respect all portfolio-level risk limits from the risk-management reference.
+7. **Position-aware analysis**: The prompt may include a "Current Portfolio" section. \
+If open positions are present, you MUST: \
+(a) evaluate whether to hold, increase, decrease, or close each existing position; \
+(b) ensure aggregate portfolio Greeks stay within limits after any proposed changes; \
+(c) document how existing exposure influenced your decision in the reasoning field. \
+Do NOT ignore existing positions — every new plan must be justified relative to current exposure. \
+If no positions are provided or the portfolio is flat, focus on fresh entry opportunities.
+"""
+
+# ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
 
@@ -38,13 +65,8 @@ def build_blueprint_prompt(
         f"## Market Signal Data (computed after {date.today()} close)\n\n{signal_section}"
     )
 
-    # Current Positions
-    positions_text = (
-        json.dumps(current_positions, indent=2, ensure_ascii=False)
-        if current_positions
-        else "No open positions."
-    )
-    sections.append(f"## Current Positions\n\n{positions_text}")
+    # Current Positions & Portfolio Context
+    sections.append(_build_positions_section(current_positions))
 
     # Previous Execution Review
     prev_exec_text = (
@@ -209,6 +231,51 @@ def _serialize_one_signal(sf: SignalFeatures) -> str:
 # ---------------------------------------------------------------------------
 
 
+def _build_positions_section(current_positions: dict | None) -> str:
+    """Build the Current Positions section with portfolio-aware context."""
+    if not current_positions or current_positions.get("count", 0) == 0:
+        return (
+            "## Current Portfolio\n\n"
+            "No open positions. The portfolio is flat — all capital is available "
+            "for new entries.\n\n"
+            "*Position-related requirements in the Task section can be skipped.*"
+        )
+
+    source = current_positions.get("source", "unknown")
+    count = current_positions.get("count", 0)
+    positions = current_positions.get("positions", [])
+    aggregates = current_positions.get("aggregates", {})
+
+    lines: list[str] = ["## Current Portfolio"]
+
+    # Source note
+    if source == "portfolio_service":
+        lines.append(f"\n*Source: live portfolio — {count} open position(s).*")
+    elif source == "previous_blueprint":
+        bp_date = current_positions.get("blueprint_date", "?")
+        lines.append(
+            f"\n*Source: inferred from {bp_date} blueprint — {count} position(s) "
+            f"entered but not yet exited. Treat these as current exposure.*"
+        )
+    else:
+        lines.append(f"\n*{count} open position(s).*")
+
+    # Aggregates
+    if aggregates:
+        lines.append("\n**Portfolio Aggregates**")
+        lines.append(json.dumps(
+            {k: round(v, 4) if isinstance(v, float) else v for k, v in aggregates.items()},
+            indent=2,
+            ensure_ascii=False,
+        ))
+
+    # Individual positions
+    lines.append("\n**Open Positions**")
+    lines.append(json.dumps(positions, indent=2, ensure_ascii=False))
+
+    return "\n".join(lines)
+
+
 def _build_task_section() -> str:
     return f"""## Task
 
@@ -220,7 +287,20 @@ Requirements:
 3. For each underlying, design a concrete option strategy with fully defined legs.
 4. Every strategy MUST include stop-loss exit conditions.
 5. Apply portfolio-level risk controls.
-6. Output strict JSON conforming to the blueprint schema — no extra keys, no comments, no markdown fences."""
+6. **Position-Aware Analysis** — If the Current Portfolio section above contains open positions:
+   a. Assess whether to HOLD, INCREASE, DECREASE, or CLOSE each existing position.
+   b. If increasing, ensure the added size does not breach max_total_positions or delta/gamma limits.
+   c. If the position has unrealized losses exceeding stop thresholds, recommend closing or hedging.
+   d. If the position is profitable, evaluate whether to take partial profits or roll to extend.
+   e. For underlyings with NO existing position, treat as fresh entry candidates.
+   If no positions are shown, skip this requirement.
+7. **Risk Management for Existing Exposure** — If there are open positions, before proposing new trades:
+   a. Check aggregate portfolio Greeks (delta, gamma, theta, vega) stay within limits.
+   b. Avoid concentrating too much exposure in a single underlying.
+   c. Factor in existing theta decay and margin usage.
+   d. Document in ``reasoning`` how existing positions influenced the decision.
+   If no positions are shown, skip this requirement.
+8. Output strict JSON conforming to the blueprint schema — no extra keys, no comments, no markdown fences."""
 
 
 # ---------------------------------------------------------------------------

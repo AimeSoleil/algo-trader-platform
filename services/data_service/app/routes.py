@@ -1,8 +1,10 @@
 """Data Service — REST API 路由"""
 from __future__ import annotations
 
+from datetime import date
 from typing import Literal
 
+from celery.result import AsyncResult
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 from sqlalchemy import text
@@ -13,6 +15,7 @@ from services.data_service.app.scheduler import (
     get_data_service_config,
     set_intraday_enabled,
 )
+from shared.celery_app import celery_app
 from shared.db.session import get_timescale_session
 
 router = APIRouter(tags=["data"])
@@ -20,6 +23,20 @@ router = APIRouter(tags=["data"])
 
 class ModeSwitchRequest(BaseModel):
     intraday_enabled: bool
+
+
+class CollectRequest(BaseModel):
+    """Manual data collection request."""
+    symbols: list[str]
+    start_date: date
+    end_date: date
+    data_types: list[str] = ["bars_1m", "bars_daily", "options_daily"]
+
+
+class CollectResponse(BaseModel):
+    task_id: str
+    status: str = "queued"
+    message: str = ""
 
 
 @router.get("/realtime/{symbol}/quote")
@@ -143,3 +160,65 @@ async def get_symbol_data(
         "daily_stock": dict(stock_row) if stock_row else None,
         "daily_option_chain": [dict(row) for row in option_rows],
     }
+
+
+# ── Manual collection endpoints ───────────────────────────
+
+
+@router.post("/collect", status_code=202, response_model=CollectResponse)
+async def trigger_collection(req: CollectRequest):
+    """Trigger manual data collection for specific symbols and date range.
+
+    Returns a task_id that can be polled via GET /collect/{task_id}.
+    """
+    # ── Validation ──
+    if not req.symbols:
+        raise HTTPException(status_code=422, detail="symbols list must not be empty")
+    if req.start_date > req.end_date:
+        raise HTTPException(status_code=422, detail="start_date must be <= end_date")
+    if req.end_date > date.today():
+        raise HTTPException(status_code=422, detail="end_date cannot be in the future")
+
+    valid_types = {"bars_1m", "bars_daily", "options_daily"}
+    invalid = set(req.data_types) - valid_types
+    if invalid:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Invalid data_types: {invalid}. Must be subset of {valid_types}",
+        )
+    if not req.data_types:
+        raise HTTPException(status_code=422, detail="data_types must not be empty")
+
+    symbols = [s.upper() for s in req.symbols]
+
+    task = celery_app.send_task(
+        "data_service.tasks.manual_collect",
+        args=[symbols, req.start_date.isoformat(), req.end_date.isoformat(), req.data_types],
+    )
+
+    return CollectResponse(
+        task_id=task.id,
+        status="queued",
+        message=f"Collection queued for {len(symbols)} symbols, "
+                f"{req.start_date} to {req.end_date}, types={req.data_types}",
+    )
+
+
+@router.get("/collect/{task_id}")
+async def get_collection_status(task_id: str):
+    """Poll the status of a manual collection task."""
+    result = AsyncResult(task_id, app=celery_app)
+
+    response = {
+        "task_id": task_id,
+        "state": result.state,
+    }
+
+    if result.state == "PROGRESS":
+        response["progress"] = result.info
+    elif result.state == "SUCCESS":
+        response["result"] = result.result
+    elif result.state == "FAILURE":
+        response["error"] = str(result.result)
+
+    return response

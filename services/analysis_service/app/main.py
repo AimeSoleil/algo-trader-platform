@@ -7,6 +7,8 @@ from fastapi import FastAPI
 
 from shared.utils import setup_logging, get_logger
 
+from services.analysis_service.app.routes import router
+
 logger = get_logger("analysis_service")
 
 
@@ -25,12 +27,7 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-
-@app.get("/api/v1/blueprint/{trading_date}")
-async def get_blueprint(trading_date: str):
-    """查询某天的蓝图"""
-    from services.analysis_service.app.queries import query_blueprint
-    return await query_blueprint(trading_date)
+app.include_router(router, prefix="/api/v1")
 
 
 @app.get("/health")
