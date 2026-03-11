@@ -2259,7 +2259,6 @@ dependencies = [
     { name = "numpy" },
     { name = "pandas" },
     { name = "scipy" },
-    { name = "ta-lib-bin" },
     { name = "uvicorn", extra = ["standard"] },
 ]
 
@@ -2280,7 +2279,6 @@ requires-dist = [
     { name = "pytest", marker = "extra == 'dev'" },
     { name = "pytest-asyncio", marker = "extra == 'dev'" },
     { name = "scipy" },
-    { name = "ta-lib-bin" },
     { name = "uvicorn", extras = ["standard"] },
 ]
 provides-extras = ["dev"]
@@ -2438,17 +2436,6 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/ef/52/9ba0f43b686e7f3ddfeaa78ac3af750292662284b3661e91ad5494f21dbc/structlog-25.5.0.tar.gz", hash = "sha256:098522a3bebed9153d4570c6d0288abf80a031dfdb2048d59a49e9dc2190fc98", size = 1460830, upload-time = "2025-10-27T08:28:23.028Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/a8/45/a132b9074aa18e799b891b91ad72133c98d8042c70f6240e4c5f9dabee2f/structlog-25.5.0-py3-none-any.whl", hash = "sha256:a8453e9b9e636ec59bd9e79bbd4a72f025981b3ba0f5837aebf48f02f37a7f9f", size = 72510, upload-time = "2025-10-27T08:28:21.535Z" },
-]
-
-[[package]]
-name = "ta-lib-bin"
-version = "0.4.26"
-source = { registry = "https://pypi.org/simple" }
-dependencies = [
-    { name = "numpy" },
-]
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/a5/07/d32dda7f04a6e4f3c4e26b84c3e9984e43fae1083a98a735322482da1953/ta_lib_bin-0.4.26-cp311-cp311-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:92bac88cda8d1f79a5373d395ad213b17581a4d408a806b2e6bfebca87a4ca91", size = 3141723, upload-time = "2022-06-11T22:59:38.132Z" },
 ]
 
 [[package]]
