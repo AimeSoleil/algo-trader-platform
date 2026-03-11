@@ -19,6 +19,14 @@ def create_celery_app() -> Celery:
         "algo_trader",
         broker=settings.rabbitmq.url,
         backend=f"{redis_base}/1",
+        include=[
+            "services.data_service.app.tasks",
+            "services.backfill_service.app.tasks",
+            "services.signal_service.app.tasks",
+            "services.analysis_service.app.tasks",
+            "services.execution_service.app.tasks",
+            "services.portfolio_service.app.tasks",
+        ],
     )
 
     app.conf.update(
