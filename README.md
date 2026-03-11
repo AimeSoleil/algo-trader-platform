@@ -17,8 +17,8 @@
 # 1) 复制环境变量
 cp .env.example .env
 
-# 2) 启动本地基础设施 + 服务
-docker-compose up -d
+# 2) 启动本地基础设施（默认）
+docker compose up -d
 
 # 3) 安装 Python 依赖
 uv sync
@@ -31,6 +31,22 @@ uv run python scripts/seed_watchlist.py
 
 # 6) 启动 Celery workers + beat（可选）
 ./scripts/run_workers.sh
+```
+
+### 开发模式：服务按需逐个启动
+
+```bash
+# 只启动基础设施（timescaledb/postgres/redis/rabbitmq/minio）
+docker compose up -d
+
+# 单独启动某个服务（示例：data_service）
+docker compose up -d data_service
+
+# 启动全部应用服务（data/signal/analysis/execution/portfolio/monitoring/gateway）
+docker compose --profile app up -d
+
+# 查看所有容器状态
+docker compose ps
 ```
 
 ## 核心调度模型

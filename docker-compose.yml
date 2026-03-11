@@ -1,5 +1,3 @@
-version: "3.9"
-
 services:
   timescaledb:
     image: timescale/timescaledb:latest-pg16
@@ -92,6 +90,7 @@ services:
       - algo_trader_net
 
   data_service:
+    profiles: ["app"]
     build:
       context: .
       dockerfile: services/data_service/Dockerfile
@@ -116,6 +115,7 @@ services:
       - algo_trader_net
 
   signal_service:
+    profiles: ["app"]
     build:
       context: .
       dockerfile: services/signal_service/Dockerfile
@@ -137,6 +137,7 @@ services:
       - algo_trader_net
 
   analysis_service:
+    profiles: ["app"]
     build:
       context: .
       dockerfile: services/analysis_service/Dockerfile
@@ -158,6 +159,7 @@ services:
       - algo_trader_net
 
   execution_service:
+    profiles: ["app"]
     build:
       context: .
       dockerfile: services/execution_service/Dockerfile
@@ -179,6 +181,7 @@ services:
       - algo_trader_net
 
   portfolio_service:
+    profiles: ["app"]
     build:
       context: .
       dockerfile: services/portfolio_service/Dockerfile
@@ -196,6 +199,7 @@ services:
       - algo_trader_net
 
   monitoring_service:
+    profiles: ["app"]
     build:
       context: .
       dockerfile: services/monitoring_service/Dockerfile
@@ -215,6 +219,7 @@ services:
       - algo_trader_net
 
   gateway:
+    profiles: ["app"]
     build:
       context: .
       dockerfile: services/gateway_service/Dockerfile
@@ -225,13 +230,6 @@ services:
       PYTHONPATH: /app
     ports:
       - "8000:8000"
-    depends_on:
-      - data_service
-      - signal_service
-      - analysis_service
-      - execution_service
-      - portfolio_service
-      - monitoring_service
     networks:
       - algo_trader_net
 
