@@ -1,10 +1,13 @@
-"""SQLAlchemy ORM 表定义 — TimescaleDB + PostgreSQL"""
+"""Central SQLAlchemy ORM definitions for TimescaleDB + PostgreSQL.
+
+Design goals:
+1) Keep schema stable for existing services and SQL statements.
+2) Make time-series tables Timescale-hypertable friendly.
+3) Keep conflict keys explicit for ON CONFLICT upserts.
+"""
 from __future__ import annotations
 
-from datetime import date, datetime
-
 from sqlalchemy import (
-    JSON,
     BigInteger,
     Boolean,
     Column,
@@ -22,62 +25,77 @@ from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import DeclarativeBase
 
 
-# ── TimescaleDB Tables (时序数据) ──────────────────────────
+# ── Declarative bases ──────────────────────────────────────
 
 
 class TimescaleBase(DeclarativeBase):
-    pass
+    """Base for time-series tables stored in TimescaleDB."""
+
+
+class BusinessBase(DeclarativeBase):
+    """Base for business tables stored in PostgreSQL."""
+
+
+# ── TimescaleDB tables ─────────────────────────────────────
 
 
 class StockBar(TimescaleBase):
-    """股票1分钟K线"""
+    """1-minute stock bars.
+
+    Composite PK includes partitioning column ``timestamp`` to satisfy
+    Timescale unique-index constraints on hypertables.
+    """
+
     __tablename__ = "stock_1min_bars"
 
-    symbol = Column(String(20), nullable=False)
-    timestamp = Column(DateTime(timezone=True), nullable=False)
+    symbol = Column(String(20), primary_key=True, nullable=False)
+    timestamp = Column(DateTime(timezone=True), primary_key=True, nullable=False)
     open = Column(Float, nullable=False)
     high = Column(Float, nullable=False)
     low = Column(Float, nullable=False)
     close = Column(Float, nullable=False)
-    volume = Column(BigInteger, default=0)
+    volume = Column(BigInteger, nullable=False, default=0)
     vwap = Column(Float, nullable=True)
 
     __table_args__ = (
-        UniqueConstraint("symbol", "timestamp", name="uq_stock_bar"),
         Index("idx_stock_bars_symbol_time", "symbol", "timestamp"),
     )
 
 
 class OptionSnapshot(TimescaleBase):
-    """期权5分钟快照"""
+    """5-minute option snapshots.
+
+    Composite PK includes partitioning column ``timestamp``.
+    """
+
     __tablename__ = "option_5min_snapshots"
 
     underlying = Column(String(20), nullable=False)
-    symbol = Column(String(50), nullable=False)  # OCC option symbol
-    timestamp = Column(DateTime(timezone=True), nullable=False)
+    symbol = Column(String(50), primary_key=True, nullable=False)
+    timestamp = Column(DateTime(timezone=True), primary_key=True, nullable=False)
     expiry = Column(Date, nullable=False)
     strike = Column(Float, nullable=False)
-    option_type = Column(String(4), nullable=False)  # "call" / "put"
-    last_price = Column(Float, default=0.0)
-    bid = Column(Float, default=0.0)
-    ask = Column(Float, default=0.0)
-    volume = Column(BigInteger, default=0)
-    open_interest = Column(BigInteger, default=0)
-    iv = Column(Float, default=0.0)
-    delta = Column(Float, default=0.0)
-    gamma = Column(Float, default=0.0)
-    theta = Column(Float, default=0.0)
-    vega = Column(Float, default=0.0)
+    option_type = Column(String(4), nullable=False)
+    last_price = Column(Float, nullable=False, default=0.0)
+    bid = Column(Float, nullable=False, default=0.0)
+    ask = Column(Float, nullable=False, default=0.0)
+    volume = Column(BigInteger, nullable=False, default=0)
+    open_interest = Column(BigInteger, nullable=False, default=0)
+    iv = Column(Float, nullable=False, default=0.0)
+    delta = Column(Float, nullable=False, default=0.0)
+    gamma = Column(Float, nullable=False, default=0.0)
+    theta = Column(Float, nullable=False, default=0.0)
+    vega = Column(Float, nullable=False, default=0.0)
 
     __table_args__ = (
-        UniqueConstraint("symbol", "timestamp", name="uq_option_snapshot"),
         Index("idx_option_snap_underlying_expiry", "underlying", "expiry", "timestamp"),
         Index("idx_option_snap_strike", "underlying", "strike", "option_type"),
     )
 
 
 class StockDailyBar(TimescaleBase):
-    """股票日线快照（Swing 模式）"""
+    """Daily stock bars (swing mode)."""
+
     __tablename__ = "stock_daily"
 
     id = Column(BigInteger, primary_key=True, autoincrement=True)
@@ -87,7 +105,7 @@ class StockDailyBar(TimescaleBase):
     high = Column(Float, nullable=False)
     low = Column(Float, nullable=False)
     close = Column(Float, nullable=False)
-    volume = Column(BigInteger, default=0)
+    volume = Column(BigInteger, nullable=False, default=0)
 
     __table_args__ = (
         UniqueConstraint("symbol", "trading_date", name="uq_stock_daily"),
@@ -96,7 +114,8 @@ class StockDailyBar(TimescaleBase):
 
 
 class OptionDailySnapshot(TimescaleBase):
-    """期权日频链快照（Swing 模式）"""
+    """Daily option-chain snapshots (swing mode)."""
+
     __tablename__ = "option_daily"
 
     id = Column(BigInteger, primary_key=True, autoincrement=True)
@@ -106,16 +125,16 @@ class OptionDailySnapshot(TimescaleBase):
     expiry = Column(Date, nullable=False)
     strike = Column(Float, nullable=False)
     option_type = Column(String(4), nullable=False)
-    last_price = Column(Float, default=0.0)
-    bid = Column(Float, default=0.0)
-    ask = Column(Float, default=0.0)
-    volume = Column(BigInteger, default=0)
-    open_interest = Column(BigInteger, default=0)
-    iv = Column(Float, default=0.0)
-    delta = Column(Float, default=0.0)
-    gamma = Column(Float, default=0.0)
-    theta = Column(Float, default=0.0)
-    vega = Column(Float, default=0.0)
+    last_price = Column(Float, nullable=False, default=0.0)
+    bid = Column(Float, nullable=False, default=0.0)
+    ask = Column(Float, nullable=False, default=0.0)
+    volume = Column(BigInteger, nullable=False, default=0)
+    open_interest = Column(BigInteger, nullable=False, default=0)
+    iv = Column(Float, nullable=False, default=0.0)
+    delta = Column(Float, nullable=False, default=0.0)
+    gamma = Column(Float, nullable=False, default=0.0)
+    theta = Column(Float, nullable=False, default=0.0)
+    vega = Column(Float, nullable=False, default=0.0)
 
     __table_args__ = (
         UniqueConstraint("symbol", "snapshot_date", name="uq_option_daily"),
@@ -124,24 +143,21 @@ class OptionDailySnapshot(TimescaleBase):
     )
 
 
-# ── PostgreSQL Tables (业务数据) ──────────────────────────
-
-
-class BusinessBase(DeclarativeBase):
-    pass
+# ── PostgreSQL business tables ─────────────────────────────
 
 
 class BlueprintRecord(BusinessBase):
-    """LLM 交易蓝图存储"""
+    """Generated LLM trading blueprint."""
+
     __tablename__ = "llm_trading_blueprint"
 
     id = Column(String(36), primary_key=True)
     trading_date = Column(Date, nullable=False, unique=True)
     generated_at = Column(DateTime(timezone=True), nullable=False)
-    model_provider = Column(String(20), default="openai")
-    model_version = Column(String(50), default="gpt-4o")
+    model_provider = Column(String(20), nullable=False, default="openai")
+    model_version = Column(String(50), nullable=False, default="gpt-4o")
     blueprint_json = Column(JSONB, nullable=False)
-    status = Column(String(20), default="pending")
+    status = Column(String(20), nullable=False, default="pending")
     execution_summary = Column(JSONB, nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
@@ -153,14 +169,15 @@ class BlueprintRecord(BusinessBase):
 
 
 class OrderRecord(BusinessBase):
-    """订单记录"""
+    """Order records (JSON payload for multi-leg flexibility)."""
+
     __tablename__ = "orders"
 
     id = Column(String(36), primary_key=True)
     blueprint_id = Column(String(36), nullable=True)
     underlying = Column(String(20), nullable=False)
-    order_json = Column(JSONB, nullable=False)  # Full Order model as JSON
-    status = Column(String(20), default="pending")
+    order_json = Column(JSONB, nullable=False)
+    status = Column(String(20), nullable=False, default="pending")
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
     filled_at = Column(DateTime(timezone=True), nullable=True)
@@ -172,23 +189,24 @@ class OrderRecord(BusinessBase):
 
 
 class PositionRecord(BusinessBase):
-    """持仓记录"""
+    """Open/closed positions."""
+
     __tablename__ = "positions"
 
     id = Column(String(36), primary_key=True)
     symbol = Column(String(50), nullable=False)
     underlying = Column(String(20), nullable=False)
-    asset_type = Column(String(10), nullable=False)  # "stock" / "option"
-    side = Column(String(10), nullable=False)  # "long" / "short"
+    asset_type = Column(String(10), nullable=False)
+    side = Column(String(10), nullable=False)
     quantity = Column(Integer, nullable=False)
     avg_entry_price = Column(Float, nullable=False)
-    current_price = Column(Float, default=0.0)
-    unrealized_pnl = Column(Float, default=0.0)
-    realized_pnl = Column(Float, default=0.0)
-    position_json = Column(JSONB, nullable=True)  # Extra details
+    current_price = Column(Float, nullable=False, default=0.0)
+    unrealized_pnl = Column(Float, nullable=False, default=0.0)
+    realized_pnl = Column(Float, nullable=False, default=0.0)
+    position_json = Column(JSONB, nullable=True)
     opened_at = Column(DateTime(timezone=True), nullable=True)
     closed_at = Column(DateTime(timezone=True), nullable=True)
-    is_open = Column(Boolean, default=True)
+    is_open = Column(Boolean, nullable=False, default=True)
 
     __table_args__ = (
         Index("idx_position_symbol", "symbol"),
@@ -197,14 +215,15 @@ class PositionRecord(BusinessBase):
 
 
 class SignalFeatureRecord(BusinessBase):
-    """信号特征记录"""
+    """Computed signal features per symbol/date."""
+
     __tablename__ = "signal_features"
 
     id = Column(BigInteger, primary_key=True, autoincrement=True)
     symbol = Column(String(20), nullable=False)
     date = Column(Date, nullable=False)
     computed_at = Column(DateTime(timezone=True), nullable=False)
-    features_json = Column(JSONB, nullable=False)  # Full SignalFeatures as JSON
+    features_json = Column(JSONB, nullable=False)
 
     __table_args__ = (
         UniqueConstraint("symbol", "date", name="uq_signal_feature"),
@@ -213,16 +232,17 @@ class SignalFeatureRecord(BusinessBase):
 
 
 class BackfillLog(BusinessBase):
-    """数据回填日志"""
+    """Backfill run logs."""
+
     __tablename__ = "backfill_logs"
 
     id = Column(BigInteger, primary_key=True, autoincrement=True)
     symbol = Column(String(20), nullable=False)
-    data_type = Column(String(20), nullable=False)  # "stock_bars" / "option_snapshots"
+    data_type = Column(String(20), nullable=False)
     date = Column(Date, nullable=False)
     gap_start = Column(DateTime(timezone=True), nullable=True)
     gap_end = Column(DateTime(timezone=True), nullable=True)
-    records_filled = Column(Integer, default=0)
-    status = Column(String(20), default="pending")  # "pending" / "completed" / "failed"
+    records_filled = Column(Integer, nullable=False, default=0)
+    status = Column(String(20), nullable=False, default="pending")
     error_message = Column(Text, nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
