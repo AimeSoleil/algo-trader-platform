@@ -20,7 +20,7 @@ From repo root:
 
 ```bash
 # 1) Install deps (workspace)
-uv sync
+uv sync --package execution-service
 
 # 2) Start API server
 uv run uvicorn services.execution_service.app.main:app --host 0.0.0.0 --port 8004 --reload

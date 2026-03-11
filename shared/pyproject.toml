@@ -12,3 +12,19 @@ dependencies = [
     "structlog",
     "pyyaml",
 ]
+
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+packages = [
+    "shared",
+    "shared.config",
+    "shared.db",
+    "shared.models",
+    "shared.utils",
+]
+
+[tool.setuptools.package-dir]
+shared = "."

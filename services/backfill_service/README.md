@@ -12,7 +12,7 @@ From repo root:
 
 ```bash
 # 1) Install deps (workspace)
-uv sync
+uv sync --package backfill-service
 
 # 2) Start worker (listening to backfill queue)
 uv run celery -A shared.celery_app.celery_app worker -Q backfill -l info

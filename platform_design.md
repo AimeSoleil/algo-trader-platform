@@ -250,64 +250,32 @@ logging:
 
 #### 核心实现
 ```python
-# data_service/option_fetcher.py
-import yfinance as yf
-import py_vollib.black_scholes as bs
-from py_vollib.black_scholes.greeks.analytical import delta, gamma, theta, vega
+# data_service/greeks.py — 希腊字母计算（py_vollib Black-Scholes 解析式）
+from py_vollib.black_scholes.greeks.analytical import delta, gamma, theta, vega, rho
 
-async def fetch_option_chain(symbol: str) -> list:
-    """拉取期权链并计算希腊字母"""
-    ticker = yf.Ticker(symbol)
-    option_chains = []
-    
-    for expiry in ticker.options:
-        chain = ticker.option_chain(expiry)
-        # 计算希腊字母
-        for option in chain.calls.to_dict('records') + chain.puts.to_dict('records'):
-            # 计算IV
-            try:
-                iv = bs.implied_volatility(
-                    option['lastPrice'],
-                    ticker.history(period='1d')['Close'].iloc[-1],
-                    option['strike'],
-                    (pd.to_datetime(expiry) - pd.Timestamp.now()).days / 365,
-                    0.01,
-                    'c' if option['type'] == 'call' else 'p'
-                )
-                # 计算希腊字母
-                option['iv'] = iv
-                option['delta'] = delta('c' if option['type'] == 'call' else 'p',
-                                     option['lastPrice'],
-                                     ticker.history(period='1d')['Close'].iloc[-1],
-                                     option['strike'],
-                                     (pd.to_datetime(expiry) - pd.Timestamp.now()).days / 365,
-                                     0.01,
-                                     iv)
-                option['gamma'] = gamma('c' if option['type'] == 'call' else 'p',
-                                      option['lastPrice'],
-                                      ticker.history(period='1d')['Close'].iloc[-1],
-                                      option['strike'],
-                                      (pd.to_datetime(expiry) - pd.Timestamp.now()).days / 365,
-                                      0.01,
-                                      iv)
-                option['theta'] = theta('c' if option['type'] == 'call' else 'p',
-                                      option['lastPrice'],
-                                      ticker.history(period='1d')['Close'].iloc[-1],
-                                      option['strike'],
-                                      (pd.to_datetime(expiry) - pd.Timestamp.now()).days / 365,
-                                      0.01,
-                                      iv)
-                option['vega'] = vega('c' if option['type'] == 'call' else 'p',
-                                    option['lastPrice'],
-                                    ticker.history(period='1d')['Close'].iloc[-1],
-                                    option['strike'],
-                                    (pd.to_datetime(expiry) - pd.Timestamp.now()).days / 365,
-                                    0.01,
-                                    iv)
-                option_chains.append(option)
-            except Exception as e:
-                continue
-    return option_chains
+DEFAULT_RISK_FREE_RATE = 0.045  # 美国 10Y 国债收益率近似
+
+def compute_greeks(flag: str, S: float, K: float, T: float, r: float, sigma: float):
+    """计算单个合约 Greeks（flag='c'/'p', T=年化到期时间, sigma=IV）"""
+    if T <= 0 or sigma <= 0 or S <= 0 or K <= 0:
+        return {"iv": sigma}  # 无效参数 → 仅保留 IV
+    return {
+        "delta": delta(flag, S, K, T, r, sigma),
+        "gamma": gamma(flag, S, K, T, r, sigma),
+        "theta": theta(flag, S, K, T, r, sigma),
+        "vega":  vega(flag, S, K, T, r, sigma),   # py_vollib 已返回每1%IV变动
+        "rho":   rho(flag, S, K, T, r, sigma),
+        "iv":    sigma,
+    }
+
+# data_service/option_fetcher.py — 采集后自动附加 Greeks
+def enrich_snapshot_greeks(snapshot):
+    """遍历快照中每个合约，调用 py_vollib 计算并回填 Greeks"""
+    S = snapshot.underlying_price
+    for contract in snapshot.contracts:
+        flag = "c" if contract.option_type == "call" else "p"
+        T = contract.days_to_expiry / 365.0
+        contract.greeks = compute_greeks(flag, S, contract.strike, T, 0.045, contract.greeks.iv)
 ```
 
 ### 4.2 信号计算层（Signal Service）

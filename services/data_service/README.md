@@ -19,7 +19,7 @@ From repo root:
 
 ```bash
 # 1) Install deps (workspace)
-uv sync
+uv sync --package data-service
 
 # 2) Start API server
 uv run uvicorn services.data_service.app.main:app --host 0.0.0.0 --port 8001 --reload

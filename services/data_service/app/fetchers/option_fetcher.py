@@ -9,6 +9,7 @@ import yfinance as yf
 
 from shared.models.option import OptionChainSnapshot, OptionContract, OptionGreeks, OptionType
 from shared.utils import get_logger
+from services.data_service.app.fetchers.greeks import enrich_snapshot_greeks
 
 logger = get_logger("option_fetcher")
 
@@ -96,6 +97,7 @@ def _fetch_option_chain_sync(symbol: str) -> OptionChainSnapshot | None:
             timestamp=now,
             contracts=contracts,
         )
+        enrich_snapshot_greeks(snapshot)
         logger.info(
             "option_fetcher.success",
             symbol=symbol,

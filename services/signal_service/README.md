@@ -17,7 +17,7 @@ From repo root:
 
 ```bash
 # 1) Install deps (workspace)
-uv sync
+uv sync --package signal-service
 
 # 2) Start API server
 uv run uvicorn services.signal_service.app.main:app --host 0.0.0.0 --port 8002 --reload

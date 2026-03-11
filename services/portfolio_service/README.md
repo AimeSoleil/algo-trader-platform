@@ -20,7 +20,7 @@ From repo root:
 
 ```bash
 # 1) Install deps (workspace)
-uv sync
+uv sync --package portfolio-service
 
 # 2) Start API server
 uv run uvicorn services.portfolio_service.app.main:app --host 0.0.0.0 --port 8005 --reload

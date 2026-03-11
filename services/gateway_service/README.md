@@ -19,7 +19,7 @@ From repo root:
 
 ```bash
 # 1) Install deps (workspace)
-uv sync
+uv sync --package gateway-service
 
 # 2) Start gateway
 uv run uvicorn services.gateway_service.app.main:app --host 0.0.0.0 --port 8000 --reload

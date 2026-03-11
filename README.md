@@ -21,7 +21,7 @@ cp .env.example .env
 docker compose up -d
 
 # 3) 安装 Python 依赖
-uv sync
+uv sync --all-packages
 
 # 4) 初始化双数据库与 Timescale hypertable
 uv run python -m scripts.init_db

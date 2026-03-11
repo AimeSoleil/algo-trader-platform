@@ -10,7 +10,7 @@ dependencies = [
     "grpcio",
     "grpcio-tools",
     "yfinance>=0.2",
-    "py-vollib-vectorized",
+    "py-vollib>=1.0.1",
     "pandas>=2.0",
     "pyarrow",
     "apscheduler>=3.10",
