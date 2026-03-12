@@ -25,10 +25,12 @@ def generate_signal(
     """组装 SignalFeatures，仅做 volatility_regime 分类。"""
     settings = get_settings()
 
-    iv = option_indicators.iv_rank
-    if iv > settings.option_strategy.iv_threshold_high:
+    iv_pct = option_indicators.iv_percentile
+    high_thr = settings.option_strategy.high_quantile * 100  # e.g. 70.0
+    low_thr  = settings.option_strategy.low_quantile  * 100  # e.g. 30.0
+    if iv_pct >= high_thr:
         vol_regime = "high"
-    elif iv < settings.option_strategy.iv_threshold_low:
+    elif iv_pct <= low_thr:
         vol_regime = "low"
     else:
         vol_regime = "normal"

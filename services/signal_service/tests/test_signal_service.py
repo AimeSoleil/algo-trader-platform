@@ -109,8 +109,8 @@ def make_option_df(
 
 def _mock_settings() -> MagicMock:
     s = MagicMock()
-    s.option_strategy.iv_threshold_high = 70.0
-    s.option_strategy.iv_threshold_low = 30.0
+    s.option_strategy.high_quantile = 0.7
+    s.option_strategy.low_quantile = 0.3
     return s
 
 
@@ -518,7 +518,7 @@ class TestGenerateSignal:
 
     def _make_signal(
         self,
-        iv_rank: float = 50.0,
+        iv_percentile: float = 50.0,
         bar_type: str = "unknown",
     ) -> SignalFeatures:
         with patch(
@@ -536,33 +536,33 @@ class TestGenerateSignal:
                 close_price=100.0,
                 daily_return=0.01,
                 volume=50000,
-                option_indicators=OptionIndicators(iv_rank=iv_rank),
+                option_indicators=OptionIndicators(iv_percentile=iv_percentile),
                 stock_indicators=StockIndicators(),
                 cross_asset_indicators=CrossAssetIndicators(),
                 bar_type=bar_type,
             )
 
     def test_high_iv_regime(self):
-        sig = self._make_signal(iv_rank=80.0)
+        sig = self._make_signal(iv_percentile=80.0)
         assert sig.volatility_regime == "high"
 
     def test_low_iv_regime(self):
-        sig = self._make_signal(iv_rank=20.0)
+        sig = self._make_signal(iv_percentile=20.0)
         assert sig.volatility_regime == "low"
 
     def test_normal_iv_regime(self):
-        sig = self._make_signal(iv_rank=50.0)
+        sig = self._make_signal(iv_percentile=50.0)
         assert sig.volatility_regime == "normal"
 
     def test_boundary_high(self):
-        """iv_rank exactly at threshold → normal (not >)."""
-        sig = self._make_signal(iv_rank=70.0)
-        assert sig.volatility_regime == "normal"
+        """iv_percentile exactly at high threshold (70) → high (>=)."""
+        sig = self._make_signal(iv_percentile=70.0)
+        assert sig.volatility_regime == "high"
 
     def test_boundary_low(self):
-        """iv_rank exactly at low threshold → normal (not <)."""
-        sig = self._make_signal(iv_rank=30.0)
-        assert sig.volatility_regime == "normal"
+        """iv_percentile exactly at low threshold (30) → low (<=)."""
+        sig = self._make_signal(iv_percentile=30.0)
+        assert sig.volatility_regime == "low"
 
     def test_bar_type_passthrough(self):
         sig = self._make_signal(bar_type="intraday_1min")

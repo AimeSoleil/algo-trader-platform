@@ -89,12 +89,9 @@ class DataServiceSettings(BaseSettings):
     intraday: DataServiceIntradaySettings = Field(default_factory=DataServiceIntradaySettings)
 
 class OptionStrategySettings(BaseSettings):
-    default_strategy: str = "volatility_smile"
-    iv_threshold_high: float = 70.0  # IV rank above this -> sell strategies
-    iv_threshold_low: float = 30.0   # IV rank below this -> buy strategies
-    delta_neutral_tolerance: float = 0.1
-    margin_ratio: float = 0.2
-    max_option_positions: int = 10
+    lookback_days: int = 252          # iv_percentile 滚动窗口（交易日）
+    high_quantile: float = 0.7        # iv_percentile >= 70 → "high" 波动率区间
+    low_quantile: float = 0.3         # iv_percentile <= 30 → "low" 波动率区间
 
 class ScheduleSettings(BaseSettings):
     """盘后批处理流水线调度时间"""
