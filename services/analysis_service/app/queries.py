@@ -16,14 +16,18 @@ from services.analysis_service.app.cache import (
 logger = get_logger("analysis_queries")
 
 
-async def query_blueprint(trading_date_str: str) -> dict:
+async def query_blueprint(
+    trading_date_str: str,
+    by_pass_cache: bool = False,
+) -> dict:
     """从 Redis / DB 查询蓝图"""
     td = date.fromisoformat(trading_date_str)
 
     # L1: Redis cache
-    cached = await get_cached_blueprint(td)
-    if cached:
-        return cached
+    if not by_pass_cache:
+        cached = await get_cached_blueprint(td)
+        if cached:
+            return {**cached, "_from_cache": True}
 
     # L2: Postgres
     async with get_postgres_session() as session:
@@ -37,7 +41,7 @@ async def query_blueprint(trading_date_str: str) -> dict:
         row = result.fetchone()
 
     if not row:
-        return {"error": f"No blueprint for {td}"}
+        return {"error": f"No blueprint for {td}", "_from_cache": False}
 
     data = {
         "id": row[0],
@@ -49,4 +53,4 @@ async def query_blueprint(trading_date_str: str) -> dict:
 
     # Populate cache
     await set_cached_blueprint(td, data)
-    return data
+    return {**data, "_from_cache": False}

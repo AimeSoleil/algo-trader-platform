@@ -141,9 +141,26 @@ async def _generate_blueprint_async(trading_date_str: str | None = None) -> dict
             },
         )
 
-    # Invalidate cache for this date
-    from services.analysis_service.app.cache import invalidate_blueprint_cache
-    await invalidate_blueprint_cache(blueprint.trading_date)
+    # 6) Write-through cache refresh (best effort) with delete-on-write fallback
+    from services.analysis_service.app.cache import (
+        invalidate_blueprint_cache_strict,
+        set_cached_blueprint_strict,
+    )
+    blueprint_data = {
+        "id": blueprint.id,
+        "trading_date": str(blueprint.trading_date),
+        "status": "pending",
+        "blueprint": blueprint.model_dump(mode="json"),
+        "execution_summary": None,
+    }
+    try:
+        await set_cached_blueprint_strict(blueprint.trading_date, blueprint_data)
+    except Exception as cache_exc:
+        logger.debug("blueprint.cache_refresh_failed", date=str(blueprint.trading_date), error=str(cache_exc))
+        try:
+            await invalidate_blueprint_cache_strict(blueprint.trading_date)
+        except Exception as del_exc:
+            logger.debug("blueprint.cache_delete_failed", date=str(blueprint.trading_date), error=str(del_exc))
 
     logger.info(
         "blueprint.generated",

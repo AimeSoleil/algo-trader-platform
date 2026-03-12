@@ -16,10 +16,10 @@ router = APIRouter(tags=["analysis"])
 
 
 @router.get("/blueprint/{trading_date}")
-async def get_blueprint(trading_date: str):
+async def get_blueprint(trading_date: str, by_pass_cache: bool = False):
     """查询某天的蓝图"""
     from services.analysis_service.app.queries import query_blueprint
-    return await query_blueprint(trading_date)
+    return await query_blueprint(trading_date, by_pass_cache=by_pass_cache)
 
 
 # ---------------------------------------------------------------------------

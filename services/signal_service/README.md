@@ -11,6 +11,25 @@
 - Docs: `http://localhost:8002/docs`
 - Health: `GET /health`
 - Signal query: `GET /api/v1/signals/{symbol}`
+- Trigger signal compute: `POST /api/v1/signals/compute`
+- Signal compute status: `GET /api/v1/signals/compute/{task_id}`
+
+### Manual signal compute
+
+```bash
+# Trigger (default today_trading)
+curl -X POST http://localhost:8002/api/v1/signals/compute \
+	-H "Content-Type: application/json" \
+	-d '{}'
+
+# Trigger for specific trading date
+curl -X POST http://localhost:8002/api/v1/signals/compute \
+	-H "Content-Type: application/json" \
+	-d '{"trading_date": "2026-03-12"}'
+
+# Poll task status
+curl http://localhost:8002/api/v1/signals/compute/<task_id>
+```
 
 ## Manual start (without Docker)
 From repo root:

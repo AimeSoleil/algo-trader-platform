@@ -27,19 +27,39 @@ async def _get_redis() -> Redis:
     return Redis.from_url(settings.redis.url, decode_responses=True)
 
 
-async def query_signal_features(symbol: str, date_str: str | None = None) -> dict:
+async def set_signal_cache(symbol: str, target_date: date, data: dict) -> None:
+    """Write-through helper: 写库后主动刷新单标的缓存。"""
+    key = _cache_key(symbol, target_date)
+    redis = await _get_redis()
+    await redis.set(key, json.dumps(data, default=str), ex=_CACHE_TTL)
+
+
+async def delete_signal_cache(symbol: str, target_date: date) -> None:
+    """Delete-on-write helper: 写缓存失败时删除旧 key，避免返回陈旧数据。"""
+    key = _cache_key(symbol, target_date)
+    redis = await _get_redis()
+    await redis.delete(key)
+
+
+async def query_signal_features(
+    symbol: str,
+    date_str: str | None = None,
+    by_pass_cache: bool = False,
+) -> dict:
     """从 Redis / DB 查询单个标的的信号特征"""
     target_date = date.fromisoformat(date_str) if date_str else today_trading()
     key = _cache_key(symbol, target_date)
 
     # L1: Redis
-    try:
-        redis = await _get_redis()
-        cached = await redis.get(key)
-        if cached:
-            return json.loads(cached)
-    except Exception:
-        logger.debug("signal_query.redis_miss", symbol=symbol)
+    if not by_pass_cache:
+        try:
+            redis = await _get_redis()
+            cached = await redis.get(key)
+            if cached:
+                data = json.loads(cached)
+                return {**data, "_from_cache": True}
+        except Exception:
+            logger.debug("signal_query.redis_miss", symbol=symbol)
 
     # L2: Postgres
     async with get_postgres_session() as session:
@@ -53,7 +73,7 @@ async def query_signal_features(symbol: str, date_str: str | None = None) -> dic
         row = result.fetchone()
 
     if not row:
-        return {"error": f"No signals for {symbol} on {target_date}"}
+        return {"error": f"No signals for {symbol} on {target_date}", "_from_cache": False}
 
     data = row[0] if isinstance(row[0], dict) else json.loads(row[0])
 
@@ -64,7 +84,7 @@ async def query_signal_features(symbol: str, date_str: str | None = None) -> dic
     except Exception:
         pass
 
-    return data
+    return {**data, "_from_cache": False}
 
 
 async def query_batch_signal_features(date_str: str | None = None) -> list[dict]:

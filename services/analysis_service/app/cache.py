@@ -50,6 +50,16 @@ async def set_cached_blueprint(trading_date: date, data: dict) -> None:
         logger.warning("cache.set_failed", error=str(e))
 
 
+async def set_cached_blueprint_strict(trading_date: date, data: dict) -> None:
+    """Strict set for task write-through; raise to caller on failure."""
+    redis = await _get_redis()
+    await redis.set(
+        _cache_key(trading_date),
+        json.dumps(data, default=str),
+        ex=_CACHE_TTL,
+    )
+
+
 async def invalidate_blueprint_cache(trading_date: date) -> None:
     """Invalidate cached blueprint for a specific date."""
     try:
@@ -57,3 +67,9 @@ async def invalidate_blueprint_cache(trading_date: date) -> None:
         await redis.delete(_cache_key(trading_date))
     except Exception:
         pass
+
+
+async def invalidate_blueprint_cache_strict(trading_date: date) -> None:
+    """Strict delete for task fallback; raise to caller on failure."""
+    redis = await _get_redis()
+    await redis.delete(_cache_key(trading_date))

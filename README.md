@@ -61,6 +61,43 @@ docker compose ps
 | 17:00 | Signal (Celery) | 批量计算特征（IV/PCR/趋势/曲面） |
 | 17:10 | Analysis (Celery) | 生成次日蓝图并写入 PostgreSQL |
 
+## 手动触发链路（Collect → Signal → Analysis）
+
+当你不想等定时任务，可按下面顺序手动触发：
+
+```bash
+# 1) Data Service: 手动补数据（示例只拉日线）
+curl -X POST http://localhost:8001/api/v1/collect \
+  -H "Content-Type: application/json" \
+  -d '{
+    "symbols": ["AAPL","MSFT","TSLA","SPY","QQQ","AMZN","META","GOOGL","AMD","NVDA"],
+    "start_date": "2025-01-01",
+    "end_date": "2026-03-11",
+    "data_types": ["bars_daily"]
+  }'
+
+# 轮询 data collect 任务状态
+curl http://localhost:8001/api/v1/collect/<task_id>
+
+# 2) Signal Service: 手动触发信号计算（默认 today_trading）
+curl -X POST http://localhost:8002/api/v1/signals/compute \
+  -H "Content-Type: application/json" \
+  -d '{}'
+
+# 轮询 signal 任务状态
+curl http://localhost:8002/api/v1/signals/compute/<task_id>
+
+# 3) Analysis Service: 手动触发单标的分析（需先有 signal_features）
+curl -X POST http://localhost:8003/api/v1/analyze \
+  -H "Content-Type: application/json" \
+  -d '{"symbol":"AAPL","trading_date":"2026-03-12"}'
+
+# 轮询 analysis 任务状态
+curl http://localhost:8003/api/v1/analyze/<task_id>
+```
+
+运行上述接口前，请确认对应 worker 已启动并监听正确队列（`data` / `signal` / `analysis`）。
+
 ## 服务清单
 
 | 服务 | 目录 | 说明 |

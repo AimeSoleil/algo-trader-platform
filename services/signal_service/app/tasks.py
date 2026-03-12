@@ -42,6 +42,7 @@ def compute_daily_signals(self, trading_date: str | None = None, prev_result=Non
 async def _compute_daily_signals_async(trading_date_str: str | None = None) -> dict:
     from services.signal_service.app.indicators.option_indicators import compute_option_indicators
     from services.signal_service.app.indicators.stock_indicators import compute_stock_indicators
+    from services.signal_service.app.queries import delete_signal_cache, set_signal_cache
     from services.signal_service.app.signal_generator import generate_signal
 
     settings = get_settings()
@@ -227,6 +228,16 @@ async def _compute_daily_signals_async(trading_date_str: str | None = None) -> d
                             "features_json": features.model_dump_json(),
                         },
                     )
+
+                # 6) Write-through cache refresh (best effort)
+                try:
+                    await set_signal_cache(symbol, td, features.model_dump(mode="json"))
+                except Exception as cache_exc:
+                    logger.debug("signal_compute.cache_refresh_failed", symbol=symbol, error=str(cache_exc))
+                    try:
+                        await delete_signal_cache(symbol, td)
+                    except Exception as del_exc:
+                        logger.debug("signal_compute.cache_delete_failed", symbol=symbol, error=str(del_exc))
 
                 result["symbols_computed"] += 1
                 logger.info(
