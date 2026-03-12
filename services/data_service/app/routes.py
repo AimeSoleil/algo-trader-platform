@@ -396,6 +396,7 @@ async def trigger_collection(req: CollectRequest):
     task = celery_app.send_task(
         "data_service.tasks.manual_collect",
         args=[symbols, req.start_date.isoformat(), req.end_date.isoformat(), req.data_types],
+        queue="data",
     )
 
     return CollectResponse(

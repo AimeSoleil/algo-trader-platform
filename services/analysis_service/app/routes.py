@@ -55,6 +55,7 @@ async def trigger_analysis(req: AnalyzeRequest):
     task = celery_app.send_task(
         "analysis_service.tasks.manual_analyze",
         args=[symbol, req.trading_date],
+        queue="analysis",
     )
 
     return AnalyzeResponse(
