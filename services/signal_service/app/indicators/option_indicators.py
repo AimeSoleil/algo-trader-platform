@@ -1,6 +1,7 @@
 """期权指标计算 — 修复设计文档中的所有问题"""
 from __future__ import annotations
 
+import math
 from datetime import date, timedelta
 
 import numpy as np
@@ -10,14 +11,14 @@ from sqlalchemy import text
 
 from shared.db.session import get_timescale_session
 from shared.models.signal import OptionIndicators
-from shared.utils import get_logger
+from shared.utils import get_logger, today_trading
 
 logger = get_logger("option_indicators")
 
 
 async def get_historical_iv(symbol: str, lookback_days: int = 30) -> list[float]:
     """从 TimescaleDB 获取历史 IV 数据"""
-    start_date = date.today() - timedelta(days=lookback_days)
+    start_date = today_trading() - timedelta(days=lookback_days)
 
     async with get_timescale_session() as session:
         result = await session.execute(
@@ -35,12 +36,36 @@ async def get_historical_iv(symbol: str, lookback_days: int = 30) -> list[float]
         return [float(row[0]) for row in result.fetchall() if row[0]]
 
 
-async def calculate_iv_rank(symbol: str, current_iv: float, lookback_days: int = 30) -> float:
+def _sanitize_float(v: float) -> float:
+    """Replace NaN / Inf with 0.0."""
+    if isinstance(v, float) and (math.isnan(v) or math.isinf(v)):
+        return 0.0
+    return v
+
+
+def _sanitize_option_indicators(ind: OptionIndicators) -> OptionIndicators:
+    """Sanitize all float fields — replace NaN/Inf with 0.0."""
+    updates: dict = {}
+    for name, field_info in OptionIndicators.model_fields.items():
+        val = getattr(ind, name)
+        if isinstance(val, float):
+            clean = _sanitize_float(val)
+            if clean != val or (isinstance(val, float) and math.isnan(val)):
+                updates[name] = clean
+        elif isinstance(val, dict):
+            cleaned = {k: (_sanitize_float(v) if isinstance(v, float) else v) for k, v in val.items()}
+            if cleaned != val:
+                updates[name] = cleaned
+    return ind.model_copy(update=updates) if updates else ind
+
+
+async def calculate_iv_rank(symbol: str, current_iv: float, lookback_days: int = 30, historical_iv: list[float] | None = None) -> float:
     """
     计算 IV Rank（百分位排名）
     修复：使用 scipy.stats.percentileofscore 而非错误的 np.percentile
     """
-    historical_iv = await get_historical_iv(symbol, lookback_days)
+    if historical_iv is None:
+        historical_iv = await get_historical_iv(symbol, lookback_days)
 
     if not historical_iv or len(historical_iv) < 5:
         logger.warning("iv_rank.insufficient_data", symbol=symbol, data_points=len(historical_iv))
@@ -114,21 +139,25 @@ def calculate_term_structure(option_data: pd.DataFrame, underlying_price: float)
     return result
 
 
-async def compute_option_indicators(symbol: str, option_data: pd.DataFrame, underlying_price: float) -> OptionIndicators:
+async def compute_option_indicators(symbol: str, option_data: pd.DataFrame, underlying_price: float, historical_iv: list[float] | None = None) -> OptionIndicators:
     """计算完整期权指标集"""
     if option_data.empty:
         return OptionIndicators()
 
+    # Fetch historical IV once
+    if historical_iv is None:
+        historical_iv = await get_historical_iv(symbol, 30)
+
     current_iv = float(option_data[option_data["iv"] > 0]["iv"].mean()) if not option_data[option_data["iv"] > 0].empty else 0.0
-    percentile = await calculate_iv_rank(symbol, current_iv)
+    percentile = await calculate_iv_rank(symbol, current_iv, historical_iv=historical_iv)
     pcr_volume, pcr_oi = calculate_pcr(option_data)
     iv_skew = calculate_iv_skew(option_data, underlying_price)
     atm_iv = calculate_term_structure(option_data, underlying_price)
 
-    # Historical IV for comparison
-    historical_iv = await get_historical_iv(symbol, 30)
+    # Use the already-fetched historical_iv
     historical_iv_30d = np.mean(historical_iv) if historical_iv else 0.0
 
+    # iv_rank: min-max normalization — (current - min) / (max - min) * 100
     if historical_iv and current_iv > 0:
         iv_min = float(np.min(historical_iv))
         iv_max = float(np.max(historical_iv))
@@ -290,7 +319,7 @@ async def compute_option_indicators(symbol: str, option_data: pd.DataFrame, unde
     if bid_ask_spread_ratio > 0.2:
         extreme_flags.append("poor_liquidity")
 
-    return OptionIndicators(
+    result = OptionIndicators(
         iv_rank=iv_rank,
         iv_percentile=percentile,
         current_iv=round(current_iv, 4),
@@ -326,3 +355,4 @@ async def compute_option_indicators(symbol: str, option_data: pd.DataFrame, unde
         confidence_scores=confidence_scores,
         extreme_flags=extreme_flags,
     )
+    return _sanitize_option_indicators(result)

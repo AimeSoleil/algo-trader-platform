@@ -14,7 +14,7 @@ import yfinance as yf
 from sqlalchemy import text
 
 from shared.db.session import get_timescale_session
-from shared.utils import get_logger
+from shared.utils import get_logger, today_trading, ensure_utc
 
 logger = get_logger("backfiller")
 
@@ -27,7 +27,7 @@ _MAX_1MIN_LOOKBACK_DAYS = 7
 
 async def backfill_stock_1min(symbol: str, start_date: date, end_date: date) -> int:
     """回填 stock_1min_bars（interval=1m, 仅 ≤7 天有效）"""
-    days_diff = (date.today() - start_date).days
+    days_diff = (today_trading() - start_date).days
     if days_diff > _MAX_1MIN_LOOKBACK_DAYS:
         logger.warning(
             "backfiller.1min_out_of_range",
@@ -36,7 +36,7 @@ async def backfill_stock_1min(symbol: str, start_date: date, end_date: date) -> 
             days_diff=days_diff,
         )
         # Clamp to available range
-        start_date = date.today() - timedelta(days=_MAX_1MIN_LOOKBACK_DAYS)
+        start_date = today_trading() - timedelta(days=_MAX_1MIN_LOOKBACK_DAYS)
 
     def _fetch():
         ticker = yf.Ticker(symbol)
@@ -54,7 +54,7 @@ async def backfill_stock_1min(symbol: str, start_date: date, end_date: date) -> 
     records = [
         {
             "symbol": symbol,
-            "timestamp": ts.to_pydatetime(),
+            "timestamp": ensure_utc(ts.to_pydatetime()),
             "open": float(row["Open"]),
             "high": float(row["High"]),
             "low": float(row["Low"]),
@@ -140,7 +140,7 @@ async def backfill_history(symbol: str, days: int = 90) -> dict:
     - stock_1min  : 最近 7 天的 1 分钟线
     - option      : 不可回填（yfinance 限制），仅记录日志
     """
-    end_date = date.today()
+    end_date = today_trading()
 
     daily_rows = await backfill_stock_daily(
         symbol,

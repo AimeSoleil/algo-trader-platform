@@ -32,4 +32,32 @@ app.include_router(router, prefix="/api/v1")
 
 @app.get("/health")
 async def health_check():
-    return {"status": "ok", "service": "analysis_service"}
+    checks: dict = {"service": "analysis_service"}
+    overall = True
+
+    # DB
+    try:
+        from shared.db.session import get_postgres_session
+        from sqlalchemy import text
+        async with get_postgres_session() as session:
+            await session.execute(text("SELECT 1"))
+        checks["db"] = "ok"
+    except Exception as e:
+        checks["db"] = f"error: {e}"
+        overall = False
+
+    # Redis
+    try:
+        from redis.asyncio import Redis
+        from shared.config import get_settings
+        settings = get_settings()
+        r = Redis.from_url(settings.redis.url)
+        await r.ping()
+        await r.aclose()
+        checks["redis"] = "ok"
+    except Exception as e:
+        checks["redis"] = f"error: {e}"
+        overall = False
+
+    checks["status"] = "ok" if overall else "degraded"
+    return checks

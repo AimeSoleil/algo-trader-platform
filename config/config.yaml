@@ -4,9 +4,7 @@
 
 # ── 交易设置 ──
 trading:
-  default_strategy_type: "option"    # option / stock / mixed
   timezone: "America/New_York"
-  data_fetch_interval: 300           # 期权快照间隔（秒）= 5分钟
   execution_interval: 300            # 执行检查间隔（秒）= 5分钟
 
 # ── Data Service 配置 ──
@@ -14,10 +12,13 @@ trading:
 # 盘中期权链采集仅在 intraday_enabled: true 时启用
 data_service:
   intraday_enabled: false            # true: 叠加盘中 5min 期权链采集
+  providers:
+    stock: "yfinance"                # stock bar data provider
+    options: "yfinance"              # option chain data provider
+    options_historical: "none"       # historical options (none = not available)
   market_hours:
     start: "09:30"
     end: "16:00"
-    timezone: "America/New_York"
   intraday:
     capture_every_minutes: 5
     max_option_expiries: 3
@@ -27,8 +28,6 @@ data_service:
     archive_retention_days:
       stock_1min: 365
       option_5min: 180
-  post_market:
-    retention_days: -1               # daily 表保留天数（-1 = 永久）
 
 # ── 期权策略 ──
 option_strategy:
@@ -47,7 +46,7 @@ llm:
   openai_api_key: ""                  # set via env OPENAI_API_KEY or here
   openai_model: "gpt-4o"
   openai_temperature: 0.1
-  openai_max_tokens: 4096
+  openai_max_tokens: 8192
 
   # ── Copilot SDK ──
   copilot_cli_path: "copilot"         # path to copilot CLI binary

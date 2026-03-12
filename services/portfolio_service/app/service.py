@@ -8,6 +8,7 @@ from typing import Any
 from sqlalchemy import text
 
 from shared.db.session import get_postgres_session
+from shared.utils import now_utc
 
 
 def _to_float(value: Any, default: float = 0.0) -> float:
@@ -161,7 +162,7 @@ async def get_positions() -> dict[str, Any]:
     rows = await _load_open_positions()
     positions, aggregates = _normalize_positions(rows)
     return {
-        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "timestamp": now_utc().isoformat(),
         "count": len(positions),
         "positions": positions,
         "aggregates": aggregates,
@@ -172,7 +173,7 @@ async def get_portfolio_snapshot() -> dict[str, Any]:
     rows = await _load_open_positions()
     positions, aggregates = _normalize_positions(rows)
     return {
-        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "timestamp": now_utc().isoformat(),
         "positions_count": len(positions),
         "greeks": {
             "total_delta": aggregates["total_delta"],

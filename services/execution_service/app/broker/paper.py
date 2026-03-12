@@ -1,9 +1,10 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime
 from typing import Any
 from uuid import uuid4
 
+from shared.utils import now_utc
 from services.execution_service.app.broker.base import BrokerInterface
 
 
@@ -36,7 +37,7 @@ class PaperBroker(BrokerInterface):
             "type": order.get("type", "market"),
             "status": "filled",
             "filled_price": fill_price,
-            "filled_at": datetime.now(timezone.utc),
+            "filled_at": now_utc(),
         }
         self.orders.append(order_record)
 
@@ -46,7 +47,7 @@ class PaperBroker(BrokerInterface):
                 "symbol": symbol,
                 "qty": signed_qty,
                 "avg_price": fill_price,
-                "updated_at": datetime.now(timezone.utc),
+                "updated_at": now_utc(),
             }
         )
         self.cash -= signed_qty * fill_price

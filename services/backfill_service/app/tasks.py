@@ -12,7 +12,7 @@ from datetime import date, timedelta
 
 from shared.celery_app import celery_app
 from shared.config import get_settings
-from shared.utils import get_logger
+from shared.utils import get_logger, today_trading
 
 logger = get_logger("backfill_tasks")
 
@@ -56,7 +56,7 @@ async def _detect_and_backfill_async(trading_date_str: str | None = None) -> dic
     )
 
     settings = get_settings()
-    td = date.fromisoformat(trading_date_str) if trading_date_str else date.today()
+    td = date.fromisoformat(trading_date_str) if trading_date_str else today_trading()
     lookback_start = td - timedelta(days=_DAILY_GAP_LOOKBACK)
 
     result = {
@@ -129,7 +129,7 @@ async def _check_historical_async() -> dict:
     )
 
     settings = get_settings()
-    today = date.today()
+    today = today_trading()
     result = {
         "stock_daily_gaps": 0,
         "stock_daily_filled": 0,

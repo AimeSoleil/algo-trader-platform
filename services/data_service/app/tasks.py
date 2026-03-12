@@ -17,7 +17,7 @@ from celery import chain as celery_chain
 from shared.celery_app import celery_app
 from shared.config import get_settings
 from shared.db.session import get_timescale_session
-from shared.utils import get_logger
+from shared.utils import get_logger, today_trading
 
 logger = get_logger("data_tasks")
 
@@ -51,7 +51,7 @@ async def _capture_post_market_async(trading_date_str: str | None = None) -> dic
 
     settings = get_settings()
     symbols = settings.watchlist
-    td = date.fromisoformat(trading_date_str) if trading_date_str else date.today()
+    td = date.fromisoformat(trading_date_str) if trading_date_str else today_trading()
 
     result = {
         "date": str(td),
@@ -133,7 +133,7 @@ def batch_flush_to_db(self, trading_date: str | None = None, prev_result=None) -
 async def _batch_flush_to_db_async(trading_date_str: str | None = None) -> dict:
     from services.data_service.app.cache import MarketHoursCache
 
-    trading_date = date.fromisoformat(trading_date_str) if trading_date_str else date.today()
+    trading_date = date.fromisoformat(trading_date_str) if trading_date_str else today_trading()
     cache = MarketHoursCache()
     cache.flush_all()
 
@@ -171,7 +171,7 @@ def run_post_market_pipeline(trading_date: str | None = None) -> str:
 
     Chain: capture → flush → backfill → signals → blueprint
     """
-    td = trading_date or date.today().isoformat()
+    td = trading_date or today_trading().isoformat()
 
     pipeline = celery_chain(
         capture_post_market_data.s(td),
@@ -245,7 +245,7 @@ async def _manual_collect_async(
 
     sd = date.fromisoformat(start_date_str)
     ed = date.fromisoformat(end_date_str)
-    today = date.today()
+    today = today_trading()
 
     result: dict = {
         "status": "completed",

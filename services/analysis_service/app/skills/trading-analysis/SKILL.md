@@ -24,7 +24,7 @@ Load references based on the market context provided in the signal data. The tab
 | [trend-momentum](references/trend-momentum.md) | `trend` is "bullish" or "bearish"; ADX/RSI extreme flags | ADX extreme flags |
 | [flow-microstructure](references/flow-microstructure.md) | Always | Volume anomaly flags |
 | [option-chain-structure](references/option-chain-structure.md) | Always | Extreme PCR or illiquid chain flags |
-| [spread-arbitrage](references/spread-arbitrage.md) | `suggested_strategies` includes any spread/calendar/butterfly type | Butterfly mispricing or box arb flags |
+| [spread-arbitrage](references/spread-arbitrage.md) | IV skew > 0.05 or butterfly_pricing_error > 0.01 or box_spread_arbitrage > 0.005 | Butterfly mispricing or box arb flags |
 | [risk-management](references/risk-management.md) | Always | Portfolio delta/vega breach or margin warning flags |
 | [cross-asset](references/cross-asset.md) | Cross-asset data available (non-zero correlation/volume ratio) | Stock-IV divergence or options volume spike flags |
 

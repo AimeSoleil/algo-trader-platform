@@ -58,17 +58,21 @@ def create_celery_app() -> Celery:
     #
     # Beat only triggers the pipeline entry point; the chain handles ordering.
 
+    # Parse schedule times from config
+    _flush_h, _flush_m = map(int, settings.schedule.batch_flush_time.split(":"))
+    _backfill_h, _backfill_m = map(int, settings.schedule.backfill_time.split(":"))
+
     app.conf.beat_schedule = {
-        # ── 盘后流水线入口（16:30 触发完整链） ──
+        # ── 盘后流水线入口 ──
         "post-market-pipeline": {
             "task": "data_service.tasks.run_post_market_pipeline",
-            "schedule": crontab(hour=16, minute=30, day_of_week="1-5"),
+            "schedule": crontab(hour=_flush_h, minute=_flush_m, day_of_week="1-5"),
             "options": {"queue": "data"},
         },
         # ── 独立定时任务 ──
         "daily-backfill-history-check": {
             "task": "backfill_service.tasks.check_historical_gaps",
-            "schedule": crontab(hour=18, minute=0, day_of_week="1-5"),
+            "schedule": crontab(hour=_backfill_h, minute=_backfill_m, day_of_week="1-5"),
             "options": {"queue": "backfill"},
         },
     }

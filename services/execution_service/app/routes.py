@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import date, datetime, timezone
+from datetime import date, datetime
 from typing import Literal
 
 from fastapi import APIRouter, HTTPException, Query
@@ -8,6 +8,7 @@ from pydantic import BaseModel
 from sqlalchemy import text
 
 from shared.db.session import get_postgres_session
+from shared.utils import now_utc
 
 from services.execution_service.app.blueprint_loader import load_blueprint_for_date
 from services.execution_service.app.models import runtime_state
@@ -66,7 +67,7 @@ async def load_blueprint(trading_date: date = Query(alias="date")):
     runtime_state.loaded_blueprint_id = str(blueprint["id"])
     runtime_state.loaded_trading_date = trading_date
     runtime_state.status = "active"
-    runtime_state.loaded_at = datetime.now(timezone.utc)
+    runtime_state.loaded_at = now_utc()
     runtime_state.manual_override_reason = None
 
     return {

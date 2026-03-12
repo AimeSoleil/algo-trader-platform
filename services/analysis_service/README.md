@@ -32,3 +32,4 @@ uv run celery -A shared.celery_app.celery_app worker -Q analysis -l info
 ## Notes
 - Requires Postgres + Redis + RabbitMQ running.
 - LLM provider/config is loaded from `config/config.yaml` and env vars.
+- The analysis shall consider 市场环境、持仓状态、风险预算

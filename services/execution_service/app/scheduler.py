@@ -1,13 +1,13 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.interval import IntervalTrigger
 from redis.asyncio import Redis
 
 from shared.config import get_settings
-from shared.utils import get_logger
+from shared.utils import get_logger, now_utc
 
 from services.execution_service.app.models import ExecutionRuntimeState
 from services.execution_service.app.rule_engine import BlueprintRuleEngine
@@ -19,7 +19,7 @@ _scheduler: AsyncIOScheduler | None = None
 
 async def _evaluation_tick(runtime_state: ExecutionRuntimeState) -> None:
     if runtime_state.paused:
-        runtime_state.last_tick_at = datetime.now(timezone.utc)
+        runtime_state.last_tick_at = now_utc()
         logger.info("execution.tick_skipped", reason="paused")
         return
 
@@ -43,7 +43,7 @@ async def _evaluation_tick(runtime_state: ExecutionRuntimeState) -> None:
             plan = {"symbol": symbol, "entry_conditions": [], "exit_conditions": []}
             engine.evaluate_symbol_plan(plan, market_ctx)
 
-        runtime_state.last_tick_at = datetime.now(timezone.utc)
+        runtime_state.last_tick_at = now_utc()
         logger.info("execution.tick_completed", trading_date=str(runtime_state.loaded_trading_date))
     finally:
         await redis_client.aclose()

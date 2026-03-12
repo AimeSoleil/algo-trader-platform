@@ -22,6 +22,13 @@ From repo root:
 uv sync --package gateway-service
 
 # 2) Start gateway
+export GATEWAY_DATA_URL=http://127.0.0.1:8001
+export GATEWAY_SIGNAL_URL=http://127.0.0.1:8002
+export GATEWAY_ANALYSIS_URL=http://127.0.0.1:8003
+export GATEWAY_EXECUTION_URL=http://127.0.0.1:8004
+export GATEWAY_PORTFOLIO_URL=http://127.0.0.1:8005
+export GATEWAY_MONITORING_URL=http://127.0.0.1:8006
+
 uv run uvicorn services.gateway_service.app.main:app --host 0.0.0.0 --port 8000 --reload
 ```
 

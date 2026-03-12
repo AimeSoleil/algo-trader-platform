@@ -14,7 +14,7 @@ from openai import AsyncOpenAI
 from shared.config import get_settings
 from shared.models.blueprint import LLMTradingBlueprint
 from shared.models.signal import SignalFeatures
-from shared.utils import get_logger
+from shared.utils import get_logger, now_utc, next_trading_day as _next_trading_day
 
 from services.analysis_service.app.llm.base import LLMProviderBase
 from services.analysis_service.app.llm.prompts import SYSTEM_PROMPT, build_blueprint_prompt
@@ -23,6 +23,7 @@ logger = get_logger("openai_provider")
 
 # Path to the trading-analysis skill bundle
 _SKILL_DIR = Path(__file__).resolve().parents[1] / "skills" / "trading-analysis"
+_SKILL_MD_PATH = _SKILL_DIR / "SKILL.md"
 
 
 # ---------------------------------------------------------------------------
@@ -46,6 +47,30 @@ def _build_skill_bundle() -> str:
     return base64.b64encode(buf.getvalue()).decode("ascii")
 
 
+@lru_cache(maxsize=1)
+def _load_skill_md() -> str:
+    """Load SKILL.md text once for hybrid instruction mounting."""
+    if not _SKILL_MD_PATH.exists():
+        logger.warning("openai.skill_md_missing", path=str(_SKILL_MD_PATH))
+        return ""
+    return _SKILL_MD_PATH.read_text(encoding="utf-8")
+
+
+def _build_hybrid_instructions() -> str:
+    """Embed workflow from SKILL.md in instructions; keep references as shell files."""
+    skill_md = _load_skill_md().strip()
+    if not skill_md:
+        return SYSTEM_PROMPT
+
+    return (
+        f"{SYSTEM_PROMPT}\n\n"
+        "Embedded trading-analysis workflow (from SKILL.md):\n"
+        f"{skill_md}\n\n"
+        "Reference files under trading-analysis/references are mounted in the shell environment. "
+        "Load them on-demand based on market context."
+    )
+
+
 # ---------------------------------------------------------------------------
 # Provider
 # ---------------------------------------------------------------------------
@@ -61,6 +86,7 @@ class OpenAIProvider(LLMProviderBase):
 
         # Pre-build the skill bundle once
         self._skill_bundle = _build_skill_bundle()
+        self._instructions = _build_hybrid_instructions()
         logger.info("openai.skill_bundle_built", size_kb=len(self._skill_bundle) // 1024)
 
     async def generate_blueprint(
@@ -79,7 +105,7 @@ class OpenAIProvider(LLMProviderBase):
             try:
                 response = await self.client.responses.create(
                     model=self.model,
-                    instructions=SYSTEM_PROMPT,
+                    instructions=self._instructions,
                     input=prompt,
                     tools=[
                         {
@@ -104,12 +130,8 @@ class OpenAIProvider(LLMProviderBase):
                 blueprint_data = json.loads(content)
 
                 # Add metadata
-                next_trading_day = date.today() + timedelta(days=1)
-                while next_trading_day.weekday() >= 5:
-                    next_trading_day += timedelta(days=1)
-
-                blueprint_data["trading_date"] = next_trading_day.isoformat()
-                blueprint_data["generated_at"] = datetime.now().isoformat()
+                blueprint_data["trading_date"] = _next_trading_day().isoformat()
+                blueprint_data["generated_at"] = now_utc().isoformat()
                 blueprint_data["model_provider"] = "openai"
                 blueprint_data["model_version"] = self.model
 

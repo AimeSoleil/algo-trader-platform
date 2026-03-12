@@ -9,7 +9,7 @@ import pandas as pd
 import pyarrow as pa
 import pyarrow.parquet as pq
 
-from shared.utils import get_logger
+from shared.utils import get_logger, today_trading
 
 logger = get_logger("market_cache")
 
@@ -65,7 +65,7 @@ class MarketHoursCache:
         if not buffer:
             return
 
-        today = date.today().isoformat()
+        today = today_trading().isoformat()
         filepath = self.cache_dir / f"{data_type}_{today}.parquet"
 
         try:
@@ -88,7 +88,7 @@ class MarketHoursCache:
 
     def get_parquet_path(self, data_type: str, trading_date: date | None = None) -> Path:
         """获取指定日期的 Parquet 文件路径"""
-        d = (trading_date or date.today()).isoformat()
+        d = (trading_date or today_trading()).isoformat()
         return self.cache_dir / f"{data_type}_{d}.parquet"
 
     def read_parquet(self, data_type: str, trading_date: date | None = None) -> pd.DataFrame | None:

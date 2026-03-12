@@ -81,6 +81,21 @@ async def init_business_schema() -> None:
     print("[init_db] PostgreSQL 业务表创建完成")
 
 
+async def migrate_add_columns() -> None:
+    """Add new columns to existing tables (idempotent)."""
+    print("[init_db] 迁移：添加新列（IF NOT EXISTS）...")
+    engine = get_timescale_engine()
+    async with engine.begin() as conn:
+        for table in ("option_daily", "option_5min_snapshots"):
+            await conn.execute(
+                text(
+                    f"ALTER TABLE IF EXISTS {table} "
+                    f"ADD COLUMN IF NOT EXISTS underlying_price FLOAT"
+                )
+            )
+    print("[init_db] 新列迁移完成")
+
+
 async def reconcile_timeseries_constraints() -> None:
     """Normalize legacy constraints so hypertable conversion always succeeds."""
     print("[init_db] 对齐时序表约束（兼容旧 schema）...")
@@ -291,6 +306,7 @@ async def main() -> None:
 
         await init_timescale_schema()
         await init_business_schema()
+        await migrate_add_columns()
         await reconcile_timeseries_constraints()
         await create_hypertables()
         await apply_retention_policies()

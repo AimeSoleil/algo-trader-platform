@@ -9,11 +9,12 @@ Tables checked:
 from __future__ import annotations
 
 from datetime import date, datetime, time, timedelta
+from zoneinfo import ZoneInfo
 
 from sqlalchemy import text
 
 from shared.db.session import get_timescale_session
-from shared.utils import get_logger
+from shared.utils import get_logger, market_tz
 
 logger = get_logger("gap_detector")
 
@@ -28,13 +29,14 @@ def _expected_intraday_timestamps(
     trading_date: date,
     interval_minutes: int,
 ) -> list[datetime]:
-    """生成某交易日预期的盘中时间戳序列"""
+    """生成某交易日预期的盘中时间戳序列（UTC，与 DB TIMESTAMPTZ 对齐）"""
+    tz = market_tz()
     timestamps: list[datetime] = []
-    current = datetime.combine(trading_date, MARKET_OPEN)
-    end = datetime.combine(trading_date, MARKET_CLOSE)
+    current = datetime.combine(trading_date, MARKET_OPEN, tzinfo=tz)
+    end = datetime.combine(trading_date, MARKET_CLOSE, tzinfo=tz)
     delta = timedelta(minutes=interval_minutes)
     while current <= end:
-        timestamps.append(current)
+        timestamps.append(current.astimezone(ZoneInfo("UTC")))
         current += delta
     return timestamps
 

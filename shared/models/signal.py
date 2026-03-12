@@ -6,8 +6,8 @@ from pydantic import BaseModel, Field
 
 class OptionIndicators(BaseModel):
     """期权指标集"""
-    iv_rank: float = 0.0  # IV百分位 0-100
-    iv_percentile: float = 0.0  # IV百分位（另一种算法）
+    iv_rank: float = 0.0  # IV Rank: min-max归一化 (current - min) / (max - min) * 100
+    iv_percentile: float = 0.0  # IV Percentile: percentileofscore — 历史值中低于当前值的百分比
     current_iv: float = 0.0  # 当前平均IV
     historical_iv_30d: float = 0.0  # 30日历史IV
     pcr_volume: float = 0.0  # Put/Call 成交量比
@@ -97,6 +97,10 @@ class CrossAssetIndicators(BaseModel):
     stock_iv_correlation: float = 0.0
     option_vs_stock_volume_ratio: float = 0.0
     delta_adjusted_hedge_ratio: float = 0.0
+    spy_beta: float = 0.0  # Beta relative to SPY (equity market sensitivity)
+    sector_relative_strength: float = 0.0  # Relative strength vs sector ETF
+    earnings_proximity_days: int = -1  # Days until next earnings (-1 = unknown)
+    index_correlation_20d: float = 0.0  # 20-day rolling correlation to SPY
     confidence_scores: dict[str, float] = Field(default_factory=dict)
 
 
@@ -110,14 +114,12 @@ class SignalFeatures(BaseModel):
     close_price: float = 0.0
     daily_return: float = 0.0
     volume: int = 0
+    bar_type: str = "unknown"  # "intraday_1min" / "daily" / "unknown"
     
     # 指标
     option_indicators: OptionIndicators = Field(default_factory=OptionIndicators)
     stock_indicators: StockIndicators = Field(default_factory=StockIndicators)
     cross_asset_indicators: CrossAssetIndicators = Field(default_factory=CrossAssetIndicators)
     
-    # 综合信号
-    signal_score: float = 0.0  # -1 (极度看空) 到 +1 (极度看多)
-    signal_type: str = "neutral"  # "strong_buy" / "buy" / "neutral" / "sell" / "strong_sell"
+    # 市场状态分类（基于 config 中的 IV 阈值）
     volatility_regime: str = "normal"  # "high" / "normal" / "low"
-    suggested_strategies: list[str] = Field(default_factory=list)  # 建议的策略类型列表

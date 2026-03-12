@@ -35,7 +35,7 @@ class SchedulerState:
 
 
 def _market_tz(settings: Settings) -> ZoneInfo:
-    return ZoneInfo(settings.data_service.market_hours.timezone)
+    return ZoneInfo(settings.trading.timezone)
 
 
 def _is_market_open(settings: Settings) -> bool:
@@ -141,7 +141,7 @@ def start_data_scheduler(cache: MarketHoursCache, settings: Settings) -> None:
 
     if settings.data_service.intraday_enabled:
         _scheduler = AsyncIOScheduler(
-            timezone=settings.data_service.market_hours.timezone,
+            timezone=settings.trading.timezone,
         )
         _register_intraday_job()
         _scheduler.start()
@@ -166,7 +166,7 @@ def set_intraday_enabled(enabled: bool) -> bool:
 
     if enabled and _scheduler is None:
         _scheduler = AsyncIOScheduler(
-            timezone=_state.settings.data_service.market_hours.timezone,
+            timezone=_state.settings.trading.timezone,
         )
         _scheduler.start()
 

@@ -10,51 +10,54 @@ from shared.celery_app import celery_app
 from shared.config import get_settings
 from shared.db.session import get_postgres_session
 from shared.models.signal import SignalFeatures
-from shared.utils import get_logger
+from shared.utils import get_logger, today_trading
 
 logger = get_logger("analysis_tasks")
 
 
-@celery_app.task(name="analysis_service.tasks.generate_daily_blueprint", bind=True, max_retries=2)
-def generate_daily_blueprint(self, trading_date: str | None = None, prev_result=None) -> dict:
-    """
-    17:10 Celery 任务：生成次日交易蓝图
-    prev_result: 上游任务 (compute_signals) 的结果
-    """
-    return asyncio.run(_generate_blueprint_async(trading_date))
+def _run_async(coro):
+    """Run an async coroutine safely — works whether or not an event loop exists."""
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        loop = None
+    if loop and loop.is_running():
+        import concurrent.futures
+        with concurrent.futures.ThreadPoolExecutor() as pool:
+            return pool.submit(asyncio.run, coro).result()
+    return asyncio.run(coro)
 
 
-async def _generate_blueprint_async(trading_date_str: str | None = None) -> dict:
-    from services.analysis_service.app.llm.adapter import LLMAdapter
+_adapter = None
 
-    settings = get_settings()
-    td = date.fromisoformat(trading_date_str) if trading_date_str else date.today()
 
-    # 1) 从 DB 读取当日信号特征
-    signal_features: list[SignalFeatures] = []
-    async with get_postgres_session() as session:
-        result = await session.execute(
-            text(
-                "SELECT features_json FROM signal_features "
-                "WHERE date = :date"
-            ),
-            {"date": td},
-        )
-        for row in result.fetchall():
-            try:
-                sf = SignalFeatures.model_validate_json(row[0])
-                signal_features.append(sf)
-            except Exception as e:
-                logger.warning("blueprint.signal_parse_error", error=str(e))
+def _get_adapter():
+    """Return a cached LLMAdapter instance (reuses OpenAI client + skill bundle)."""
+    global _adapter
+    if _adapter is None:
+        from services.analysis_service.app.llm.adapter import LLMAdapter
+        _adapter = LLMAdapter()
+    return _adapter
 
-    if not signal_features:
-        logger.warning("blueprint.no_signals", date=str(td))
-        return {"error": "No signal features available", "date": str(td)}
 
-    # 2) 获取当前持仓（优先从 Portfolio Service 读取）
+# ── Common pipeline (steps 2-4) ───────────────────────────────
+
+
+async def _run_blueprint_pipeline(
+    signal_features: list[SignalFeatures],
+    td: date,
+    progress_cb=None,
+):
+    """Common pipeline: fetch positions → previous execution → LLM → return blueprint."""
+
+    # 1) Fetch current positions
+    if progress_cb:
+        progress_cb("fetching_positions")
     current_positions = await _fetch_current_positions(td)
 
-    # 3) 读取前日执行摘要（如有）
+    # 2) Previous execution summary
+    if progress_cb:
+        progress_cb("reading_previous_execution")
     previous_execution = None
     yesterday = td - timedelta(days=1)
     async with get_postgres_session() as session:
@@ -69,15 +72,55 @@ async def _generate_blueprint_async(trading_date_str: str | None = None) -> dict
         if row:
             previous_execution = row[0]
 
-    # 4) 调用 LLM 生成蓝图
-    adapter = LLMAdapter()
-    blueprint = await adapter.generate_blueprint(
+    # 3) LLM generation
+    if progress_cb:
+        progress_cb("generating_blueprint")
+    adapter = _get_adapter()
+    return await adapter.generate_blueprint(
         signal_features=signal_features,
         current_positions=current_positions,
         previous_execution=previous_execution,
     )
 
-    # 5) 写入 DB
+
+# ── Daily blueprint task ──────────────────────────────────────
+
+
+@celery_app.task(name="analysis_service.tasks.generate_daily_blueprint", bind=True, max_retries=2)
+def generate_daily_blueprint(self, trading_date: str | None = None, prev_result=None) -> dict:
+    """
+    17:10 Celery 任务：生成次日交易蓝图
+    prev_result: 上游任务 (compute_signals) 的结果
+    """
+    return _run_async(_generate_blueprint_async(trading_date))
+
+
+async def _generate_blueprint_async(trading_date_str: str | None = None) -> dict:
+    settings = get_settings()
+    td = date.fromisoformat(trading_date_str) if trading_date_str else today_trading()
+
+    # 1) Read all signal features from DB
+    signal_features: list[SignalFeatures] = []
+    async with get_postgres_session() as session:
+        result = await session.execute(
+            text("SELECT features_json FROM signal_features WHERE date = :date"),
+            {"date": td},
+        )
+        for row in result.fetchall():
+            try:
+                sf = SignalFeatures.model_validate_json(row[0])
+                signal_features.append(sf)
+            except Exception as e:
+                logger.warning("blueprint.signal_parse_error", error=str(e))
+
+    if not signal_features:
+        logger.warning("blueprint.no_signals", date=str(td))
+        return {"error": "No signal features available", "date": str(td)}
+
+    # 2-4) Common pipeline
+    blueprint = await _run_blueprint_pipeline(signal_features, td)
+
+    # 5) Write to DB (UPSERT)
     async with get_postgres_session() as session:
         await session.execute(
             text(
@@ -97,6 +140,10 @@ async def _generate_blueprint_async(trading_date_str: str | None = None) -> dict
                 "blueprint_json": blueprint.model_dump_json(),
             },
         )
+
+    # Invalidate cache for this date
+    from services.analysis_service.app.cache import invalidate_blueprint_cache
+    await invalidate_blueprint_cache(blueprint.trading_date)
 
     logger.info(
         "blueprint.generated",
@@ -127,17 +174,15 @@ def manual_analyze(self, symbol: str, trading_date: str | None = None) -> dict:
     generates a blueprint containing only that symbol, and stores it
     with ``status='manual'``.
     """
-    return asyncio.run(_manual_analyze_async(self, symbol.upper(), trading_date))
+    return _run_async(_manual_analyze_async(self, symbol.upper(), trading_date))
 
 
 async def _manual_analyze_async(task, symbol: str, trading_date_str: str | None = None) -> dict:
-    from services.analysis_service.app.llm.adapter import LLMAdapter
-
-    td = date.fromisoformat(trading_date_str) if trading_date_str else date.today()
+    td = date.fromisoformat(trading_date_str) if trading_date_str else today_trading()
 
     task.update_state(state="PROGRESS", meta={"step": "reading_signals", "symbol": symbol})
 
-    # 1) 读取指定 symbol 的信号特征
+    # 1) Read single symbol's signal features
     signal_features: list[SignalFeatures] = []
     async with get_postgres_session() as session:
         result = await session.execute(
@@ -162,37 +207,14 @@ async def _manual_analyze_async(task, symbol: str, trading_date_str: str | None 
             "date": str(td),
         }
 
-    # 2) 获取当前持仓
-    task.update_state(state="PROGRESS", meta={"step": "fetching_positions", "symbol": symbol})
-    current_positions = await _fetch_current_positions(td)
+    # 2-4) Common pipeline with progress callback
+    def _progress(step: str):
+        task.update_state(state="PROGRESS", meta={"step": step, "symbol": symbol})
 
-    # 3) 读取前日执行摘要
-    previous_execution = None
-    yesterday = td - timedelta(days=1)
-    async with get_postgres_session() as session:
-        result = await session.execute(
-            text(
-                "SELECT execution_summary FROM llm_trading_blueprint "
-                "WHERE trading_date = :date AND status = 'completed'"
-            ),
-            {"date": yesterday},
-        )
-        row = result.fetchone()
-        if row:
-            previous_execution = row[0]
+    blueprint = await _run_blueprint_pipeline(signal_features, td, progress_cb=_progress)
 
-    # 4) 调用 LLM 生成蓝图
-    task.update_state(state="PROGRESS", meta={"step": "generating_blueprint", "symbol": symbol})
-    adapter = LLMAdapter()
-    blueprint = await adapter.generate_blueprint(
-        signal_features=signal_features,
-        current_positions=current_positions,
-        previous_execution=previous_execution,
-    )
-
-    # 5) 以 status='manual' 写入 DB（不覆盖正常的 daily blueprint）
+    # 5) Write to DB with status='manual'
     import uuid as _uuid
-
     manual_id = f"manual-{symbol.lower()}-{_uuid.uuid4().hex[:8]}"
     async with get_postgres_session() as session:
         await session.execute(
@@ -212,6 +234,10 @@ async def _manual_analyze_async(task, symbol: str, trading_date_str: str | None 
                 "blueprint_json": blueprint.model_dump_json(),
             },
         )
+
+    # Invalidate cache for this date
+    from services.analysis_service.app.cache import invalidate_blueprint_cache
+    await invalidate_blueprint_cache(blueprint.trading_date)
 
     logger.info(
         "manual_analyze.generated",

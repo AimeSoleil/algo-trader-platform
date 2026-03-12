@@ -1,6 +1,8 @@
 """股票技术指标计算"""
 from __future__ import annotations
 
+import math
+
 import numpy as np
 import pandas as pd
 
@@ -199,6 +201,29 @@ def _macd_hist_divergence(close: pd.Series, macd_hist: float, period: int = 10) 
     return round(float(score), 4)
 
 
+def _sanitize_float(v: float) -> float:
+    """Replace NaN / Inf with 0.0."""
+    if isinstance(v, float) and (math.isnan(v) or math.isinf(v)):
+        return 0.0
+    return v
+
+
+def _sanitize_stock_indicators(ind: StockIndicators) -> StockIndicators:
+    """Sanitize all float fields — replace NaN/Inf with 0.0."""
+    updates: dict = {}
+    for name, field_info in StockIndicators.model_fields.items():
+        val = getattr(ind, name)
+        if isinstance(val, float):
+            clean = _sanitize_float(val)
+            if clean != val or (isinstance(val, float) and math.isnan(val)):
+                updates[name] = clean
+        elif isinstance(val, dict):
+            cleaned = {k: (_sanitize_float(v) if isinstance(v, float) else v) for k, v in val.items()}
+            if cleaned != val:
+                updates[name] = cleaned
+    return ind.model_copy(update=updates) if updates else ind
+
+
 def compute_stock_indicators(bars_df: pd.DataFrame) -> StockIndicators:
     """从K线 DataFrame 计算完整股票指标集"""
     if bars_df.empty or len(bars_df) < 30:
@@ -270,7 +295,7 @@ def compute_stock_indicators(bars_df: pd.DataFrame) -> StockIndicators:
     if bollinger_width < 0.03:
         extreme_flags.append("volatility_squeeze")
 
-    return StockIndicators(
+    result = StockIndicators(
         rsi_14=rsi,
         macd=macd_val,
         macd_signal=macd_sig,
@@ -308,3 +333,4 @@ def compute_stock_indicators(bars_df: pd.DataFrame) -> StockIndicators:
         confidence_scores=confidence_scores,
         extreme_flags=extreme_flags,
     )
+    return _sanitize_stock_indicators(result)

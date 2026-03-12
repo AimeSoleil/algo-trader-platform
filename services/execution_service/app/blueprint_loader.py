@@ -1,11 +1,12 @@
 from __future__ import annotations
 
-from datetime import date, datetime, timezone
+from datetime import date, datetime
 from typing import Any
 
 from sqlalchemy import text
 
 from shared.db.session import get_postgres_session
+from shared.utils import now_utc
 
 
 async def load_blueprint_for_date(trading_date: date) -> dict[str, Any] | None:
@@ -35,7 +36,7 @@ async def load_blueprint_for_date(trading_date: date) -> dict[str, Any] | None:
                 WHERE id = :id
                 """
             ),
-            {"id": row["id"], "updated_at": datetime.now(timezone.utc)},
+            {"id": row["id"], "updated_at": now_utc()},
         )
 
         return {
@@ -62,7 +63,7 @@ async def complete_blueprint(trading_date: date, execution_summary: dict[str, An
             {
                 "trading_date": trading_date,
                 "execution_summary": execution_summary,
-                "updated_at": datetime.now(timezone.utc),
+                "updated_at": now_utc(),
             },
         )
         return result.rowcount or 0

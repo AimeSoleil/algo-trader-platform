@@ -3,13 +3,14 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 from datetime import date, datetime, timedelta
 from pathlib import Path
 
 from shared.config import get_settings
 from shared.models.blueprint import LLMTradingBlueprint
 from shared.models.signal import SignalFeatures
-from shared.utils import get_logger
+from shared.utils import get_logger, now_utc, next_trading_day as _next_trading_day
 
 from services.analysis_service.app.llm.base import LLMProviderBase
 from services.analysis_service.app.llm.prompts import SYSTEM_PROMPT, build_blueprint_prompt
@@ -18,6 +19,41 @@ logger = get_logger("copilot_provider")
 
 # Directory containing the trading-analysis/ skill subdirectory
 _SKILLS_DIR = str(Path(__file__).resolve().parents[1] / "skills")
+
+
+def _build_structured_prompt(user_prompt: str) -> str:
+    """Separate system/user intent explicitly for providers without native system role."""
+    return (
+        "<system>\n"
+        f"{SYSTEM_PROMPT}\n"
+        "</system>\n\n"
+        "<user>\n"
+        f"{user_prompt}\n\n"
+        "Final output: return ONLY one valid JSON object, no markdown fences and no extra text.\n"
+        "</user>"
+    )
+
+
+def _parse_blueprint_json(response_text: str) -> dict:
+    """Parse JSON robustly from Copilot responses.
+
+    Handles plain JSON, markdown code fences, and noisy wrappers.
+    """
+    text = response_text.strip()
+    if text.startswith("```"):
+        text = text.split("\n", 1)[1]
+        text = text.rsplit("```", 1)[0]
+
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        pass
+
+    match = re.search(r"\{[\s\S]*\}", text)
+    if not match:
+        raise ValueError("No JSON object found in Copilot response")
+
+    return json.loads(match.group(0))
 
 class CopilotProvider(LLMProviderBase):
     """Copilot SDK provider with native skill mounting.
@@ -73,7 +109,7 @@ class CopilotProvider(LLMProviderBase):
         prompt = build_blueprint_prompt(
             signal_features, current_positions, previous_execution
         )
-        full_prompt = f"{SYSTEM_PROMPT}\n\n{prompt}"
+        full_prompt = _build_structured_prompt(prompt)
 
         max_retries = 3
         for attempt in range(max_retries):
@@ -98,21 +134,11 @@ class CopilotProvider(LLMProviderBase):
                     else str(result)
                 )
 
-                # Strip markdown code blocks if present
-                text = response_text.strip()
-                if text.startswith("```"):
-                    text = text.split("\n", 1)[1]
-                    text = text.rsplit("```", 1)[0]
-
-                blueprint_data = json.loads(text)
+                blueprint_data = _parse_blueprint_json(response_text)
 
                 # Add metadata
-                next_trading_day = date.today() + timedelta(days=1)
-                while next_trading_day.weekday() >= 5:
-                    next_trading_day += timedelta(days=1)
-
-                blueprint_data["trading_date"] = next_trading_day.isoformat()
-                blueprint_data["generated_at"] = datetime.now().isoformat()
+                blueprint_data["trading_date"] = _next_trading_day().isoformat()
+                blueprint_data["generated_at"] = now_utc().isoformat()
                 blueprint_data["model_provider"] = "copilot"
                 blueprint_data["model_version"] = "copilot-sdk"
 

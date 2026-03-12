@@ -1,4 +1,4 @@
-"""股票数据采集器"""
+"""YFinance 股票数据采集器 — StockFetcherProtocol 实现"""
 from __future__ import annotations
 
 import asyncio
@@ -6,9 +6,12 @@ from datetime import date, datetime, timedelta
 
 import yfinance as yf
 
-from shared.utils import get_logger
+from shared.utils import get_logger, now_utc, today_trading
 
 logger = get_logger("stock_fetcher")
+
+# yfinance 1m data only available for ~7 calendar days
+_MAX_1MIN_LOOKBACK_DAYS = 7
 
 
 def _fetch_stock_quote_sync(symbol: str) -> dict | None:
@@ -30,19 +33,16 @@ def _fetch_stock_quote_sync(symbol: str) -> dict | None:
             "low": float(hist["Low"].min()),
             "close": float(latest["Close"]),
             "volume": int(hist["Volume"].sum()),
-            "timestamp": datetime.now().isoformat(),
+            "timestamp": now_utc().isoformat(),
         }
     except Exception as e:
         logger.error("stock_fetcher.failed", symbol=symbol, error=str(e))
         return None
 
 
-async def fetch_stock_quote(symbol: str) -> dict | None:
-    """异步获取股票实时行情"""
-    return await asyncio.to_thread(_fetch_stock_quote_sync, symbol)
-
-
-def _fetch_stock_bars_sync(symbol: str, period: str = "1d", interval: str = "1m") -> list[dict]:
+def _fetch_stock_bars_sync(
+    symbol: str, period: str = "1d", interval: str = "1m"
+) -> list[dict]:
     """同步获取股票K线"""
     try:
         ticker = yf.Ticker(symbol)
@@ -52,30 +52,21 @@ def _fetch_stock_bars_sync(symbol: str, period: str = "1d", interval: str = "1m"
 
         bars = []
         for ts, row in hist.iterrows():
-            bars.append({
-                "symbol": symbol,
-                "timestamp": ts.isoformat(),
-                "open": float(row["Open"]),
-                "high": float(row["High"]),
-                "low": float(row["Low"]),
-                "close": float(row["Close"]),
-                "volume": int(row["Volume"]),
-            })
+            bars.append(
+                {
+                    "symbol": symbol,
+                    "timestamp": ts.isoformat(),
+                    "open": float(row["Open"]),
+                    "high": float(row["High"]),
+                    "low": float(row["Low"]),
+                    "close": float(row["Close"]),
+                    "volume": int(row["Volume"]),
+                }
+            )
         return bars
     except Exception as e:
         logger.error("stock_fetcher.bars_failed", symbol=symbol, error=str(e))
         return []
-
-
-async def fetch_stock_bars(symbol: str, period: str = "1d", interval: str = "1m") -> list[dict]:
-    """异步获取股票K线"""
-    return await asyncio.to_thread(_fetch_stock_bars_sync, symbol, period, interval)
-
-
-# ── Date-range fetcher (for manual collection API) ─────────
-
-# yfinance 1m data only available for ~7 calendar days
-_MAX_1MIN_LOOKBACK_DAYS = 7
 
 
 def _fetch_stock_bars_range_sync(
@@ -92,7 +83,7 @@ def _fetch_stock_bars_range_sync(
 
     effective_start = start_date
     if interval == "1m":
-        cutoff = date.today() - timedelta(days=_MAX_1MIN_LOOKBACK_DAYS)
+        cutoff = today_trading() - timedelta(days=_MAX_1MIN_LOOKBACK_DAYS)
         if start_date < cutoff:
             warnings.append(
                 f"{symbol}: 1m bars before {cutoff} unavailable (yfinance limit), "
@@ -111,7 +102,9 @@ def _fetch_stock_bars_range_sync(
             interval=interval,
         )
         if hist.empty:
-            warnings.append(f"{symbol}: no {interval} data for {effective_start}\u2013{end_date}")
+            warnings.append(
+                f"{symbol}: no {interval} data for {effective_start}\u2013{end_date}"
+            )
             return [], warnings
 
         rows: list[dict] = []
@@ -140,13 +133,54 @@ def _fetch_stock_bars_range_sync(
         return [], [f"{symbol}: fetch error \u2013 {e}"]
 
 
+class YFinanceStockFetcher:
+    """yfinance-backed stock fetcher implementing StockFetcherProtocol."""
+
+    async def fetch_quote(self, symbol: str) -> dict | None:
+        """Fetch current L1 quote."""
+        return await asyncio.to_thread(_fetch_stock_quote_sync, symbol)
+
+    async def fetch_bars(
+        self,
+        symbol: str,
+        period: str = "1d",
+        interval: str = "1m",
+    ) -> list[dict]:
+        """Fetch bars for the given period/interval."""
+        return await asyncio.to_thread(_fetch_stock_bars_sync, symbol, period, interval)
+
+    async def fetch_bars_range(
+        self,
+        symbol: str,
+        start_date: date,
+        end_date: date,
+        interval: str = "1d",
+    ) -> tuple[list[dict], list[str]]:
+        """Fetch bars for an explicit date range."""
+        return await asyncio.to_thread(
+            _fetch_stock_bars_range_sync, symbol, start_date, end_date, interval
+        )
+
+
+# ── Backward-compatible module-level helpers ───────────────
+
+_default = YFinanceStockFetcher()
+
+
+async def fetch_stock_quote(symbol: str) -> dict | None:
+    return await _default.fetch_quote(symbol)
+
+
+async def fetch_stock_bars(
+    symbol: str, period: str = "1d", interval: str = "1m"
+) -> list[dict]:
+    return await _default.fetch_bars(symbol, period, interval)
+
+
 async def fetch_stock_bars_range(
     symbol: str,
     start_date: date,
     end_date: date,
     interval: str = "1d",
 ) -> tuple[list[dict], list[str]]:
-    """Async wrapper \u2014 fetch bars for an explicit date range."""
-    return await asyncio.to_thread(
-        _fetch_stock_bars_range_sync, symbol, start_date, end_date, interval
-    )
+    return await _default.fetch_bars_range(symbol, start_date, end_date, interval)

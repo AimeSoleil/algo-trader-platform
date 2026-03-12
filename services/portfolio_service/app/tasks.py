@@ -5,7 +5,7 @@ import asyncio
 from datetime import date
 
 from shared.celery_app import celery_app
-from shared.utils import get_logger
+from shared.utils import get_logger, today_trading
 
 from services.portfolio_service.app.service import get_portfolio_snapshot, get_performance
 
@@ -18,7 +18,7 @@ def generate_daily_report(self, trading_date: str | None = None) -> dict:
 
 
 async def _generate_daily_report_async(trading_date: str | None) -> dict:
-    target_date = date.fromisoformat(trading_date) if trading_date else date.today()
+    target_date = date.fromisoformat(trading_date) if trading_date else today_trading()
     snapshot = await get_portfolio_snapshot()
     performance = await get_performance(target_date)
 

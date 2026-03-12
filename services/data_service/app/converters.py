@@ -41,6 +41,7 @@ def contracts_to_rows(
             "gamma": contract.greeks.gamma,
             "theta": contract.greeks.theta,
             "vega": contract.greeks.vega,
+            "underlying_price": snapshot.underlying_price,
         }
         for contract in contracts
     ]

@@ -32,7 +32,7 @@ class LLMSettings(BaseSettings):
     openai_api_key: str = ""
     openai_model: str = "gpt-4o"
     openai_temperature: float = 0.1
-    openai_max_tokens: int = 4096
+    openai_max_tokens: int = 8192
 
     # ── Copilot SDK ──
     copilot_cli_path: str = "copilot"
@@ -47,16 +47,13 @@ class LLMSettings(BaseSettings):
     skill_dir: str = ""  # path to skills directory (provider resolves default)
 
 class TradingSettings(BaseSettings):
-    default_strategy_type: str = "option"  # "option" / "stock" / "mixed"
     timezone: str = "America/New_York"
-    data_fetch_interval: int = 300  # seconds (5 min)
     execution_interval: int = 300  # seconds (5 min)
 
 
 class MarketHoursSettings(BaseSettings):
     start: str = "09:30"
     end: str = "16:00"
-    timezone: str = "America/New_York"
 
 
 class IntradayHotStorageRetention(BaseSettings):
@@ -78,16 +75,18 @@ class DataServiceIntradaySettings(BaseSettings):
     archive_retention_days: IntradayArchiveRetention = Field(default_factory=IntradayArchiveRetention)
 
 
-class DataServicePostMarketSettings(BaseSettings):
-    """盘后数据采集配置（由 Celery pipeline 驱动，不再由 APScheduler 触发）"""
-    retention_days: int = -1  # daily 表保留天数（-1 = 永久）
+class DataProviderSettings(BaseSettings):
+    """Data fetcher provider selection."""
+    stock: str = "yfinance"
+    options: str = "yfinance"
+    options_historical: str = "none"
 
 
 class DataServiceSettings(BaseSettings):
     intraday_enabled: bool = False
+    providers: DataProviderSettings = Field(default_factory=DataProviderSettings)
     market_hours: MarketHoursSettings = Field(default_factory=MarketHoursSettings)
     intraday: DataServiceIntradaySettings = Field(default_factory=DataServiceIntradaySettings)
-    post_market: DataServicePostMarketSettings = Field(default_factory=DataServicePostMarketSettings)
 
 class OptionStrategySettings(BaseSettings):
     default_strategy: str = "volatility_smile"

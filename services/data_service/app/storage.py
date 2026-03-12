@@ -44,11 +44,13 @@ async def write_intraday_options(rows: Sequence[dict]) -> int:
         """
         INSERT INTO option_5min_snapshots (
             underlying, symbol, timestamp, expiry, strike, option_type,
-            last_price, bid, ask, volume, open_interest, iv, delta, gamma, theta, vega
+            last_price, bid, ask, volume, open_interest, iv, delta, gamma, theta, vega,
+            underlying_price
         )
         VALUES (
             :underlying, :symbol, :timestamp, :expiry, :strike, :option_type,
-            :last_price, :bid, :ask, :volume, :open_interest, :iv, :delta, :gamma, :theta, :vega
+            :last_price, :bid, :ask, :volume, :open_interest, :iv, :delta, :gamma, :theta, :vega,
+            :underlying_price
         )
         ON CONFLICT (symbol, timestamp)
         DO UPDATE SET
@@ -61,7 +63,8 @@ async def write_intraday_options(rows: Sequence[dict]) -> int:
             delta = EXCLUDED.delta,
             gamma = EXCLUDED.gamma,
             theta = EXCLUDED.theta,
-            vega = EXCLUDED.vega
+            vega = EXCLUDED.vega,
+            underlying_price = EXCLUDED.underlying_price
         """
     )
 
@@ -105,11 +108,13 @@ async def write_swing_options(rows: Sequence[dict]) -> int:
         """
         INSERT INTO option_daily (
             underlying, symbol, snapshot_date, expiry, strike, option_type,
-            last_price, bid, ask, volume, open_interest, iv, delta, gamma, theta, vega
+            last_price, bid, ask, volume, open_interest, iv, delta, gamma, theta, vega,
+            underlying_price
         )
         VALUES (
             :underlying, :symbol, :snapshot_date, :expiry, :strike, :option_type,
-            :last_price, :bid, :ask, :volume, :open_interest, :iv, :delta, :gamma, :theta, :vega
+            :last_price, :bid, :ask, :volume, :open_interest, :iv, :delta, :gamma, :theta, :vega,
+            :underlying_price
         )
         ON CONFLICT (symbol, snapshot_date)
         DO UPDATE SET
@@ -122,7 +127,8 @@ async def write_swing_options(rows: Sequence[dict]) -> int:
             delta = EXCLUDED.delta,
             gamma = EXCLUDED.gamma,
             theta = EXCLUDED.theta,
-            vega = EXCLUDED.vega
+            vega = EXCLUDED.vega,
+            underlying_price = EXCLUDED.underlying_price
         """
     )
 

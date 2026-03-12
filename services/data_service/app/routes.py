@@ -9,7 +9,6 @@ from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
 from sqlalchemy import text
 
-from services.data_service.app.cache import cache
 from services.data_service.app.scheduler import (
     get_current_mode,
     get_data_service_config,
@@ -17,8 +16,70 @@ from services.data_service.app.scheduler import (
 )
 from shared.celery_app import celery_app
 from shared.db.session import get_timescale_session
+from shared.utils import today_trading
 
 router = APIRouter(tags=["data"])
+
+
+# ── Pydantic response models ──────────────────────────────
+
+class PaginationInfo(BaseModel):
+    page: int
+    page_size: int
+    total_items: int
+    total_pages: int
+
+
+class StockBarItem(BaseModel):
+    symbol: str
+    trading_date: date
+    open: float
+    high: float
+    low: float
+    close: float
+    volume: int
+
+
+class StockDailyResponse(BaseModel):
+    symbol: str
+    data: list[StockBarItem]
+    pagination: PaginationInfo
+
+
+class OptionDailyItem(BaseModel):
+    underlying: str
+    symbol: str
+    snapshot_date: date
+    expiry: date
+    strike: float
+    option_type: str
+    last_price: float
+    bid: float
+    ask: float
+    volume: int
+    open_interest: int
+    iv: float
+    delta: float
+    gamma: float
+    theta: float
+    vega: float
+    underlying_price: float | None = None
+
+
+class OptionPaginationInfo(PaginationInfo):
+    snapshot_date: str | None = None
+
+
+class OptionDailyResponse(BaseModel):
+    symbol: str
+    data: list[OptionDailyItem]
+    pagination: OptionPaginationInfo
+
+
+class DatesResponse(BaseModel):
+    symbol: str
+    dates: list[date]
+    total: int
 
 
 class ModeSwitchRequest(BaseModel):
@@ -39,22 +100,7 @@ class CollectResponse(BaseModel):
     message: str = ""
 
 
-@router.get("/realtime/{symbol}/quote")
-async def get_realtime_quote(symbol: str):
-    """获取最新行情（L1 内存缓存，盘后由 pipeline 更新）"""
-    quote = cache.get_realtime_quote(symbol.upper())
-    if not quote:
-        raise HTTPException(status_code=404, detail=f"No quote cached for {symbol}")
-    return quote
-
-
-@router.get("/realtime/{symbol}/option-chain")
-async def get_realtime_option_chain(symbol: str):
-    """获取最新期权链（盘中从 L1 内存缓存读取）"""
-    chain = cache.get_realtime_option_chain(symbol.upper())
-    if chain is None:
-        raise HTTPException(status_code=404, detail=f"No option chain cached for {symbol}")
-    return chain
+# ── Health / config endpoints ──────────────────────────────
 
 
 @router.get("/health")
@@ -63,7 +109,6 @@ async def health_check():
         "status": "ok",
         "service": "data_service",
         "mode": get_current_mode(),
-        "cached_option_symbols": list(cache.latest_option_chains.keys()),
     }
 
 
@@ -89,7 +134,10 @@ async def update_mode_config(req: ModeSwitchRequest):
     }
 
 
-@router.get("/data/{symbol}/stock")
+# ── Stock endpoints ────────────────────────────────────────
+
+
+@router.get("/data/{symbol}/stock", response_model=StockDailyResponse)
 async def list_stock_daily(
     symbol: str,
     start_date: date | None = Query(None, description="Filter by trading_date >= start_date"),
@@ -140,22 +188,49 @@ async def list_stock_daily(
 
     total_pages = (total_count + page_size - 1) // page_size
 
-    return {
-        "symbol": sym,
-        "data": [dict(r) for r in rows],
-        "pagination": {
-            "page": page,
-            "page_size": page_size,
-            "total_items": total_count,
-            "total_pages": total_pages,
-        },
-    }
+    return StockDailyResponse(
+        symbol=sym,
+        data=[StockBarItem(**dict(r)) for r in rows],
+        pagination=PaginationInfo(
+            page=page,
+            page_size=page_size,
+            total_items=total_count,
+            total_pages=total_pages,
+        ),
+    )
 
 
-@router.get("/data/{symbol}/options")
+@router.get("/data/{symbol}/stock/dates", response_model=DatesResponse)
+async def list_stock_dates(symbol: str):
+    """返回该标的已有数据的所有 trading_date（去重、降序）"""
+    sym = symbol.upper()
+
+    async with get_timescale_session() as session:
+        rows = (
+            await session.execute(
+                text(
+                    "SELECT DISTINCT trading_date FROM stock_daily "
+                    "WHERE symbol = :symbol ORDER BY trading_date DESC"
+                ),
+                {"symbol": sym},
+            )
+        ).scalars().all()
+
+    if not rows:
+        raise HTTPException(status_code=404, detail=f"No stock data for {sym}")
+
+    return DatesResponse(symbol=sym, dates=list(rows), total=len(rows))
+
+
+# ── Option endpoints ───────────────────────────────────────
+
+
+@router.get("/data/{symbol}/options", response_model=OptionDailyResponse)
 async def list_option_daily(
     symbol: str,
     snapshot_date: date | None = Query(None, description="Filter by snapshot_date (default: latest)"),
+    start_date: date | None = Query(None, description="Filter snapshot_date >= start_date (range mode)"),
+    end_date: date | None = Query(None, description="Filter snapshot_date <= end_date (range mode)"),
     expiry: date | None = Query(None, description="Filter by expiry date"),
     option_type: Literal["call", "put"] | None = Query(None, description="Filter by option type"),
     min_strike: float | None = Query(None, description="Filter strike >= min_strike"),
@@ -165,14 +240,36 @@ async def list_option_daily(
     page: int = Query(1, ge=1, description="Page number (1-based)"),
     page_size: int = Query(500, ge=1, le=5000, description="Items per page"),
 ):
-    """查询 option_daily 期权链列表，支持多维过滤 + 分页"""
+    """查询 option_daily 期权链列表，支持多维过滤 + 日期范围 + 分页
+
+    - 若指定 ``snapshot_date``，则精确查询该天
+    - 若指定 ``start_date``/``end_date``，则范围查询
+    - 若三者均未指定，默认取最新 snapshot_date
+    """
     sym = symbol.upper()
     offset = (page - 1) * page_size
 
     async with get_timescale_session() as session:
-        # Resolve snapshot_date: default to latest
-        effective_date = snapshot_date
-        if effective_date is None:
+        # Determine date filter mode
+        effective_snapshot_date: date | None = None
+
+        if snapshot_date is not None:
+            # Exact date mode
+            conditions = ["underlying = :symbol", "snapshot_date = :snap_date"]
+            params: dict = {"symbol": sym, "snap_date": snapshot_date}
+            effective_snapshot_date = snapshot_date
+        elif start_date is not None or end_date is not None:
+            # Range mode
+            conditions = ["underlying = :symbol"]
+            params = {"symbol": sym}
+            if start_date is not None:
+                conditions.append("snapshot_date >= :start_date")
+                params["start_date"] = start_date
+            if end_date is not None:
+                conditions.append("snapshot_date <= :end_date")
+                params["end_date"] = end_date
+        else:
+            # Default: latest snapshot_date
             latest = (
                 await session.execute(
                     text("SELECT MAX(snapshot_date) FROM option_daily WHERE underlying = :symbol"),
@@ -181,12 +278,11 @@ async def list_option_daily(
             ).scalar()
             if latest is None:
                 raise HTTPException(status_code=404, detail=f"No option data for {sym}")
-            effective_date = latest
+            effective_snapshot_date = latest
+            conditions = ["underlying = :symbol", "snapshot_date = :snap_date"]
+            params = {"symbol": sym, "snap_date": latest}
 
-        # Build dynamic WHERE
-        conditions = ["underlying = :symbol", "snapshot_date = :snap_date"]
-        params: dict = {"symbol": sym, "snap_date": effective_date}
-
+        # Additional filters
         if expiry is not None:
             conditions.append("expiry = :expiry")
             params["expiry"] = expiry
@@ -221,10 +317,10 @@ async def list_option_daily(
                     f"""
                     SELECT underlying, symbol, snapshot_date, expiry, strike, option_type,
                            last_price, bid, ask, volume, open_interest, iv,
-                           delta, gamma, theta, vega
+                           delta, gamma, theta, vega, underlying_price
                     FROM option_daily
                     WHERE {where}
-                    ORDER BY expiry ASC, strike ASC, option_type ASC
+                    ORDER BY snapshot_date DESC, expiry ASC, strike ASC, option_type ASC
                     LIMIT :limit OFFSET :offset
                     """
                 ),
@@ -237,34 +333,52 @@ async def list_option_daily(
 
     total_pages = (total_count + page_size - 1) // page_size
 
-    return {
-        "symbol": sym,
-        "data": [dict(r) for r in rows],
-        "pagination": {
-            "snapshot_date": str(effective_date),
-            "page": page,
-            "page_size": page_size,
-            "total_items": total_count,
-            "total_pages": total_pages,
-        },
-    }
+    return OptionDailyResponse(
+        symbol=sym,
+        data=[OptionDailyItem(**dict(r)) for r in rows],
+        pagination=OptionPaginationInfo(
+            snapshot_date=str(effective_snapshot_date) if effective_snapshot_date else None,
+            page=page,
+            page_size=page_size,
+            total_items=total_count,
+            total_pages=total_pages,
+        ),
+    )
 
 
-# ── Manual collection endpoints ───────────────────────────
+@router.get("/data/{symbol}/options/dates", response_model=DatesResponse)
+async def list_option_dates(symbol: str):
+    """返回该标的已有数据的所有 snapshot_date（去重、降序）"""
+    sym = symbol.upper()
+
+    async with get_timescale_session() as session:
+        rows = (
+            await session.execute(
+                text(
+                    "SELECT DISTINCT snapshot_date FROM option_daily "
+                    "WHERE underlying = :symbol ORDER BY snapshot_date DESC"
+                ),
+                {"symbol": sym},
+            )
+        ).scalars().all()
+
+    if not rows:
+        raise HTTPException(status_code=404, detail=f"No option data for {sym}")
+
+    return DatesResponse(symbol=sym, dates=list(rows), total=len(rows))
+
+
+# ── Manual collection endpoints ────────────────────────────
 
 
 @router.post("/collect", status_code=202, response_model=CollectResponse)
 async def trigger_collection(req: CollectRequest):
-    """Trigger manual data collection for specific symbols and date range.
-
-    Returns a task_id that can be polled via GET /collect/{task_id}.
-    """
-    # ── Validation ──
+    """Trigger manual data collection for specific symbols and date range."""
     if not req.symbols:
         raise HTTPException(status_code=422, detail="symbols list must not be empty")
     if req.start_date > req.end_date:
         raise HTTPException(status_code=422, detail="start_date must be <= end_date")
-    if req.end_date > date.today():
+    if req.end_date > today_trading():
         raise HTTPException(status_code=422, detail="end_date cannot be in the future")
 
     valid_types = {"bars_1m", "bars_daily", "options_daily"}

@@ -4,6 +4,8 @@ from datetime import date, datetime
 from enum import Enum
 from pydantic import BaseModel, Field
 
+from shared.utils.time import today_trading
+
 
 class OptionType(str, Enum):
     CALL = "call"
@@ -49,7 +51,7 @@ class OptionContract(BaseModel):
 
     @property
     def days_to_expiry(self) -> int:
-        return (self.expiry - date.today()).days
+        return (self.expiry - today_trading()).days
 
 
 class OptionChainSnapshot(BaseModel):

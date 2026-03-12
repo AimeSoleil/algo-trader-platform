@@ -2258,6 +2258,7 @@ dependencies = [
     { name = "grpcio" },
     { name = "numpy" },
     { name = "pandas" },
+    { name = "redis" },
     { name = "scipy" },
     { name = "uvicorn", extra = ["standard"] },
 ]
@@ -2278,6 +2279,7 @@ requires-dist = [
     { name = "pandas", specifier = ">=2.0" },
     { name = "pytest", marker = "extra == 'dev'" },
     { name = "pytest-asyncio", marker = "extra == 'dev'" },
+    { name = "redis", specifier = ">=5.0" },
     { name = "scipy" },
     { name = "uvicorn", extras = ["standard"] },
 ]

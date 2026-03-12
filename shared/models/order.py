@@ -5,6 +5,8 @@ from enum import Enum
 from pydantic import BaseModel, Field
 import uuid
 
+from shared.utils.time import now_utc
+
 
 class OrderSide(str, Enum):
     BUY = "buy"
@@ -58,8 +60,8 @@ class Order(BaseModel):
     legs: list[OrderLeg] = Field(default_factory=list, min_length=1)
     
     # 元信息
-    created_at: datetime = Field(default_factory=datetime.now)
-    updated_at: datetime = Field(default_factory=datetime.now)
+    created_at: datetime = Field(default_factory=now_utc)
+    updated_at: datetime = Field(default_factory=now_utc)
     status: OrderStatus = OrderStatus.PENDING
     
     # 风控
