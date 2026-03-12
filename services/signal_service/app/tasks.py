@@ -49,7 +49,8 @@ async def _compute_daily_signals_async(trading_date_str: str | None = None) -> d
     result = {"date": str(td), "symbols_computed": 0, "errors": []}
 
     async def _load_stock_bars(symbol: str) -> pd.DataFrame:
-        # 优先使用 intraday 1min，若不存在则回退到 swing daily
+        # 优先使用 intraday 1min，但需足够多行才能计算技术指标；否则回退到 daily
+        MIN_INTRADAY_ROWS = 30  # compute_stock_indicators 要求 >= 30 行
         async with get_timescale_session() as session:
             bars_result = await session.execute(
                 text(
@@ -62,9 +63,10 @@ async def _compute_daily_signals_async(trading_date_str: str | None = None) -> d
             )
             bars_rows = bars_result.fetchall()
 
-        if bars_rows:
+        if len(bars_rows) >= MIN_INTRADAY_ROWS:
             return pd.DataFrame(bars_rows, columns=["timestamp", "open", "high", "low", "close", "volume"])
 
+        # intraday 不足（盘中、未采集或数据稀少）→ 回退到 daily 历史
         async with get_timescale_session() as session:
             daily_result = await session.execute(
                 text(
