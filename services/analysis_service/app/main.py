@@ -4,6 +4,7 @@ from __future__ import annotations
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
+from fastapi.responses import RedirectResponse
 
 from shared.config import get_settings
 from shared.utils import setup_logging, get_logger
@@ -40,7 +41,7 @@ app = FastAPI(
 app.include_router(router, prefix="/api/v1")
 
 
-@app.get("/health")
+@app.get("/api/v1/health")
 async def health_check():
     checks: dict = {"service": "analysis_service"}
     overall = True
@@ -71,3 +72,8 @@ async def health_check():
 
     checks["status"] = "ok" if overall else "degraded"
     return checks
+
+
+@app.get("/health", include_in_schema=False)
+async def health_check_legacy_redirect():
+    return RedirectResponse(url="/api/v1/health", status_code=307)

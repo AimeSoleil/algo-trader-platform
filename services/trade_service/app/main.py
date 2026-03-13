@@ -4,6 +4,7 @@ from __future__ import annotations
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
+from fastapi.responses import RedirectResponse
 
 from shared.config import get_settings
 from shared.utils import get_logger, setup_logging
@@ -56,7 +57,7 @@ app.include_router(execution_router, prefix="/api/v1/trade")
 app.include_router(portfolio_router, prefix="/api/v1/trade")
 
 
-@app.get("/health")
+@app.get("/api/v1/health")
 async def health_check():
     return {
         "status": "ok",
@@ -64,3 +65,8 @@ async def health_check():
         "runtime_status": runtime_state.status,
         "paused": runtime_state.paused,
     }
+
+
+@app.get("/health", include_in_schema=False)
+async def health_check_legacy_redirect():
+    return RedirectResponse(url="/api/v1/health", status_code=307)

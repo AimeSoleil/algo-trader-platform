@@ -12,7 +12,7 @@ import httpx
 from fastapi import FastAPI, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.openapi.docs import get_swagger_ui_html
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, RedirectResponse
 
 from shared.config import get_settings
 from shared.utils import setup_logging, get_logger
@@ -191,7 +191,7 @@ async def _refresh_specs() -> None:
 
     # Add gateway's own endpoints
     merged["tags"].append({"name": "gateway", "description": "Gateway management"})
-    merged["paths"]["/health"] = {
+    merged["paths"]["/api/v1/health"] = {
         "get": {
             "tags": ["gateway"],
             "summary": "Gateway health check",
@@ -199,7 +199,7 @@ async def _refresh_specs() -> None:
             "responses": {"200": {"description": "OK"}},
         }
     }
-    merged["paths"]["/health/all"] = {
+    merged["paths"]["/api/v1/health/all"] = {
         "get": {
             "tags": ["gateway"],
             "summary": "Check all service health",
@@ -273,6 +273,29 @@ def _build_service_scoped_spec(service: str, svc: dict, spec: dict) -> dict:
     return scoped
 
 
+async def _ensure_merged_spec_ready() -> None:
+    """Ensure merged OpenAPI exists and is valid.
+
+    This protects /docs when lifespan hooks are skipped or startup refresh fails.
+    """
+    has_openapi = bool(_merged_spec.get("openapi")) and isinstance(_merged_spec.get("paths"), dict)
+    if has_openapi:
+        return
+
+    created_client = False
+    global _http_client
+    if _http_client is None:
+        _http_client = httpx.AsyncClient(timeout=30.0)
+        created_client = True
+
+    try:
+        await _refresh_specs()
+    finally:
+        if created_client and _http_client is not None:
+            await _http_client.aclose()
+            _http_client = None
+
+
 # ---------------------------------------------------------------------------
 # Gateway endpoints
 # ---------------------------------------------------------------------------
@@ -281,6 +304,7 @@ def _build_service_scoped_spec(service: str, svc: dict, spec: dict) -> dict:
 @app.get("/openapi.json", include_in_schema=False)
 async def gateway_openapi_json():
     """Merged OpenAPI spec across all services."""
+    await _ensure_merged_spec_ready()
     return _merged_spec
 
 
@@ -291,6 +315,12 @@ async def service_openapi_json(service: str):
     if not svc:
         return JSONResponse(status_code=404, content={"error": f"Unknown service: {service}"})
 
+    created_client = False
+    global _http_client
+    if _http_client is None:
+        _http_client = httpx.AsyncClient(timeout=30.0)
+        created_client = True
+
     try:
         resp = await _http_client.get(f"{svc['url']}/openapi.json")  # type: ignore[union-attr]
         resp.raise_for_status()
@@ -300,19 +330,30 @@ async def service_openapi_json(service: str):
             status_code=502,
             content={"error": f"Failed to fetch OpenAPI for {service}", "detail": str(exc)},
         )
+    finally:
+        if created_client and _http_client is not None:
+            await _http_client.aclose()
+            _http_client = None
 
     return _build_service_scoped_spec(service, svc, spec)
 
 
 @app.get("/docs", include_in_schema=False)
-async def custom_swagger_docs():
+async def custom_swagger_docs(request: Request):
     """Swagger UI with service-level OpenAPI switcher."""
-    urls = [{"name": "All Services (Merged)", "url": "/openapi.json"}]
+    await _ensure_merged_spec_ready()
+
+    root_path = request.scope.get("root_path", "") or ""
+
+    def _with_root(path: str) -> str:
+        return f"{root_path}{path}" if root_path else path
+
+    urls = [{"name": "All Services (Merged)", "url": _with_root("/openapi.json")}]
     for name, svc in SERVICE_REGISTRY.items():
-        urls.append({"name": svc["title"], "url": f"/openapi/{name}.json"})
+        urls.append({"name": svc["title"], "url": _with_root(f"/openapi/{name}.json")})
 
     return get_swagger_ui_html(
-        openapi_url="/openapi.json",
+        openapi_url=_with_root("/openapi.json"),
         title="Algo Trader Platform - API Docs",
         swagger_ui_parameters={
             "urls": urls,
@@ -323,12 +364,18 @@ async def custom_swagger_docs():
     )
 
 
-@app.get("/health")
+@app.get("/doc", include_in_schema=False)
+async def custom_swagger_docs_alias(request: Request):
+    """Alias for /docs (compat)."""
+    return await custom_swagger_docs(request)
+
+
+@app.get("/api/v1/health")
 async def health():
     return {"status": "ok", "service": "gateway"}
 
 
-@app.get("/health/all")
+@app.get("/api/v1/health/all")
 async def health_all():
     """Check health of all registered services."""
     started = perf_counter()
@@ -336,7 +383,7 @@ async def health_all():
 
     async def _check(name: str, url: str):
         try:
-            resp = await _http_client.get(f"{url}/health", timeout=5.0)  # type: ignore[union-attr]
+            resp = await _http_client.get(f"{url}/api/v1/health", timeout=5.0)  # type: ignore[union-attr]
             return name, resp.status_code == 200, None
         except Exception as e:
             return name, False, str(e)
@@ -356,6 +403,16 @@ async def health_all():
     )
 
     return {"status": "ok" if all_ok else "degraded", "services": services}
+
+
+@app.get("/health", include_in_schema=False)
+async def health_legacy_redirect():
+    return RedirectResponse(url="/api/v1/health", status_code=307)
+
+
+@app.get("/health/all", include_in_schema=False)
+async def health_all_legacy_redirect():
+    return RedirectResponse(url="/api/v1/health/all", status_code=307)
 
 
 @app.post("/specs/refresh")

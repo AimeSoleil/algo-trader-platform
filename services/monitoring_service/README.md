@@ -10,10 +10,10 @@
 ## HTTP API
 - Base URL: `http://localhost:8006`
 - Docs: `http://localhost:8006/docs`
-- Health: `GET /health`
+- Health: `GET /api/v1/health`
 - Services health: `GET /api/v1/health/services`
 - Schedule health: `GET /api/v1/health/schedule`
-- Metrics: `GET /metrics`
+- Metrics: `GET /api/v1/metrics`
 
 ## Manual start (without Docker)
 From repo root:
