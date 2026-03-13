@@ -89,10 +89,9 @@ SwaggerUIBundle({{
     deepLinking: true,
     docExpansion: "none",
     filter: true,
-    layout: "StandaloneLayout",
+    layout: "BaseLayout",
     presets: [
-        SwaggerUIBundle.presets.apis,
-        SwaggerUIBundle.SwaggerUIStandalonePreset
+        SwaggerUIBundle.presets.apis
     ],
     plugins: [
         SwaggerUIBundle.plugins.DownloadUrl
