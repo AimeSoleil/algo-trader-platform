@@ -1,6 +1,8 @@
 """Gateway business routes — health checks & spec management."""
 from __future__ import annotations
 
+from . import docs
+
 import asyncio
 from time import perf_counter
 
@@ -95,9 +97,10 @@ async def health_all_legacy():
 
 @router.post("/specs/refresh")
 async def refresh_specs():
-    """Compatibility endpoint (no-op after merged OpenAPI removal)."""
-    logger.debug("gateway.refresh_specs_endpoint", log_event="spec_refresh", stage="noop")
+    """Invalidate the cached merged OpenAPI spec so it rebuilds on next request."""
+    docs.invalidate_cache()
+    logger.debug("gateway.refresh_specs_endpoint", log_event="spec_refresh", stage="invalidated")
     return {
-        "status": "noop",
-        "message": "merged OpenAPI disabled; per-service specs are fetched on demand",
+        "status": "ok",
+        "message": "OpenAPI cache invalidated; next request will rebuild.",
     }

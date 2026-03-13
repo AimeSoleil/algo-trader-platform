@@ -150,7 +150,7 @@ def start_execution_scheduler(runtime_state: ExecutionRuntimeState) -> None:
         trigger=IntervalTrigger(seconds=settings.trading.execution_interval),
         args=[runtime_state],
         id="execution_tick",
-        name="蓝图规则执行",
+        name="blueprint_execution_tick",
         replace_existing=True,
     )
     _scheduler.start()

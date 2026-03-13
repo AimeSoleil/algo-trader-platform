@@ -2,7 +2,6 @@
 
 Modules:
     registry        – Service registry (name → URL mapping)
-    spec_aggregator – Service OpenAPI fetching and scoped views
     docs            – Swagger UI HTML generation & spec endpoints
     routes          – Health checks & spec management
     proxy           – Reverse-proxy catch-all
@@ -20,7 +19,6 @@ from shared.utils import setup_logging, get_logger
 
 from . import docs, proxy, routes
 from .registry import ServiceRegistry
-from .spec_aggregator import SpecAggregator
 
 logger = get_logger("gateway")
 
@@ -29,7 +27,6 @@ logger = get_logger("gateway")
 # ---------------------------------------------------------------------------
 
 registry = ServiceRegistry.from_defaults()
-aggregator = SpecAggregator(registry)
 _http_client: httpx.AsyncClient | None = None
 
 
@@ -60,7 +57,6 @@ async def lifespan(_app: FastAPI):
     )
 
     _http_client = httpx.AsyncClient(timeout=30.0)
-    aggregator.set_http_client(_http_client)
 
     logger.info("gateway.starting", services=registry.names())
 
@@ -100,7 +96,7 @@ def create_app() -> FastAPI:
     )
 
     # Dependency injection into sub-modules
-    docs.configure(registry, aggregator)
+    docs.configure(registry, _get_http)
     routes.configure(registry, _get_http)
     proxy.configure(registry, _get_http)
 
