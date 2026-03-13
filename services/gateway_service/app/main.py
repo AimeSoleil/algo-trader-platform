@@ -11,6 +11,7 @@ from time import perf_counter
 import httpx
 from fastapi import FastAPI, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.openapi.docs import get_swagger_ui_html
 from fastapi.responses import JSONResponse
 
 from shared.config import get_settings
@@ -107,6 +108,9 @@ app = FastAPI(
     ),
     version="0.1.0",
     lifespan=lifespan,
+    docs_url=None,
+    redoc_url=None,
+    openapi_url=None,
 )
 
 app.add_middleware(
@@ -115,15 +119,6 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-
-# Override FastAPI's built-in openapi() to return merged spec
-def _custom_openapi():
-    return _merged_spec
-
-
-app.openapi = _custom_openapi  # type: ignore[assignment]
-
 
 # ---------------------------------------------------------------------------
 # Spec aggregation
@@ -253,9 +248,79 @@ def _fix_refs(merged: dict, results: list) -> None:
     merged.update(json.loads(text))
 
 
+def _build_service_scoped_spec(service: str, svc: dict, spec: dict) -> dict:
+    """Build a gateway-scoped spec for one service (paths prefixed with /{service})."""
+    scoped = copy.deepcopy(spec)
+
+    scoped["info"] = {
+        "title": f"{svc['title']} (via Gateway)",
+        "description": f"Service-scoped API docs for {svc['title']} routed through gateway prefix '/{service}'.",
+        "version": spec.get("info", {}).get("version", "0.1.0"),
+    }
+    scoped["servers"] = [{"url": ""}]
+
+    paths = scoped.get("paths", {})
+    prefixed_paths: dict = {}
+    for path, methods in paths.items():
+        prefixed = f"/{service}{path}"
+        patched_methods = copy.deepcopy(methods)
+        for method_detail in patched_methods.values():
+            if isinstance(method_detail, dict) and "operationId" in method_detail:
+                method_detail["operationId"] = f"{service}_{method_detail['operationId']}"
+        prefixed_paths[prefixed] = patched_methods
+    scoped["paths"] = prefixed_paths
+
+    return scoped
+
+
 # ---------------------------------------------------------------------------
 # Gateway endpoints
 # ---------------------------------------------------------------------------
+
+
+@app.get("/openapi.json", include_in_schema=False)
+async def gateway_openapi_json():
+    """Merged OpenAPI spec across all services."""
+    return _merged_spec
+
+
+@app.get("/openapi/{service}.json", include_in_schema=False)
+async def service_openapi_json(service: str):
+    """Gateway-scoped OpenAPI spec for a single service."""
+    svc = SERVICE_REGISTRY.get(service)
+    if not svc:
+        return JSONResponse(status_code=404, content={"error": f"Unknown service: {service}"})
+
+    try:
+        resp = await _http_client.get(f"{svc['url']}/openapi.json")  # type: ignore[union-attr]
+        resp.raise_for_status()
+        spec = resp.json()
+    except Exception as exc:
+        return JSONResponse(
+            status_code=502,
+            content={"error": f"Failed to fetch OpenAPI for {service}", "detail": str(exc)},
+        )
+
+    return _build_service_scoped_spec(service, svc, spec)
+
+
+@app.get("/docs", include_in_schema=False)
+async def custom_swagger_docs():
+    """Swagger UI with service-level OpenAPI switcher."""
+    urls = [{"name": "All Services (Merged)", "url": "/openapi.json"}]
+    for name, svc in SERVICE_REGISTRY.items():
+        urls.append({"name": svc["title"], "url": f"/openapi/{name}.json"})
+
+    return get_swagger_ui_html(
+        openapi_url="/openapi.json",
+        title="Algo Trader Platform - API Docs",
+        swagger_ui_parameters={
+            "urls": urls,
+            "urls.primaryName": "All Services (Merged)",
+            "docExpansion": "none",
+            "filter": True,
+        },
+    )
 
 
 @app.get("/health")
