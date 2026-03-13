@@ -65,6 +65,46 @@ _http_client: httpx.AsyncClient | None = None
 _merged_spec: dict = {}
 
 
+def _gateway_only_spec() -> dict:
+    """OpenAPI spec containing only gateway management endpoints."""
+    return {
+        "openapi": "3.1.0",
+        "info": {
+            "title": "Gateway Service",
+            "description": "Gateway management endpoints only",
+            "version": "0.1.0",
+        },
+        "paths": {
+            "/api/v1/health": {
+                "get": {
+                    "tags": ["gateway"],
+                    "summary": "Gateway health check",
+                    "operationId": "gateway_health",
+                    "responses": {"200": {"description": "OK"}},
+                }
+            },
+            "/api/v1/health/all": {
+                "get": {
+                    "tags": ["gateway"],
+                    "summary": "Check all service health",
+                    "operationId": "gateway_health_all",
+                    "responses": {"200": {"description": "OK"}},
+                }
+            },
+            "/specs/refresh": {
+                "post": {
+                    "tags": ["gateway"],
+                    "summary": "Force-refresh merged OpenAPI spec",
+                    "operationId": "gateway_refresh_specs",
+                    "responses": {"200": {"description": "OK"}},
+                }
+            },
+        },
+        "components": {"schemas": {}},
+        "tags": [{"name": "gateway", "description": "Gateway management"}],
+    }
+
+
 # ---------------------------------------------------------------------------
 # Lifespan
 # ---------------------------------------------------------------------------
@@ -308,6 +348,12 @@ async def gateway_openapi_json():
     return _merged_spec
 
 
+@app.get("/openapi/gateway.json", include_in_schema=False)
+async def gateway_only_openapi_json():
+    """Gateway-only OpenAPI spec used as default docs view."""
+    return _gateway_only_spec()
+
+
 @app.get("/openapi/{service}.json", include_in_schema=False)
 async def service_openapi_json(service: str):
     """Gateway-scoped OpenAPI spec for a single service."""
@@ -348,16 +394,19 @@ async def custom_swagger_docs(request: Request):
     def _with_root(path: str) -> str:
         return f"{root_path}{path}" if root_path else path
 
-    urls = [{"name": "All Services (Merged)", "url": _with_root("/openapi.json")}]
+    urls = [
+        {"name": "Gateway", "url": _with_root("/openapi/gateway.json")},
+        {"name": "All Services (Merged)", "url": _with_root("/openapi.json")},
+    ]
     for name, svc in SERVICE_REGISTRY.items():
         urls.append({"name": svc["title"], "url": _with_root(f"/openapi/{name}.json")})
 
     return get_swagger_ui_html(
-        openapi_url=_with_root("/openapi.json"),
+        openapi_url=_with_root("/openapi/gateway.json"),
         title="Algo Trader Platform - API Docs",
         swagger_ui_parameters={
             "urls": urls,
-            "urls.primaryName": "All Services (Merged)",
+            "urls.primaryName": "Gateway",
             "docExpansion": "none",
             "filter": True,
         },

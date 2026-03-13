@@ -25,7 +25,7 @@ uv sync --package gateway-service
 export GATEWAY_DATA_URL=http://127.0.0.1:8001
 export GATEWAY_SIGNAL_URL=http://127.0.0.1:8002
 export GATEWAY_ANALYSIS_URL=http://127.0.0.1:8003
-export GATEWAY_EXECUTION_URL=http://127.0.0.1:8004
+export GATEWAY_TRADE_URL=http://127.0.0.1:8004
 export GATEWAY_PORTFOLIO_URL=http://127.0.0.1:8005
 export GATEWAY_MONITORING_URL=http://127.0.0.1:8006
 
