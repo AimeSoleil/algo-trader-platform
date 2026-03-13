@@ -65,12 +65,20 @@ async def service_openapi_json(service: str):
 # Swagger UI page
 # ---------------------------------------------------------------------------
 
-_SWAGGER_CSS = "https://cdn.jsdelivr.net/npm/swagger-ui-dist@5/swagger-ui.css"
-_SWAGGER_JS = "https://cdn.jsdelivr.net/npm/swagger-ui-dist@5/swagger-ui-bundle.js"
+_CDN = "https://cdn.jsdelivr.net/npm/swagger-ui-dist@5"
+_SWAGGER_CSS = f"{_CDN}/swagger-ui.css"
+_SWAGGER_BUNDLE_JS = f"{_CDN}/swagger-ui-bundle.js"
+_SWAGGER_PRESET_JS = f"{_CDN}/swagger-ui-standalone-preset.js"
 
 
 def _build_swagger_html(urls_json: str) -> str:
-    """Generate self-contained Swagger UI HTML with a spec-switcher dropdown."""
+    """Generate self-contained Swagger UI HTML with a spec-switcher dropdown.
+
+    Both ``swagger-ui-bundle.js`` **and** ``swagger-ui-standalone-preset.js``
+    are required: the standalone preset supplies ``StandaloneLayout`` which
+    renders the top-bar URL selector that drives the ``urls`` dropdown.
+    Without it Swagger UI silently ignores ``urls`` → "No API definition".
+    """
     return f"""\
 <!DOCTYPE html>
 <html>
@@ -80,7 +88,8 @@ def _build_swagger_html(urls_json: str) -> str:
 </head>
 <body>
 <div id="swagger-ui"></div>
-<script src="{_SWAGGER_JS}"></script>
+<script src="{_SWAGGER_BUNDLE_JS}"></script>
+<script src="{_SWAGGER_PRESET_JS}"></script>
 <script>
 SwaggerUIBundle({{
     dom_id: '#swagger-ui',
@@ -89,9 +98,10 @@ SwaggerUIBundle({{
     deepLinking: true,
     docExpansion: "none",
     filter: true,
-    layout: "BaseLayout",
+    layout: "StandaloneLayout",
     presets: [
-        SwaggerUIBundle.presets.apis
+        SwaggerUIBundle.presets.apis,
+        SwaggerUIStandalonePreset
     ],
     plugins: [
         SwaggerUIBundle.plugins.DownloadUrl
