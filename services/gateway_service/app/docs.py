@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 
 from fastapi import APIRouter, Request, Response
+from fastapi.openapi.utils import get_openapi
 from fastapi.responses import JSONResponse
 
 from .registry import ServiceRegistry
@@ -23,23 +24,35 @@ def configure(registry: ServiceRegistry, aggregator: SpecAggregator) -> None:
     _aggregator = aggregator
 
 
+def _build_gateway_openapi(request: Request) -> dict:
+    """Build gateway OpenAPI dynamically from current FastAPI routes."""
+    schema = get_openapi(
+        title=request.app.title,
+        version=request.app.version,
+        description=request.app.description,
+        routes=request.app.routes,
+    )
+
+    root_path = request.scope.get("root_path", "") or ""
+    schema["servers"] = [{"url": root_path or ""}]
+    return schema
+
+
 # ---------------------------------------------------------------------------
 # OpenAPI JSON endpoints
 # ---------------------------------------------------------------------------
 
 
 @router.get("/openapi.json", include_in_schema=False)
-async def merged_openapi_json():
-    """Merged OpenAPI spec across all services."""
-    assert _aggregator is not None
-    await _aggregator.ensure_ready()
-    return _aggregator.merged_spec
+async def gateway_openapi_json(request: Request):
+    """Gateway OpenAPI spec generated dynamically from runtime routes."""
+    return _build_gateway_openapi(request)
 
 
 @router.get("/openapi/gateway.json", include_in_schema=False)
-async def gateway_only_openapi_json():
-    """Gateway-only OpenAPI spec used as default docs view."""
-    return SpecAggregator.gateway_only_spec()
+async def gateway_only_openapi_json(request: Request):
+    """Gateway-only OpenAPI alias used as default docs view."""
+    return _build_gateway_openapi(request)
 
 
 @router.get("/openapi/{service}.json", include_in_schema=False)
@@ -115,9 +128,7 @@ SwaggerUIBundle({{
 @router.get("/docs", include_in_schema=False)
 async def swagger_docs(request: Request):
     """Swagger UI with service-level OpenAPI switcher."""
-    assert _aggregator is not None
     assert _registry is not None
-    await _aggregator.ensure_ready()
 
     root_path = request.scope.get("root_path", "") or ""
 
@@ -125,11 +136,10 @@ async def swagger_docs(request: Request):
         return f"{root_path}{path}" if root_path else path
 
     urls = [
-        {"name": "Gateway", "url": _rp("/openapi/gateway.json")},
-        {"name": "All Services (Merged)", "url": _rp("/openapi.json")},
+        {"name": "Gateway", "url": _rp("/openapi.json")},
     ]
     for name, entry in _registry.items():
-        urls.append({"name": entry.title, "url": _rp(f"/openapi/{name}.json")})
+        urls.append({"name": entry.title, "url": _rp(f"/{name}/openapi.json")})
 
     html = _build_swagger_html(json.dumps(urls))
     return Response(content=html, media_type="text/html")

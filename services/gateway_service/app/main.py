@@ -2,7 +2,7 @@
 
 Modules:
     registry        – Service registry (name → URL mapping)
-    spec_aggregator – OpenAPI spec fetching, merging, scoped views
+    spec_aggregator – Service OpenAPI fetching and scoped views
     docs            – Swagger UI HTML generation & spec endpoints
     routes          – Health checks & spec management
     proxy           – Reverse-proxy catch-all
@@ -64,9 +64,6 @@ async def lifespan(_app: FastAPI):
 
     logger.info("gateway.starting", services=registry.names())
 
-    # Best-effort initial spec fetch (services may not be up yet)
-    await aggregator.refresh()
-
     yield
 
     await _http_client.aclose()
@@ -104,7 +101,7 @@ def create_app() -> FastAPI:
 
     # Dependency injection into sub-modules
     docs.configure(registry, aggregator)
-    routes.configure(registry, aggregator, _get_http)
+    routes.configure(registry, _get_http)
     proxy.configure(registry, _get_http)
 
     # Register routers (order matters: explicit routes before catch-all proxy)

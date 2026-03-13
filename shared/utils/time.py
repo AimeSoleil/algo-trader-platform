@@ -90,3 +90,13 @@ def next_trading_day(from_date: date | None = None) -> date:
     while d.weekday() >= 5:
         d += timedelta(days=1)
     return d
+
+
+def previous_trading_day(from_date: date | None = None) -> date:
+    """返回上一个交易日（跳过周末，不含节假日）。"""
+    from datetime import timedelta
+
+    d = (from_date or today_trading()) - timedelta(days=1)
+    while d.weekday() >= 5:
+        d -= timedelta(days=1)
+    return d

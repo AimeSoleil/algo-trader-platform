@@ -1,7 +1,7 @@
 """Data Service — REST API 路由"""
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, datetime, time
 from typing import Literal
 
 from celery.result import AsyncResult
@@ -15,8 +15,9 @@ from services.data_service.app.scheduler import (
     set_intraday_enabled,
 )
 from shared.celery_app import celery_app
+from shared.config import get_settings
 from shared.db.session import get_timescale_session
-from shared.utils import today_trading
+from shared.utils import market_tz, previous_trading_day, today_trading
 
 router = APIRouter(tags=["data"])
 
@@ -98,6 +99,35 @@ class CollectResponse(BaseModel):
     task_id: str
     status: str = "queued"
     message: str = ""
+
+
+def _normalize_manual_end_date(end_date: date) -> tuple[date, str | None]:
+    """Normalize end_date for pre-market manual collection.
+
+    Rule:
+    - if end_date == today_trading() and current market time is before market open,
+      shift end_date to previous trading day and emit a warning message.
+    """
+    today = today_trading()
+    if end_date != today:
+        return end_date, None
+
+    settings = get_settings()
+    open_hour, open_minute = map(int, settings.data_service.market_hours.start.split(":"))
+    tz = market_tz()
+    now_market = datetime.now(tz)
+    market_open_dt = datetime.combine(today, time(open_hour, open_minute), tzinfo=tz)
+
+    if now_market < market_open_dt:
+        normalized = previous_trading_day(today)
+        warning = (
+            f"end_date {end_date} adjusted to {normalized}: current market time "
+            f"{now_market.strftime('%H:%M')} is before market open "
+            f"{settings.data_service.market_hours.start}"
+        )
+        return normalized, warning
+
+    return end_date, None
 
 
 # ── Health / config endpoints ──────────────────────────────
@@ -374,11 +404,13 @@ async def list_option_dates(symbol: str):
 @router.post("/collect", status_code=202, response_model=CollectResponse)
 async def trigger_collection(req: CollectRequest):
     """Trigger manual data collection for specific symbols and date range."""
+    normalized_end_date, normalization_warning = _normalize_manual_end_date(req.end_date)
+
     if not req.symbols:
         raise HTTPException(status_code=422, detail="symbols list must not be empty")
-    if req.start_date > req.end_date:
+    if req.start_date > normalized_end_date:
         raise HTTPException(status_code=422, detail="start_date must be <= end_date")
-    if req.end_date > today_trading():
+    if normalized_end_date > today_trading():
         raise HTTPException(status_code=422, detail="end_date cannot be in the future")
 
     valid_types = {"bars_1m", "bars_daily", "options_daily"}
@@ -395,15 +427,21 @@ async def trigger_collection(req: CollectRequest):
 
     task = celery_app.send_task(
         "data_service.tasks.manual_collect",
-        args=[symbols, req.start_date.isoformat(), req.end_date.isoformat(), req.data_types],
+        args=[symbols, req.start_date.isoformat(), normalized_end_date.isoformat(), req.data_types],
         queue="data",
     )
+
+    message = (
+        f"Collection queued for {len(symbols)} symbols, "
+        f"{req.start_date} to {normalized_end_date}, types={req.data_types}"
+    )
+    if normalization_warning:
+        message = f"{message}. Warning: {normalization_warning}"
 
     return CollectResponse(
         task_id=task.id,
         status="queued",
-        message=f"Collection queued for {len(symbols)} symbols, "
-                f"{req.start_date} to {req.end_date}, types={req.data_types}",
+        message=message,
     )
 
 

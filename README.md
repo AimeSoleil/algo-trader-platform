@@ -79,6 +79,9 @@ curl -X POST http://localhost:8001/api/v1/collect \
 # 轮询 data collect 任务状态
 curl http://localhost:8001/api/v1/collect/<task_id>
 
+# 说明：若 end_date=今日 且当前时间早于开盘，系统会自动将 end_date
+# 归一化为上一个交易日，并在响应/任务结果中返回 warning。
+
 # 2) Signal Service: 手动触发信号计算（默认 today_trading）
 curl -X POST http://localhost:8002/api/v1/signals/compute \
   -H "Content-Type: application/json" \

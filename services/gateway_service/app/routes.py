@@ -10,7 +10,6 @@ from fastapi.responses import RedirectResponse
 from shared.utils import get_logger
 
 from .registry import ServiceRegistry
-from .spec_aggregator import SpecAggregator
 
 logger = get_logger("gateway")
 
@@ -18,19 +17,16 @@ router = APIRouter()
 
 # Injected at startup via ``configure()``.
 _registry: ServiceRegistry | None = None
-_aggregator: SpecAggregator | None = None
 _get_http: callable = lambda: None  # type: ignore[assignment]
 
 
 def configure(
     registry: ServiceRegistry,
-    aggregator: SpecAggregator,
     http_getter: callable,  # type: ignore[type-arg]
 ) -> None:
     """Wire runtime dependencies (called once from app factory)."""
-    global _registry, _aggregator, _get_http
+    global _registry, _get_http
     _registry = registry
-    _aggregator = aggregator
     _get_http = http_getter
 
 
@@ -99,11 +95,9 @@ async def health_all_legacy():
 
 @router.post("/specs/refresh")
 async def refresh_specs():
-    """Force-refresh the merged OpenAPI spec."""
-    assert _aggregator is not None
-    logger.debug("gateway.refresh_specs_endpoint", log_event="spec_refresh", stage="endpoint_triggered")
-    await _aggregator.refresh()
+    """Compatibility endpoint (no-op after merged OpenAPI removal)."""
+    logger.debug("gateway.refresh_specs_endpoint", log_event="spec_refresh", stage="noop")
     return {
-        "status": "refreshed",
-        "total_paths": len(_aggregator.merged_spec.get("paths", {})),
+        "status": "noop",
+        "message": "merged OpenAPI disabled; per-service specs are fetched on demand",
     }

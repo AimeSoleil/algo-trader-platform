@@ -35,6 +35,11 @@
 - `POST /api/v1/collect` — 触发手动采集（异步 Celery task）
 - `GET /api/v1/collect/{task_id}` — 查询采集任务状态
 
+Manual Collection 日期规则：
+- `start_date` 必须 `<= end_date`。
+- `end_date` 不能晚于 `today_trading()`（按交易时区计算）。
+- 若 `end_date == today_trading()` 且当前时间早于开盘（`data_service.market_hours.start`），系统会自动将 `end_date` 归一化为上一个交易日，并在响应/任务结果中附带 warning。
+
 ## Data Providers (FetcherProtocol)
 配置位于 `config/config.yaml` → `data_service.providers`:
 ```yaml
@@ -65,3 +70,4 @@ uv run celery -A shared.celery_app.celery_app worker -Q data -l info
 ## Notes
 - Requires TimescaleDB + Postgres + Redis + RabbitMQ running.
 - 首次运行前执行 `uv run python -m scripts.init_db` 初始化表结构。
+- 手动采集在盘前触发时可能看到 `end_date` 被自动回退到上一个交易日（避免请求尚未开盘当日数据）。

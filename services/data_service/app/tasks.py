@@ -10,7 +10,7 @@ Pipeline 顺序:
 from __future__ import annotations
 
 import asyncio
-from datetime import date, datetime
+from datetime import date, datetime, time
 from time import perf_counter
 
 from celery import chain as celery_chain
@@ -18,9 +18,36 @@ from celery import chain as celery_chain
 from shared.celery_app import celery_app
 from shared.config import get_settings
 from shared.db.session import get_timescale_session
-from shared.utils import get_logger, today_trading
+from shared.utils import get_logger, market_tz, previous_trading_day, today_trading
 
 logger = get_logger("data_tasks")
+
+
+def _normalize_manual_end_date(end_date: date) -> tuple[date, str | None]:
+    """Task-level fallback normalization for pre-market manual collection.
+
+    Keeps behavior consistent when task is invoked directly (bypassing REST route).
+    """
+    today = today_trading()
+    if end_date != today:
+        return end_date, None
+
+    settings = get_settings()
+    open_hour, open_minute = map(int, settings.data_service.market_hours.start.split(":"))
+    tz = market_tz()
+    now_market = datetime.now(tz)
+    market_open_dt = datetime.combine(today, time(open_hour, open_minute), tzinfo=tz)
+
+    if now_market < market_open_dt:
+        normalized = previous_trading_day(today)
+        warning = (
+            f"manual_collect: end_date {end_date} adjusted to {normalized}; "
+            f"current market time {now_market.strftime('%H:%M')} is before open "
+            f"{settings.data_service.market_hours.start}"
+        )
+        return normalized, warning
+
+    return end_date, None
 
 
 # ── Step 1: 盘后数据采集 ──────────────────────────────────
@@ -445,6 +472,10 @@ async def _manual_collect_async(
 
     sd = date.fromisoformat(start_date_str)
     ed = date.fromisoformat(end_date_str)
+
+    normalized_end_date, normalization_warning = _normalize_manual_end_date(ed)
+    ed = normalized_end_date
+
     today = today_trading()
     started = perf_counter()
     logger.debug(
@@ -469,6 +500,16 @@ async def _manual_collect_async(
         "warnings": [],
         "errors": [],
     }
+
+    if normalization_warning:
+        result["warnings"].append(normalization_warning)
+
+    if sd > ed:
+        result["status"] = "completed_with_errors"
+        result["errors"].append(
+            f"Invalid effective date range after normalization: start_date {sd} > end_date {ed}"
+        )
+        return result
 
     total_steps = len(symbols) * len(data_types)
     current_step = 0
