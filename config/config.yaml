@@ -121,7 +121,7 @@ logging:
   level: "INFO"
   format: "json"                     # json / console
   to_console: true
-  to_file: false
+  to_file: true
   file_path: "logs/algo-trader.log"
   file_rotate_mode: "time"           # time / size / none
   file_max_bytes: 104857600
