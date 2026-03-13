@@ -5,7 +5,8 @@ import asyncio
 import json
 from typing import Any, Callable
 
-from fastapi import APIRouter, Request, Response
+from fastapi import APIRouter, Request
+from fastapi.openapi.docs import get_swagger_ui_html
 from fastapi.openapi.utils import get_openapi
 from fastapi.responses import JSONResponse
 import httpx
@@ -168,43 +169,20 @@ async def merged_openapi_json(request: Request):
     return JSONResponse(content=_cached_spec)
 
 
-_CDN = "https://cdn.jsdelivr.net/npm/swagger-ui-dist@5"
-
-
 @router.get("/docs", include_in_schema=False)
 async def swagger_docs(request: Request):
-    """Swagger UI pointing at single merged /openapi.json."""
+    """Swagger UI serving the merged OpenAPI spec (via FastAPI SDK)."""
     root_path = request.scope.get("root_path", "") or ""
     spec_url = f"{root_path}/openapi.json" if root_path else "/openapi.json"
-    html = f"""\
-<!DOCTYPE html>
-<html>
-<head>
-<link type="text/css" rel="stylesheet" href="{_CDN}/swagger-ui.css">
-<title>Algo Trader Platform - API Docs</title>
-</head>
-<body>
-<div id="swagger-ui"></div>
-<script src="{_CDN}/swagger-ui-bundle.js"></script>
-<script>
-SwaggerUIBundle({{
-    dom_id: '#swagger-ui',
-    url: '{spec_url}',
-    deepLinking: true,
-    docExpansion: "none",
-    filter: true,
-    layout: "BaseLayout",
-    presets: [
-        SwaggerUIBundle.presets.apis,
-    ],
-    plugins: [
-        SwaggerUIBundle.plugins.DownloadUrl
-    ],
-}});
-</script>
-</body>
-</html>"""
-    return Response(content=html, media_type="text/html")
+    return get_swagger_ui_html(
+        openapi_url=spec_url,
+        title="Algo Trader Platform — API Docs",
+        swagger_ui_parameters={
+            "deepLinking": True,
+            "docExpansion": "none",
+            "filter": True,
+        },
+    )
 
 
 @router.get("/doc", include_in_schema=False)
