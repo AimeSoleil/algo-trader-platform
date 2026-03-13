@@ -25,21 +25,25 @@ class MinIOSettings(BaseSettings):
     secret_key: str = "minioadmin"
     secure: bool = False
 
+
+class OpenAILLMSettings(BaseSettings):
+    api_key: str = ""
+    model: str = "gpt-4o"
+    temperature: float = 0.1
+    max_tokens: int = 8192
+
+
+class CopilotLLMSettings(BaseSettings):
+    cli_path: str = "copilot"
+    github_token: str = ""
+    model: str = "gpt-4o"  # model used inside Copilot session
+    reasoning_effort: str = "medium"  # low / medium / high / xhigh
+
 class LLMSettings(BaseSettings):
     provider: str = "openai"  # "openai" / "copilot"
 
-    # ── OpenAI ──
-    openai_api_key: str = ""
-    openai_model: str = "gpt-4o"
-    openai_temperature: float = 0.1
-    openai_max_tokens: int = 8192
-
-    # ── Copilot SDK ──
-    copilot_cli_path: str = "copilot"
-    copilot_github_token: str = ""
-    copilot_model: str = "gpt-4o"  # model used inside Copilot session
-    copilot_temperature: float = 0.1
-    copilot_max_tokens: int = 4096
+    openai: OpenAILLMSettings = Field(default_factory=OpenAILLMSettings)
+    copilot: CopilotLLMSettings = Field(default_factory=CopilotLLMSettings)
 
     # ── Common ──
     cache_enabled: bool = True
@@ -49,6 +53,36 @@ class LLMSettings(BaseSettings):
 class TradingSettings(BaseSettings):
     timezone: str = "America/New_York"
     execution_interval: int = 300  # seconds (5 min)
+
+
+class StopLossSettings(BaseSettings):
+    enabled: bool = True
+    check_interval_seconds: int = 60
+    portfolio_loss_limit: float = 2000.0
+    position_loss_limit: float = 500.0
+    cooldown_seconds: int = 60
+
+
+class PaperBrokerSettings(BaseSettings):
+    initial_cash: float = 100_000.0
+
+
+class FutuBrokerSettings(BaseSettings):
+    host: str = "127.0.0.1"
+    port: int = 11111
+    trader_id: str = ""
+    trd_env: str = "SIMULATE"    # SIMULATE | REAL
+    market: str = "US"
+
+
+class BrokerSettings(BaseSettings):
+    type: str = "paper"          # paper | futu
+    paper: PaperBrokerSettings = Field(default_factory=PaperBrokerSettings)
+    futu: FutuBrokerSettings = Field(default_factory=FutuBrokerSettings)
+
+
+class RiskSettings(BaseSettings):
+    stop_loss: StopLossSettings = Field(default_factory=StopLossSettings)
 
 
 class MarketHoursSettings(BaseSettings):
@@ -106,6 +140,16 @@ class ScheduleSettings(BaseSettings):
 class LoggingSettings(BaseSettings):
     level: str = "INFO"
     format: str = "json"  # "json" / "console"
+    to_console: bool = True
+    to_file: bool = False
+    file_path: str = "logs/algo-trader.log"
+    file_rotate_mode: str = "time"
+    file_max_bytes: int = 104857600
+    file_rotate: bool = True
+    file_rotate_when: str = "midnight"
+    file_rotate_interval: int = 1
+    file_backup_count: int = 14
+    file_rotate_utc: bool = False
 
 class Settings(BaseSettings):
     """Root settings — assembles all sub-settings"""
@@ -115,8 +159,10 @@ class Settings(BaseSettings):
     redis: RedisSettings = Field(default_factory=RedisSettings)
     rabbitmq: RabbitMQSettings = Field(default_factory=RabbitMQSettings)
     minio: MinIOSettings = Field(default_factory=MinIOSettings)
+    broker: BrokerSettings = Field(default_factory=BrokerSettings)
     llm: LLMSettings = Field(default_factory=LLMSettings)
     trading: TradingSettings = Field(default_factory=TradingSettings)
+    risk: RiskSettings = Field(default_factory=RiskSettings)
     data_service: DataServiceSettings = Field(default_factory=DataServiceSettings)
     option_strategy: OptionStrategySettings = Field(default_factory=OptionStrategySettings)
     schedule: ScheduleSettings = Field(default_factory=ScheduleSettings)

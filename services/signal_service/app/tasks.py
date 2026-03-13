@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 from datetime import date
+from time import perf_counter
 
 import pandas as pd
 from sqlalchemy import text
@@ -36,6 +37,14 @@ def compute_daily_signals(self, trading_date: str | None = None, prev_result=Non
     17:00 Celery 任务：批量计算当日所有标的的信号特征
     prev_result: 上游任务 (backfill) 的结果
     """
+    logger.debug(
+        "signal_compute.start",
+        event="task_start",
+        stage="entry",
+        task_id=getattr(self.request, "id", None),
+        trading_date=trading_date,
+        retry=getattr(self.request, "retries", 0),
+    )
     return _run_async(_compute_daily_signals_async(trading_date))
 
 
@@ -47,11 +56,27 @@ async def _compute_daily_signals_async(trading_date_str: str | None = None) -> d
 
     settings = get_settings()
     td = date.fromisoformat(trading_date_str) if trading_date_str else today_trading()
+    started = perf_counter()
+    logger.debug(
+        "signal_compute.context",
+        event="task_context",
+        stage="start",
+        trading_date=str(td),
+        symbols=len(settings.watchlist),
+    )
     result = {"date": str(td), "symbols_computed": 0, "errors": []}
 
     async def _load_stock_bars(symbol: str) -> pd.DataFrame:
         # 优先使用 intraday 1min，但需足够多行才能计算技术指标；否则回退到 daily
         MIN_INTRADAY_ROWS = 30  # compute_stock_indicators 要求 >= 30 行
+        logger.debug(
+            "signal_compute.load_stock_bars_started",
+            event="db_read",
+            stage="before_query",
+            symbol=symbol,
+            trading_date=str(td),
+            source="stock_1min_bars",
+        )
         async with get_timescale_session() as session:
             bars_result = await session.execute(
                 text(
@@ -65,9 +90,24 @@ async def _compute_daily_signals_async(trading_date_str: str | None = None) -> d
             bars_rows = bars_result.fetchall()
 
         if len(bars_rows) >= MIN_INTRADAY_ROWS:
+            logger.debug(
+                "signal_compute.load_stock_bars_intraday",
+                event="db_read",
+                stage="query_result",
+                symbol=symbol,
+                rows=len(bars_rows),
+                source="stock_1min_bars",
+            )
             return pd.DataFrame(bars_rows, columns=["timestamp", "open", "high", "low", "close", "volume"])
 
         # intraday 不足（盘中、未采集或数据稀少）→ 回退到 daily 历史
+        logger.debug(
+            "signal_compute.load_stock_bars_fallback",
+            event="db_read",
+            stage="fallback",
+            symbol=symbol,
+            source="stock_daily",
+        )
         async with get_timescale_session() as session:
             daily_result = await session.execute(
                 text(
@@ -81,13 +121,36 @@ async def _compute_daily_signals_async(trading_date_str: str | None = None) -> d
             daily_rows = daily_result.fetchall()
 
         if not daily_rows:
+            logger.debug(
+                "signal_compute.load_stock_bars_empty",
+                event="db_read",
+                stage="query_result",
+                symbol=symbol,
+                source="stock_daily",
+            )
             return pd.DataFrame()
 
         daily_df = pd.DataFrame(daily_rows, columns=["timestamp", "open", "high", "low", "close", "volume"])
         daily_df = daily_df.sort_values("timestamp")
+        logger.debug(
+            "signal_compute.load_stock_bars_daily",
+            event="db_read",
+            stage="query_result",
+            symbol=symbol,
+            rows=len(daily_df),
+            source="stock_daily",
+        )
         return daily_df
 
     async def _load_option_rows(symbol: str) -> pd.DataFrame:
+        logger.debug(
+            "signal_compute.load_option_rows_started",
+            event="db_read",
+            stage="before_query",
+            symbol=symbol,
+            trading_date=str(td),
+            source="option_5min_snapshots",
+        )
         async with get_timescale_session() as session:
             intraday_result = await session.execute(
                 text(
@@ -102,6 +165,14 @@ async def _compute_daily_signals_async(trading_date_str: str | None = None) -> d
             intraday_rows = intraday_result.fetchall()
 
         if intraday_rows:
+            logger.debug(
+                "signal_compute.load_option_rows_intraday",
+                event="db_read",
+                stage="query_result",
+                symbol=symbol,
+                rows=len(intraday_rows),
+                source="option_5min_snapshots",
+            )
             return pd.DataFrame(
                 intraday_rows,
                 columns=[
@@ -111,6 +182,13 @@ async def _compute_daily_signals_async(trading_date_str: str | None = None) -> d
                 ],
             )
 
+        logger.debug(
+            "signal_compute.load_option_rows_fallback",
+            event="db_read",
+            stage="fallback",
+            symbol=symbol,
+            source="option_daily",
+        )
         async with get_timescale_session() as session:
             daily_result = await session.execute(
                 text(
@@ -125,6 +203,13 @@ async def _compute_daily_signals_async(trading_date_str: str | None = None) -> d
             daily_rows = daily_result.fetchall()
 
         if not daily_rows:
+            logger.debug(
+                "signal_compute.load_option_rows_empty",
+                event="db_read",
+                stage="query_result",
+                symbol=symbol,
+                source="option_daily",
+            )
             return pd.DataFrame()
 
         return pd.DataFrame(
@@ -141,8 +226,24 @@ async def _compute_daily_signals_async(trading_date_str: str | None = None) -> d
     async def _process_symbol(symbol: str) -> None:
         async with sem:
             try:
+                symbol_started = perf_counter()
+                logger.debug(
+                    "signal_compute.symbol_started",
+                    event="symbol_start",
+                    stage="compute",
+                    symbol=symbol,
+                    trading_date=str(td),
+                )
                 bars_df = await _load_stock_bars(symbol)
                 option_df = await _load_option_rows(symbol)
+                logger.debug(
+                    "signal_compute.symbol_data_loaded",
+                    event="symbol_context",
+                    stage="after_load",
+                    symbol=symbol,
+                    bar_rows=len(bars_df),
+                    option_rows=len(option_df),
+                )
 
                 if bars_df.empty:
                     logger.warning("signal_compute.no_bars", symbol=symbol, date=str(td))
@@ -214,6 +315,13 @@ async def _compute_daily_signals_async(trading_date_str: str | None = None) -> d
 
                 # 5) 写入 DB
                 async with get_postgres_session() as session:
+                    logger.debug(
+                        "signal_compute.db_write_started",
+                        event="db_write",
+                        stage="before_write",
+                        symbol=symbol,
+                        trading_date=str(td),
+                    )
                     await session.execute(
                         text(
                             "INSERT INTO signal_features (symbol, date, computed_at, features_json) "
@@ -228,6 +336,13 @@ async def _compute_daily_signals_async(trading_date_str: str | None = None) -> d
                             "features_json": features.model_dump_json(),
                         },
                     )
+                    logger.debug(
+                        "signal_compute.db_write_finished",
+                        event="db_write",
+                        stage="after_write",
+                        symbol=symbol,
+                        trading_date=str(td),
+                    )
 
                 # 6) Write-through cache refresh (best effort)
                 try:
@@ -240,6 +355,15 @@ async def _compute_daily_signals_async(trading_date_str: str | None = None) -> d
                         logger.debug("signal_compute.cache_delete_failed", symbol=symbol, error=str(del_exc))
 
                 result["symbols_computed"] += 1
+                logger.debug(
+                    "signal_compute.symbol_completed",
+                    event="symbol_summary",
+                    stage="completed",
+                    symbol=symbol,
+                    trading_date=str(td),
+                    bar_type=bar_type,
+                    duration_ms=round((perf_counter() - symbol_started) * 1000, 2),
+                )
                 logger.info(
                     "signal_compute.done",
                     symbol=symbol,
@@ -252,5 +376,15 @@ async def _compute_daily_signals_async(trading_date_str: str | None = None) -> d
 
     await asyncio.gather(*[_process_symbol(s) for s in settings.watchlist])
 
+    logger.debug(
+        "signal_compute.summary",
+        event="task_summary",
+        stage="completed",
+        trading_date=str(td),
+        symbols_total=len(settings.watchlist),
+        symbols_computed=result["symbols_computed"],
+        errors=len(result["errors"]),
+        duration_ms=round((perf_counter() - started) * 1000, 2),
+    )
     logger.info("signal_compute.batch_completed", **result)
     return result

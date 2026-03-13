@@ -46,11 +46,20 @@ async def backfill_stock_1min(symbol: str, start_date: date, end_date: date) -> 
             interval="1m",
         )
 
+    logger.debug(
+        "backfiller.1min_fetch_start",
+        symbol=symbol,
+        start=str(start_date),
+        end=str(end_date),
+        interval="1m",
+    )
     hist = await asyncio.to_thread(_fetch)
+    logger.debug("backfiller.1min_fetch_done", symbol=symbol, rows=len(hist))
     if hist.empty:
         logger.warning("backfiller.no_1min_data", symbol=symbol, start=str(start_date))
         return 0
 
+    logger.debug("backfiller.1min_transform_start", symbol=symbol, rows=len(hist))
     records = [
         {
             "symbol": symbol,
@@ -63,9 +72,11 @@ async def backfill_stock_1min(symbol: str, start_date: date, end_date: date) -> 
         }
         for ts, row in hist.iterrows()
     ]
+    logger.debug("backfiller.1min_transform_done", symbol=symbol, records_count=len(records))
 
     if records:
         async with get_timescale_session() as session:
+            logger.debug("backfiller.1min_insert_start", symbol=symbol, records_count=len(records))
             await session.execute(
                 text(
                     "INSERT INTO stock_1min_bars "
@@ -76,6 +87,7 @@ async def backfill_stock_1min(symbol: str, start_date: date, end_date: date) -> 
                 records,
             )
             await session.commit()
+            logger.debug("backfiller.1min_insert_done", symbol=symbol, records_count=len(records))
 
     logger.info("backfiller.1min_done", symbol=symbol, rows=len(records))
     return len(records)
@@ -95,11 +107,20 @@ async def backfill_stock_daily(symbol: str, start_date: date, end_date: date) ->
             interval="1d",
         )
 
+    logger.debug(
+        "backfiller.daily_fetch_start",
+        symbol=symbol,
+        start=str(start_date),
+        end=str(end_date),
+        interval="1d",
+    )
     hist = await asyncio.to_thread(_fetch)
+    logger.debug("backfiller.daily_fetch_done", symbol=symbol, rows=len(hist))
     if hist.empty:
         logger.warning("backfiller.no_daily_data", symbol=symbol, start=str(start_date))
         return 0
 
+    logger.debug("backfiller.daily_transform_start", symbol=symbol, rows=len(hist))
     records = [
         {
             "symbol": symbol,
@@ -112,9 +133,11 @@ async def backfill_stock_daily(symbol: str, start_date: date, end_date: date) ->
         }
         for ts, row in hist.iterrows()
     ]
+    logger.debug("backfiller.daily_transform_done", symbol=symbol, records_count=len(records))
 
     if records:
         async with get_timescale_session() as session:
+            logger.debug("backfiller.daily_insert_start", symbol=symbol, records_count=len(records))
             await session.execute(
                 text(
                     "INSERT INTO stock_daily "
@@ -125,6 +148,7 @@ async def backfill_stock_daily(symbol: str, start_date: date, end_date: date) ->
                 records,
             )
             await session.commit()
+            logger.debug("backfiller.daily_insert_done", symbol=symbol, records_count=len(records))
 
     logger.info("backfiller.daily_done", symbol=symbol, rows=len(records))
     return len(records)

@@ -5,6 +5,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 
+from shared.config import get_settings
 from shared.utils import setup_logging, get_logger
 
 from services.analysis_service.app.routes import router
@@ -15,6 +16,15 @@ logger = get_logger("analysis_service")
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     setup_logging("analysis_service")
+    settings = get_settings()
+    logger.debug(
+        "analysis_service.logging_config_snapshot",
+        service_name="analysis_service",
+        log_level=settings.logging.level,
+        log_format=settings.logging.format,
+        to_file=settings.logging.to_file,
+        rotate_mode=settings.logging.file_rotate_mode,
+    )
     logger.info("analysis_service.starting")
     yield
     logger.info("analysis_service.stopped")

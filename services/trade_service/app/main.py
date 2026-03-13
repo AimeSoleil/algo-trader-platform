@@ -1,0 +1,66 @@
+"""Trade Service — merged execution + portfolio FastAPI 入口"""
+from __future__ import annotations
+
+from contextlib import asynccontextmanager
+
+from fastapi import FastAPI
+
+from shared.config import get_settings
+from shared.utils import get_logger, setup_logging
+
+from services.trade_service.app.execution.routes import router as execution_router
+from services.trade_service.app.execution.scheduler import (
+    _shutdown_broker,
+    _startup_broker,
+    start_execution_scheduler,
+    stop_execution_scheduler,
+)
+from services.trade_service.app.models import runtime_state
+from services.trade_service.app.portfolio.routes import router as portfolio_router
+
+logger = get_logger("trade_service")
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    setup_logging("trade_service")
+    settings = get_settings()
+    logger.debug(
+        "trade_service.logging_config_snapshot",
+        service_name="trade_service",
+        log_level=settings.logging.level,
+        log_format=settings.logging.format,
+        to_file=settings.logging.to_file,
+        rotate_mode=settings.logging.file_rotate_mode,
+    )
+    logger.info("trade_service.starting", execution_interval=settings.trading.execution_interval)
+
+    await _startup_broker()
+    start_execution_scheduler(runtime_state)
+
+    yield
+
+    stop_execution_scheduler()
+    await _shutdown_broker()
+    logger.info("trade_service.stopped")
+
+
+app = FastAPI(
+    title="Trade Service",
+    description="Merged execution and portfolio service",
+    version="0.1.0",
+    lifespan=lifespan,
+)
+
+app.include_router(execution_router, prefix="/api/v1/trade")
+app.include_router(portfolio_router, prefix="/api/v1/trade")
+
+
+@app.get("/health")
+async def health_check():
+    return {
+        "status": "ok",
+        "service": "trade_service",
+        "runtime_status": runtime_state.status,
+        "paused": runtime_state.paused,
+    }

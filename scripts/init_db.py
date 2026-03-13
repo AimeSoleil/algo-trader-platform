@@ -42,6 +42,7 @@ BUSINESS_TABLES = [
     "signal_features",
     "backfill_logs",
     "watchlist_symbols",
+    "execution_events",
 ]
 
 

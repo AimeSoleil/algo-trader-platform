@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import date, datetime
+from datetime import date
 from typing import Literal
 
 from fastapi import APIRouter, HTTPException, Query
@@ -10,8 +10,8 @@ from sqlalchemy import text
 from shared.db.session import get_postgres_session
 from shared.utils import now_utc
 
-from services.execution_service.app.blueprint_loader import load_blueprint_for_date
-from services.execution_service.app.models import runtime_state
+from services.trade_service.app.execution.blueprint_loader import load_blueprint_for_date
+from services.trade_service.app.models import runtime_state
 
 router = APIRouter(tags=["execution"])
 
@@ -54,6 +54,8 @@ async def blueprint_status(trading_date: date = Query(alias="date")):
             "manual_override_reason": runtime_state.manual_override_reason,
             "loaded_at": runtime_state.loaded_at,
             "last_tick_at": runtime_state.last_tick_at,
+            "last_risk_check_at": runtime_state.last_risk_check_at,
+            "stoploss_events_count": len(runtime_state.stoploss_last_events),
         },
     }
 
@@ -88,6 +90,3 @@ async def manual_override(payload: ManualOverrideRequest):
         "paused": runtime_state.paused,
         "reason": runtime_state.manual_override_reason,
     }
-
-
-

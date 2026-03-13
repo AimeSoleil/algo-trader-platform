@@ -6,12 +6,14 @@ import copy
 import json
 import os
 from contextlib import asynccontextmanager
+from time import perf_counter
 
 import httpx
 from fastapi import FastAPI, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
+from shared.config import get_settings
 from shared.utils import setup_logging, get_logger
 
 logger = get_logger("gateway")
@@ -35,13 +37,9 @@ _DEFAULTS: dict[str, dict] = {
         "url": "http://algo_analysis_service:8003",
         "title": "Analysis Service",
     },
-    "execution": {
-        "url": "http://algo_execution_service:8004",
-        "title": "Execution Service",
-    },
-    "portfolio": {
-        "url": "http://algo_portfolio_service:8005",
-        "title": "Portfolio Service",
+    "trade": {
+        "url": "http://algo_trade_service:8004",
+        "title": "Trade Service",
     },
     "monitoring": {
         "url": "http://algo_monitoring_service:8006",
@@ -75,6 +73,15 @@ _merged_spec: dict = {}
 async def lifespan(app: FastAPI):
     global _http_client
     setup_logging("gateway")
+    settings = get_settings()
+    logger.debug(
+        "gateway.logging_config_snapshot",
+        service_name="gateway",
+        log_level=settings.logging.level,
+        log_format=settings.logging.format,
+        to_file=settings.logging.to_file,
+        rotate_mode=settings.logging.file_rotate_mode,
+    )
     _http_client = httpx.AsyncClient(timeout=30.0)
     logger.info("gateway.starting", services=list(SERVICE_REGISTRY.keys()))
 
@@ -126,6 +133,8 @@ app.openapi = _custom_openapi  # type: ignore[assignment]
 async def _refresh_specs() -> None:
     """Fetch /openapi.json from every backend and merge into one spec."""
     global _merged_spec
+    started = perf_counter()
+    logger.debug("gateway.refresh_specs_start", event="spec_refresh", stage="start", services=len(SERVICE_REGISTRY))
 
     merged: dict = {
         "openapi": "3.1.0",
@@ -141,8 +150,10 @@ async def _refresh_specs() -> None:
 
     async def _fetch_one(name: str, svc: dict):
         try:
+            logger.debug("gateway.spec_fetch_start", event="spec_fetch", service=name, url=svc["url"])
             resp = await _http_client.get(f"{svc['url']}/openapi.json")  # type: ignore[union-attr]
             resp.raise_for_status()
+            logger.debug("gateway.spec_fetch_done", event="spec_fetch", service=name, status_code=resp.status_code)
             return name, svc, resp.json()
         except Exception as e:
             logger.warning("gateway.spec_fetch_failed", service=name, error=str(e))
@@ -211,6 +222,15 @@ async def _refresh_specs() -> None:
     }
 
     _merged_spec = merged
+    healthy_specs = sum(1 for _name, _svc, spec in results if spec is not None)
+    logger.debug(
+        "gateway.refresh_specs_done",
+        event="spec_refresh",
+        stage="completed",
+        services=len(SERVICE_REGISTRY),
+        healthy_specs=healthy_specs,
+        duration_ms=round((perf_counter() - started) * 1000, 2),
+    )
     logger.info(
         "gateway.specs_merged",
         total_paths=len(merged["paths"]),
@@ -246,6 +266,8 @@ async def health():
 @app.get("/health/all")
 async def health_all():
     """Check health of all registered services."""
+    started = perf_counter()
+    logger.debug("gateway.health_all_start", event="health_check", stage="start", services=len(SERVICE_REGISTRY))
 
     async def _check(name: str, url: str):
         try:
@@ -259,6 +281,14 @@ async def health_all():
     )
     services = {name: {"healthy": ok, "error": err} for name, ok, err in checks}
     all_ok = all(s["healthy"] for s in services.values())
+    logger.debug(
+        "gateway.health_all_done",
+        event="health_check",
+        stage="completed",
+        healthy_count=sum(1 for s in services.values() if s["healthy"]),
+        total_count=len(services),
+        duration_ms=round((perf_counter() - started) * 1000, 2),
+    )
 
     return {"status": "ok" if all_ok else "degraded", "services": services}
 
@@ -266,6 +296,7 @@ async def health_all():
 @app.post("/specs/refresh")
 async def refresh_specs():
     """Force-refresh the merged OpenAPI spec."""
+    logger.debug("gateway.refresh_specs_endpoint", event="spec_refresh", stage="endpoint_triggered")
     await _refresh_specs()
     return {
         "status": "refreshed",
@@ -285,8 +316,10 @@ async def refresh_specs():
 )
 async def proxy(service: str, path: str, request: Request):
     """Forward requests to the appropriate backend service."""
+    started = perf_counter()
     svc = SERVICE_REGISTRY.get(service)
     if not svc:
+        logger.debug("gateway.proxy_unknown_service", event="proxy", service=service, path=path)
         return JSONResponse(
             status_code=404,
             content={"error": f"Unknown service: {service}"},
@@ -299,6 +332,13 @@ async def proxy(service: str, path: str, request: Request):
     body = await request.body()
     headers = dict(request.headers)
     headers.pop("host", None)
+    logger.debug(
+        "gateway.proxy_forward_start",
+        event="proxy",
+        service=service,
+        method=request.method,
+        path=path,
+    )
 
     try:
         resp = await _http_client.request(  # type: ignore[union-attr]
@@ -313,12 +353,38 @@ async def proxy(service: str, path: str, request: Request):
             for k, v in resp.headers.items()
             if k.lower() not in ("transfer-encoding", "connection")
         }
+        logger.debug(
+            "gateway.proxy_forward_done",
+            event="proxy",
+            service=service,
+            method=request.method,
+            path=path,
+            status_code=resp.status_code,
+            duration_ms=round((perf_counter() - started) * 1000, 2),
+        )
         return Response(
             content=resp.content,
             status_code=resp.status_code,
             headers=passthrough,
         )
     except httpx.TimeoutException:
+        logger.warning(
+            "gateway.proxy_timeout",
+            event="proxy",
+            service=service,
+            method=request.method,
+            path=path,
+            duration_ms=round((perf_counter() - started) * 1000, 2),
+        )
         return JSONResponse(status_code=504, content={"error": "upstream timeout"})
     except Exception as e:
+        logger.error(
+            "gateway.proxy_error",
+            event="proxy",
+            service=service,
+            method=request.method,
+            path=path,
+            error=str(e),
+            duration_ms=round((perf_counter() - started) * 1000, 2),
+        )
         return JSONResponse(status_code=502, content={"error": str(e)})

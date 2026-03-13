@@ -17,8 +17,10 @@ _MAX_1MIN_LOOKBACK_DAYS = 7
 def _fetch_stock_quote_sync(symbol: str) -> dict | None:
     """同步获取股票实时行情"""
     try:
+        logger.debug("stock_fetcher.quote_fetch_start", symbol=symbol, period="1d", interval="1m")
         ticker = yf.Ticker(symbol)
         hist = ticker.history(period="1d", interval="1m")
+        logger.debug("stock_fetcher.quote_fetch_done", symbol=symbol, rows=len(hist))
 
         if hist.empty:
             logger.warning("stock_fetcher.no_data", symbol=symbol)
@@ -45,11 +47,14 @@ def _fetch_stock_bars_sync(
 ) -> list[dict]:
     """同步获取股票K线"""
     try:
+        logger.debug("stock_fetcher.bars_fetch_start", symbol=symbol, period=period, interval=interval)
         ticker = yf.Ticker(symbol)
         hist = ticker.history(period=period, interval=interval)
+        logger.debug("stock_fetcher.bars_fetch_done", symbol=symbol, period=period, interval=interval, rows=len(hist))
         if hist.empty:
             return []
 
+        logger.debug("stock_fetcher.bars_transform_start", symbol=symbol, rows=len(hist))
         bars = []
         for ts, row in hist.iterrows():
             bars.append(
@@ -63,6 +68,7 @@ def _fetch_stock_bars_sync(
                     "volume": int(row["Volume"]),
                 }
             )
+        logger.debug("stock_fetcher.bars_transform_done", symbol=symbol, bars_count=len(bars))
         return bars
     except Exception as e:
         logger.error("stock_fetcher.bars_failed", symbol=symbol, error=str(e))
@@ -95,11 +101,24 @@ def _fetch_stock_bars_range_sync(
             return [], warnings
 
     try:
+        logger.debug(
+            "stock_fetcher.range_fetch_start",
+            symbol=symbol,
+            interval=interval,
+            start=str(effective_start),
+            end=str(end_date),
+        )
         ticker = yf.Ticker(symbol)
         hist = ticker.history(
             start=str(effective_start),
             end=str(end_date + timedelta(days=1)),
             interval=interval,
+        )
+        logger.debug(
+            "stock_fetcher.range_fetch_done",
+            symbol=symbol,
+            interval=interval,
+            rows=len(hist),
         )
         if hist.empty:
             warnings.append(
@@ -107,6 +126,7 @@ def _fetch_stock_bars_range_sync(
             )
             return [], warnings
 
+        logger.debug("stock_fetcher.range_transform_start", symbol=symbol, interval=interval, rows=len(hist))
         rows: list[dict] = []
         for ts, row in hist.iterrows():
             entry: dict = {
@@ -122,6 +142,7 @@ def _fetch_stock_bars_range_sync(
             else:
                 entry["timestamp"] = ts.isoformat()
             rows.append(entry)
+        logger.debug("stock_fetcher.range_transform_done", symbol=symbol, interval=interval, rows=len(rows))
         return rows, warnings
     except Exception as e:
         logger.error(

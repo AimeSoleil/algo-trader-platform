@@ -2,9 +2,22 @@ from __future__ import annotations
 
 from typing import Any
 
+from shared.utils import get_logger
+
+logger = get_logger("execution_rule_engine")
+
 
 class BlueprintRuleEngine:
     def evaluate_symbol_plan(self, plan: dict[str, Any], market_ctx: dict[str, Any]) -> dict[str, Any]:
+        symbol = plan.get("symbol")
+        logger.debug(
+            "rule_engine.evaluate_started",
+            event="evaluate_symbol_plan",
+            stage="start",
+            symbol=symbol,
+            entry_conditions=len(plan.get("entry_conditions", [])),
+            exit_conditions=len(plan.get("exit_conditions", [])),
+        )
         entry_ok = self._evaluate_conditions(plan.get("entry_conditions", []), market_ctx)
         exit_ok = self._evaluate_conditions(plan.get("exit_conditions", []), market_ctx)
         action = "hold"
@@ -12,6 +25,16 @@ class BlueprintRuleEngine:
             action = "exit"
         elif entry_ok:
             action = "enter"
+
+        logger.debug(
+            "rule_engine.evaluate_completed",
+            event="evaluate_symbol_plan",
+            stage="completed",
+            symbol=symbol,
+            entry_ok=entry_ok,
+            exit_ok=exit_ok,
+            action=action,
+        )
 
         return {
             "symbol": plan.get("symbol"),
@@ -22,6 +45,11 @@ class BlueprintRuleEngine:
 
     def _evaluate_conditions(self, conditions: list[dict[str, Any]], market_ctx: dict[str, Any]) -> bool:
         if not conditions:
+            logger.debug(
+                "rule_engine.conditions_empty",
+                event="evaluate_conditions",
+                stage="short_circuit",
+            )
             return False
         return all(self._eval_single_condition(cond, market_ctx) for cond in conditions)
 
@@ -31,6 +59,13 @@ class BlueprintRuleEngine:
         value = condition.get("value")
         current = market_ctx.get(metric)
         if current is None:
+            logger.debug(
+                "rule_engine.metric_missing",
+                event="eval_single_condition",
+                stage="missing_metric",
+                metric=metric,
+                operator=operator,
+            )
             return False
 
         if operator == ">":
@@ -45,6 +80,20 @@ class BlueprintRuleEngine:
             return current == value
         if operator == "between":
             if not isinstance(value, (list, tuple)) or len(value) != 2:
+                logger.debug(
+                    "rule_engine.between_value_invalid",
+                    event="eval_single_condition",
+                    stage="invalid_value",
+                    metric=metric,
+                    operator=operator,
+                )
                 return False
             return value[0] <= current <= value[1]
+        logger.debug(
+            "rule_engine.operator_unsupported",
+            event="eval_single_condition",
+            stage="unsupported_operator",
+            metric=metric,
+            operator=operator,
+        )
         return False

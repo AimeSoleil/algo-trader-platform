@@ -70,6 +70,14 @@ async def detect_stock_1min_gaps(symbol: str, trading_date: date) -> list[dict]:
 
     expected = _expected_intraday_timestamps(trading_date, interval_minutes=1)
     missing = [ts for ts in expected if ts not in actual]
+    logger.debug(
+        "gap_detector.stock_1min_summary",
+        symbol=symbol,
+        date=str(trading_date),
+        expected_count=len(expected),
+        actual_count=len(actual),
+        missing_count=len(missing),
+    )
 
     if missing:
         logger.warning(
@@ -104,6 +112,15 @@ async def detect_stock_daily_gaps(
 
     expected = _trading_dates_between(start_date, end_date)
     missing = [d for d in expected if d not in actual]
+    logger.debug(
+        "gap_detector.stock_daily_summary",
+        symbol=symbol,
+        start=str(start_date),
+        end=str(end_date),
+        expected_count=len(expected),
+        actual_count=len(actual),
+        missing_count=len(missing),
+    )
 
     if missing:
         logger.warning(
@@ -139,6 +156,15 @@ async def detect_option_daily_gaps(
 
     expected = _trading_dates_between(start_date, end_date)
     missing = [d for d in expected if d not in actual]
+    logger.debug(
+        "gap_detector.option_daily_summary",
+        symbol=symbol,
+        start=str(start_date),
+        end=str(end_date),
+        expected_count=len(expected),
+        actual_count=len(actual),
+        missing_count=len(missing),
+    )
 
     if missing:
         logger.warning(
@@ -170,6 +196,14 @@ async def detect_option_5min_gaps(symbol: str, trading_date: date) -> list[dict]
 
     expected = _expected_intraday_timestamps(trading_date, interval_minutes=5)
     missing = [ts for ts in expected if ts not in actual]
+    logger.debug(
+        "gap_detector.option_5min_summary",
+        symbol=symbol,
+        date=str(trading_date),
+        expected_count=len(expected),
+        actual_count=len(actual),
+        missing_count=len(missing),
+    )
 
     if missing:
         logger.warning(

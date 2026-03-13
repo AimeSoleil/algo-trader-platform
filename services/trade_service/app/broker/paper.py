@@ -1,18 +1,17 @@
 from __future__ import annotations
 
-from datetime import datetime
 from typing import Any
 from uuid import uuid4
 
 from shared.utils import now_utc
-from services.execution_service.app.broker.base import BrokerInterface
+from services.trade_service.app.broker.base import BrokerInterface
 
 
 class PaperBroker(BrokerInterface):
-    def __init__(self) -> None:
+    def __init__(self, initial_cash: float = 100_000.0) -> None:
         self.orders: list[dict[str, Any]] = []
         self.positions: list[dict[str, Any]] = []
-        self.cash: float = 100000.0
+        self.cash: float = initial_cash
         self._prices: dict[str, float] = {}
 
     def update_price(self, symbol: str, price: float) -> None:

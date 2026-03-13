@@ -5,6 +5,14 @@ from typing import Any
 
 
 class BrokerInterface(ABC):
+    """Abstract broker adapter — all broker implementations must subclass this."""
+
+    async def connect(self) -> None:
+        """Establish connection to the broker gateway. Default: no-op."""
+
+    async def disconnect(self) -> None:
+        """Gracefully disconnect from the broker. Default: no-op."""
+
     @abstractmethod
     async def place_order(self, order: dict[str, Any]) -> dict[str, Any]:
         raise NotImplementedError

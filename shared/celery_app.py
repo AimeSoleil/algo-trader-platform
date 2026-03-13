@@ -24,8 +24,8 @@ def create_celery_app() -> Celery:
             "services.backfill_service.app.tasks",
             "services.signal_service.app.tasks",
             "services.analysis_service.app.tasks",
-            "services.execution_service.app.tasks",
-            "services.portfolio_service.app.tasks",
+            "services.trade_service.app.execution.tasks",
+            "services.trade_service.app.portfolio.tasks",
         ],
     )
 

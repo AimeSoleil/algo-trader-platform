@@ -63,11 +63,13 @@ class CopilotProvider(LLMProviderBase):
 
     def __init__(self):
         settings = get_settings()
-        self.cli_path = settings.llm.copilot_cli_path
-        self.github_token = settings.llm.copilot_github_token
-        self.model = settings.llm.copilot_model
-        self.temperature = settings.llm.copilot_temperature
-        self.max_tokens = settings.llm.copilot_max_tokens
+        self.cli_path = settings.llm.copilot.cli_path
+        self.github_token = settings.llm.copilot.github_token
+        self.model = settings.llm.copilot.model
+        reasoning_effort = settings.llm.copilot.reasoning_effort.lower()
+        if reasoning_effort not in {"low", "medium", "high", "xhigh"}:
+            reasoning_effort = "medium"
+        self.reasoning_effort = reasoning_effort
         self._client = None
 
     async def _get_client(self):
@@ -88,7 +90,7 @@ class CopilotProvider(LLMProviderBase):
             except ImportError:
                 logger.error("copilot.sdk_not_installed")
                 raise ImportError(
-                    "copilot-sdk not installed. Install with: pip install copilot-sdk"
+                    "Copilot SDK import failed. Install/upgrade with: pip install -U github-copilot-sdk"
                 )
         return self._client
 
@@ -116,8 +118,7 @@ class CopilotProvider(LLMProviderBase):
             try:
                 session = await client.create_session({
                     "model": self.model,
-                    "temperature": self.temperature,
-                    "max_tokens": self.max_tokens,
+                    "reasoning_effort": self.reasoning_effort,
                     "skill_directories": [_SKILLS_DIR],
                 })
 

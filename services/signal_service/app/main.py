@@ -6,6 +6,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from sqlalchemy import text
 
+from shared.config import get_settings
 from shared.db.session import get_timescale_session, get_postgres_session
 from shared.utils import setup_logging, get_logger
 
@@ -17,6 +18,15 @@ logger = get_logger("signal_service")
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     setup_logging("signal_service")
+    settings = get_settings()
+    logger.debug(
+        "signal_service.logging_config_snapshot",
+        service_name="signal_service",
+        log_level=settings.logging.level,
+        log_format=settings.logging.format,
+        to_file=settings.logging.to_file,
+        rotate_mode=settings.logging.file_rotate_mode,
+    )
     logger.info("signal_service.starting")
     yield
     logger.info("signal_service.stopped")

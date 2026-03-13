@@ -1,11 +1,14 @@
 [project]
-name = "portfolio-service"
+name = "trade-service"
 version = "0.1.0"
-description = "Portfolio Service - 持仓查询与绩效归因"
+description = "Trade Service - merged execution and portfolio capabilities"
 requires-python = ">=3.11"
 dependencies = [
     "algo-trader-shared",
     "fastapi",
     "uvicorn[standard]",
     "celery[redis]",
+    "redis[hiredis]",
+    "apscheduler>=3.10",
+    "grpcio",
 ]

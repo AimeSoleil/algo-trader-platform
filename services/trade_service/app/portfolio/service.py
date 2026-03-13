@@ -2,13 +2,15 @@
 from __future__ import annotations
 
 import json
-from datetime import date, datetime, timezone
+from datetime import date
 from typing import Any
 
 from sqlalchemy import text
 
 from shared.db.session import get_postgres_session
-from shared.utils import now_utc
+from shared.utils import get_logger, now_utc
+
+logger = get_logger("trade_portfolio_core")
 
 
 def _to_float(value: Any, default: float = 0.0) -> float:
@@ -57,6 +59,7 @@ def _position_sign(side: str | None) -> int:
 
 
 async def _load_open_positions() -> list[dict[str, Any]]:
+    logger.debug("portfolio.positions_query_start", event="db_read", stage="before_query")
     query = text(
         """
         SELECT
@@ -81,10 +84,22 @@ async def _load_open_positions() -> list[dict[str, Any]]:
     )
     async with get_postgres_session() as session:
         rows = (await session.execute(query)).mappings().all()
+    logger.debug(
+        "portfolio.positions_query_done",
+        event="db_read",
+        stage="after_query",
+        rows=len(rows),
+    )
     return [dict(row) for row in rows]
 
 
 def _normalize_positions(rows: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], dict[str, float]]:
+    logger.debug(
+        "portfolio.normalize_start",
+        event="normalize",
+        stage="start",
+        rows=len(rows),
+    )
     positions: list[dict[str, Any]] = []
 
     total_delta = 0.0
@@ -155,12 +170,27 @@ def _normalize_positions(rows: list[dict[str, Any]]) -> tuple[list[dict[str, Any
         "total_realized_pnl": total_realized_pnl,
         "net_pnl": total_unrealized_pnl + total_realized_pnl,
     }
+    logger.debug(
+        "portfolio.normalize_done",
+        event="normalize",
+        stage="completed",
+        positions=len(positions),
+        total_market_value=aggregates["total_market_value"],
+        net_pnl=aggregates["net_pnl"],
+    )
     return positions, aggregates
 
 
 async def get_positions() -> dict[str, Any]:
+    logger.debug("portfolio.get_positions_start", event="api_service", stage="start")
     rows = await _load_open_positions()
     positions, aggregates = _normalize_positions(rows)
+    logger.debug(
+        "portfolio.get_positions_done",
+        event="api_service",
+        stage="completed",
+        count=len(positions),
+    )
     return {
         "timestamp": now_utc().isoformat(),
         "count": len(positions),
@@ -170,8 +200,15 @@ async def get_positions() -> dict[str, Any]:
 
 
 async def get_portfolio_snapshot() -> dict[str, Any]:
+    logger.debug("portfolio.get_snapshot_start", event="api_service", stage="start")
     rows = await _load_open_positions()
     positions, aggregates = _normalize_positions(rows)
+    logger.debug(
+        "portfolio.get_snapshot_done",
+        event="api_service",
+        stage="completed",
+        positions_count=len(positions),
+    )
     return {
         "timestamp": now_utc().isoformat(),
         "positions_count": len(positions),
@@ -191,6 +228,12 @@ async def get_portfolio_snapshot() -> dict[str, Any]:
 
 
 async def get_performance(trading_date: date) -> dict[str, Any]:
+    logger.debug(
+        "portfolio.get_performance_start",
+        event="api_service",
+        stage="start",
+        trading_date=trading_date.isoformat(),
+    )
     async with get_postgres_session() as session:
         realized = await session.execute(
             text(
@@ -215,6 +258,15 @@ async def get_performance(trading_date: date) -> dict[str, Any]:
             )
         )
         unrealized_pnl = _to_float(unrealized.scalar())
+
+    logger.debug(
+        "portfolio.get_performance_done",
+        event="api_service",
+        stage="completed",
+        trading_date=trading_date.isoformat(),
+        realized_pnl=realized_pnl,
+        unrealized_pnl=unrealized_pnl,
+    )
 
     return {
         "date": trading_date.isoformat(),

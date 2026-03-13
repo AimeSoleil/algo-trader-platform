@@ -9,6 +9,7 @@ dependencies = [
     "uvicorn[standard]",
     "openai>=1.66.0",
     "celery[redis]",
+    "github-copilot-sdk>=0.1.32",
 ]
 
 [project.optional-dependencies]

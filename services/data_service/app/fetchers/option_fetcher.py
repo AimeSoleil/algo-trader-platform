@@ -41,17 +41,22 @@ def _safe_int(val, default: int = 0) -> int:
 def _fetch_option_chain_sync(symbol: str) -> OptionChainSnapshot | None:
     """同步获取期权链（在线程池中执行）"""
     try:
+        logger.debug("option_fetcher.fetch_start", symbol=symbol)
         ticker = yf.Ticker(symbol)
 
         # 1) 获取标的物当前价格 — 只调用一次
+        logger.debug("option_fetcher.underlying_fetch_start", symbol=symbol, period="1d")
         hist = ticker.history(period="1d")
+        logger.debug("option_fetcher.underlying_fetch_done", symbol=symbol, rows=len(hist))
         if hist.empty:
             logger.warning("option_fetcher.no_history", symbol=symbol)
             return None
         underlying_price = float(hist["Close"].iloc[-1])
 
         # 2) 获取所有到期日
+        logger.debug("option_fetcher.expiries_fetch_start", symbol=symbol)
         expiries = ticker.options
+        logger.debug("option_fetcher.expiries_fetch_done", symbol=symbol, expiries_count=len(expiries))
         if not expiries:
             logger.warning("option_fetcher.no_expiries", symbol=symbol)
             return None
@@ -59,6 +64,7 @@ def _fetch_option_chain_sync(symbol: str) -> OptionChainSnapshot | None:
         contracts: list[OptionContract] = []
         now = now_utc()
 
+        logger.debug("option_fetcher.contract_transform_start", symbol=symbol, expiries_count=len(expiries))
         for expiry_str in expiries:
             expiry_date = pd.to_datetime(expiry_str).date()
             days_to_expiry = (expiry_date - today_trading()).days
@@ -68,7 +74,15 @@ def _fetch_option_chain_sync(symbol: str) -> OptionChainSnapshot | None:
                 continue
 
             try:
+                logger.debug("option_fetcher.chain_fetch_start", symbol=symbol, expiry=expiry_str)
                 chain = ticker.option_chain(expiry_str)
+                logger.debug(
+                    "option_fetcher.chain_fetch_done",
+                    symbol=symbol,
+                    expiry=expiry_str,
+                    calls_rows=len(chain.calls),
+                    puts_rows=len(chain.puts),
+                )
             except Exception as e:
                 logger.warning(
                     "option_fetcher.chain_error",
@@ -122,7 +136,10 @@ def _fetch_option_chain_sync(symbol: str) -> OptionChainSnapshot | None:
             timestamp=now,
             contracts=contracts,
         )
+        logger.debug("option_fetcher.contract_transform_done", symbol=symbol, contracts_count=len(contracts))
+        logger.debug("option_fetcher.greeks_enrich_start", symbol=symbol, contracts_count=len(contracts))
         enrich_snapshot_greeks(snapshot)
+        logger.debug("option_fetcher.greeks_enrich_done", symbol=symbol, contracts_count=len(snapshot.contracts))
         logger.info(
             "option_fetcher.success",
             symbol=symbol,

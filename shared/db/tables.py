@@ -248,3 +248,23 @@ class BackfillLog(BusinessBase):
     status = Column(String(20), nullable=False, default="pending")
     error_message = Column(Text, nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+
+class ExecutionEventRecord(BusinessBase):
+    """Audit trail for execution events (stop-loss triggers, order lifecycle, etc.)."""
+
+    __tablename__ = "execution_events"
+
+    id = Column(String(36), primary_key=True)
+    event_type = Column(String(40), nullable=False)
+    symbol = Column(String(50), nullable=True)
+    blueprint_id = Column(String(36), nullable=True)
+    order_id = Column(String(36), nullable=True)
+    payload = Column(JSONB, nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    __table_args__ = (
+        Index("idx_exec_event_type", "event_type"),
+        Index("idx_exec_event_symbol", "symbol"),
+        Index("idx_exec_event_created", "created_at"),
+    )

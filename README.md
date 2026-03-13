@@ -8,7 +8,7 @@
 
 - 基础设施：TimescaleDB、PostgreSQL、Redis、RabbitMQ、MinIO
 - 共享层：Pydantic 模型、配置系统、双数据库会话、Celery 共享实例
-- 服务层：Data / Backfill / Signal / Analysis / Execution / Portfolio / Monitoring
+- 服务层：Data / Backfill / Signal / Analysis / Trade / Monitoring / Gateway
 - 运维脚本：数据库初始化、watchlist 种子、Celery worker 启动脚本
 
 ## 快速开始
@@ -42,7 +42,7 @@ docker compose up -d
 # 单独启动某个服务（示例：data_service）
 docker compose up -d data_service
 
-# 启动全部应用服务（data/signal/analysis/execution/portfolio/monitoring/gateway）
+# 启动全部应用服务（data/signal/analysis/trade/monitoring/gateway）
 docker compose --profile app up -d
 
 # 查看所有容器状态
@@ -53,9 +53,9 @@ docker compose ps
 
 | 时间 | 服务 | 动作 |
 |------|------|------|
-| 09:20 | Execution | 加载当日 `llm_trading_blueprint` |
+| 09:20 | Trade | 加载当日 `llm_trading_blueprint` |
 | 09:30-16:00（每5分钟） | Data | 拉取行情并写入 L1 内存 + L2 Parquet 缓存 |
-| 09:30-16:00（每5分钟） | Rule Engine + Execution | 校验蓝图条件，触发下单 |
+| 09:30-16:00（每5分钟） | Rule Engine + Trade | 校验蓝图条件，触发下单 |
 | 16:30 | Data (Celery) | 批量入库（股票1min + 期权5min） |
 | 16:35 | Backfill (Celery) | 检测并补齐缺口 |
 | 17:00 | Signal (Celery) | 批量计算特征（IV/PCR/趋势/曲面） |
@@ -106,9 +106,9 @@ curl http://localhost:8003/api/v1/analyze/<task_id>
 | Backfill Service | `services/backfill_service` | 缺口检测、冷启动历史回填 |
 | Signal Service | `services/signal_service` | 盘后批量指标计算与信号生成 |
 | Analysis Service | `services/analysis_service` | LLM 蓝图生成（OpenAI / Copilot，自动回退） |
-| Execution Service | `services/execution_service` | 蓝图加载、规则评估、Paper Broker |
-| Portfolio Service | `services/portfolio_service` | 持仓快照、绩效查询、报表任务 |
+| Trade Service | `services/trade_service` | 蓝图加载、规则评估、止损风控、持仓快照、绩效查询 |
 | Monitoring Service | `services/monitoring_service` | 健康检查、Prometheus 指标暴露 |
+| Gateway Service | `services/gateway_service` | 聚合文档与服务反向代理入口 |
 
 ## LLM 配置
 
@@ -118,18 +118,17 @@ curl http://localhost:8003/api/v1/analyze/<task_id>
 llm:
   provider: "copilot"           # openai / copilot
 
-  # ── OpenAI ──
-  openai_api_key: ""            # 或通过环境变量 LLM__OPENAI_API_KEY 设置
-  openai_model: "gpt-4o"
-  openai_temperature: 0.1
-  openai_max_tokens: 4096
+  openai:
+    api_key: ""                # 或通过环境变量 LLM__OPENAI__API_KEY 设置
+    model: "gpt-4o"
+    temperature: 0.1
+    max_tokens: 8192
 
-  # ── Copilot SDK ──
-  copilot_cli_path: "copilot"
-  copilot_github_token: ""      # 留空则使用已登录 GitHub 用户
-  copilot_model: "gpt-4o"
-  copilot_temperature: 0.1
-  copilot_max_tokens: 4096
+  copilot:
+    cli_path: "copilot"
+    github_token: ""            # 留空则使用已登录 GitHub 用户
+    model: "gpt-4o"
+    reasoning_effort: "medium"  # low / medium / high
 
   # ── Common ──
   cache_enabled: true
@@ -138,7 +137,7 @@ llm:
 ```
 
 - `provider` 决定主 provider；失败时自动回退到另一个。
-- 每个 provider 的 `model` / `temperature` / `max_tokens` 独立配置，互不干扰。
+- OpenAI 支持 `model` / `temperature` / `max_tokens`；Copilot SDK 支持 `model` / `reasoning_effort`。
 
 ## 技术栈
 

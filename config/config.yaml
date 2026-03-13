@@ -1,15 +1,43 @@
-# ============================================================
+# ═══════════════════════════════════════════════════════════
 # 期权聚焦型量化交易平台 — 核心配置
-# ============================================================
+# ═══════════════════════════════════════════════════════════
 
-# ── 交易设置 ──
-trading:
-  timezone: "America/New_York"
-  execution_interval: 300            # 执行检查间隔（秒）= 5分钟
 
-# ── Data Service 配置 ──
-# 盘后数据采集由 Celery pipeline 统一驱动（16:30 触发）
-# 盘中期权链采集仅在 intraday_enabled: true 时启用
+# ── Infrastructure — 基础设施连接 ────────────────────────────
+
+database:
+  timescale_url: "postgresql+asyncpg://trader:trader_dev@localhost:5432/algo_trader"
+  postgres_url: "postgresql+asyncpg://trader:trader_dev@localhost:5433/algo_trader_biz"
+
+redis:
+  url: "redis://localhost:6379/0"
+
+rabbitmq:
+  url: "amqp://trader:trader_dev@localhost:5672//"
+
+minio:
+  endpoint: "localhost:9000"
+  access_key: "minioadmin"
+  secret_key: "minioadmin"
+  secure: false
+
+
+# ── Broker — 交易通道 ───────────────────────────────────────
+
+broker:
+  type: "paper"                      # paper | futu
+  paper:
+    initial_cash: 100000.0
+  futu:
+    host: "127.0.0.1"
+    port: 11111
+    trader_id: ""
+    trd_env: "SIMULATE"              # SIMULATE | REAL
+    market: "US"
+
+
+# ── Services — 各服务业务配置 ────────────────────────────────
+
 data_service:
   intraday_enabled: false            # true: 叠加盘中 5min 期权链采集
   providers:
@@ -29,45 +57,51 @@ data_service:
       stock_1min: 365
       option_5min: 180
 
-# ── 期权策略 ──
 option_strategy:
   lookback_days: 252                 # iv_percentile 滚动窗口（交易日）
   high_quantile: 0.7                 # iv_percentile >= 70 → 高波动区间
   low_quantile: 0.3                  # iv_percentile <= 30 → 低波动区间
 
-# ── LLM 配置 ──
 llm:
   provider: "copilot"                 # openai / copilot
-
-  # ── OpenAI ──
-  openai_api_key: ""                  # set via env OPENAI_API_KEY or here
-  openai_model: "gpt-4o"
-  openai_temperature: 0.1
-  openai_max_tokens: 8192
-
-  # ── Copilot SDK ──
-  copilot_cli_path: "copilot"         # path to copilot CLI binary
-  copilot_github_token: ""            # leave empty to use logged-in user
-  copilot_model: "gpt-4o"             # model used inside Copilot session
-  copilot_temperature: 0.1
-  copilot_max_tokens: 4096
-
-  # ── Common ──
+  openai:
+    api_key: ""                       # or env: LLM__OPENAI__API_KEY
+    model: "gpt-4o"
+    temperature: 0.1
+    max_tokens: 8192
+  copilot:
+    cli_path: "copilot"
+    github_token: ""                  # or env: LLM__COPILOT__GITHUB_TOKEN
+    model: "gpt-4o"
+    reasoning_effort: "medium"        # low / medium / high
   cache_enabled: true
-  cache_ttl: 3600                    # 缓存过期（秒）
-  skill_dir: ""                      # leave empty to use default (auto-resolved by provider)
+  cache_ttl: 3600
+  skill_dir: ""
 
-# ── 调度时间表 ──
+
+# ── Trading — 交易执行与风控 ─────────────────────────────────
+
+trading:
+  timezone: "America/New_York"
+  execution_interval: 300            # 执行检查间隔（秒）= 5分钟
+
+risk:
+  stop_loss:
+    enabled: true
+    check_interval_seconds: 60
+    portfolio_loss_limit: 2000.0
+    position_loss_limit: 500.0
+    cooldown_seconds: 60
+
 schedule:
-  blueprint_load_time: "09:20"
-  market_open: "09:30"
-  market_close: "16:00"
-  batch_flush_time: "16:30"
-  backfill_time: "16:35"
-  signal_compute_time: "17:00"
-  blueprint_generate_time: "17:10"
+  blueprint_load_time: "09:20"       # 每日 9:20 加载当天的策略蓝图（盘前准备）
+  market_open: "09:30"               # 9:30 市场开盘，开始执行策略
+  market_close: "16:00"              # 16:00 市场收盘，停止交易
+  batch_flush_time: "16:30"          # 16:30 批量 flush 当日交易数据
+  backfill_time: "16:35"             # 16:35 开始执行盘后数据 backfill
+  signal_compute_time: "17:00"       # 17:00 计算交易信号
+  blueprint_generate_time: "17:10"   # 17:10 生成明天的策略蓝图
 
-# ── 监控标的列表 ──
 watchlist:
   - "AAPL"
   - "MSFT"
@@ -80,7 +114,19 @@ watchlist:
   - "GOOGL"
   - "AMD"
 
-# ── 日志 ──
+
+# ── Observability — 可观测性 ─────────────────────────────────
+
 logging:
   level: "INFO"
   format: "json"                     # json / console
+  to_console: true
+  to_file: false
+  file_path: "logs/algo-trader.log"
+  file_rotate_mode: "time"           # time / size / none
+  file_max_bytes: 104857600
+  file_rotate: true
+  file_rotate_when: "midnight"
+  file_rotate_interval: 1
+  file_backup_count: 14
+  file_rotate_utc: false

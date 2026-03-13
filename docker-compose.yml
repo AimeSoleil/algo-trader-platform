@@ -158,12 +158,12 @@ services:
     networks:
       - algo_trader_net
 
-  execution_service:
+  trade_service:
     profiles: ["app"]
     build:
       context: .
-      dockerfile: services/execution_service/Dockerfile
-    container_name: algo_execution_service
+      dockerfile: services/trade_service/Dockerfile
+    container_name: algo_trade_service
     env_file:
       - .env
     environment:
@@ -176,24 +176,6 @@ services:
       postgres:
         condition: service_healthy
       redis:
-        condition: service_healthy
-    networks:
-      - algo_trader_net
-
-  portfolio_service:
-    profiles: ["app"]
-    build:
-      context: .
-      dockerfile: services/portfolio_service/Dockerfile
-    container_name: algo_portfolio_service
-    env_file:
-      - .env
-    environment:
-      PYTHONPATH: /app
-    ports:
-      - "8005:8005"
-    depends_on:
-      postgres:
         condition: service_healthy
     networks:
       - algo_trader_net

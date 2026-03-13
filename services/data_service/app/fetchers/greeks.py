@@ -77,6 +77,12 @@ def enrich_snapshot_greeks(
         同一快照对象（就地修改）。
     """
     S = snapshot.underlying_price
+    logger.debug(
+        "greeks.enrich_start",
+        underlying=snapshot.underlying,
+        contracts_count=len(snapshot.contracts),
+        risk_free_rate=risk_free_rate,
+    )
     valid_count = 0
 
     for contract in snapshot.contracts:
@@ -95,6 +101,12 @@ def enrich_snapshot_greeks(
         snapshot.underlying,
         len(snapshot.contracts),
         valid_count,
+    )
+    logger.debug(
+        "greeks.enrich_done",
+        underlying=snapshot.underlying,
+        contracts_count=len(snapshot.contracts),
+        greeks_valid=valid_count,
     )
 
     return snapshot

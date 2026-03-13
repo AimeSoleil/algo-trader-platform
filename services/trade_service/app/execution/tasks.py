@@ -6,12 +6,12 @@ from datetime import date
 from shared.celery_app import celery_app
 from shared.utils import get_logger
 
-from services.execution_service.app.blueprint_loader import complete_blueprint, load_blueprint_for_date
+from services.trade_service.app.execution.blueprint_loader import complete_blueprint, load_blueprint_for_date
 
 logger = get_logger("execution_tasks")
 
 
-@celery_app.task(name="execution_service.tasks.load_daily_blueprint", bind=True, max_retries=2)
+@celery_app.task(name="trade_service.tasks.load_daily_blueprint", bind=True, max_retries=2)
 def load_daily_blueprint(self, trading_date: str) -> dict:
     return asyncio.run(_load_daily_blueprint_async(trading_date))
 
@@ -27,7 +27,7 @@ async def _load_daily_blueprint_async(trading_date: str) -> dict:
     return {"status": "loaded", "trading_date": trading_date, "blueprint_id": blueprint["id"]}
 
 
-@celery_app.task(name="execution_service.tasks.finalize_daily_blueprint", bind=True, max_retries=2)
+@celery_app.task(name="trade_service.tasks.finalize_daily_blueprint", bind=True, max_retries=2)
 def finalize_daily_blueprint(self, trading_date: str) -> dict:
     return asyncio.run(_finalize_daily_blueprint_async(trading_date))
 

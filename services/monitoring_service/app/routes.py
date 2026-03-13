@@ -6,6 +6,7 @@ from fastapi import APIRouter
 
 from shared.config import get_settings
 from shared.db.session import get_postgres_session, get_timescale_session
+from shared.utils import get_logger
 
 from services.monitoring_service.app.metrics import (
     blueprint_loaded_total,
@@ -13,10 +14,12 @@ from services.monitoring_service.app.metrics import (
 )
 
 router = APIRouter(tags=["monitoring"])
+logger = get_logger("monitoring_routes")
 
 
 @router.get("/health/services")
 async def health_services():
+    logger.debug("monitoring.health_services_start", event="health_check", stage="start")
     postgres_ok = False
     timescale_ok = False
     postgres_error = ""
@@ -36,6 +39,13 @@ async def health_services():
     except Exception as exc:
         timescale_error = str(exc)
 
+    logger.debug(
+        "monitoring.health_services_done",
+        event="health_check",
+        stage="completed",
+        postgres_ok=postgres_ok,
+        timescale_ok=timescale_ok,
+    )
     return {
         "postgres": {"ok": postgres_ok, "error": postgres_error or None},
         "timescale": {"ok": timescale_ok, "error": timescale_error or None},
@@ -45,18 +55,27 @@ async def health_services():
 @router.get("/health/schedule")
 async def health_schedule():
     settings = get_settings()
+    logger.debug("monitoring.health_schedule", event="health_check", stage="schedule", has_schedule=bool(settings.schedule))
     return settings.schedule.model_dump()
 
 
 @router.post("/metrics/blueprint_loaded")
 async def metric_blueprint_loaded():
     blueprint_loaded_total.inc()
+    logger.debug("monitoring.metric_blueprint_loaded", event="metric_update", metric="blueprint_loaded_total")
     return {"status": "ok", "metric": "blueprint_loaded_total"}
 
 
 @router.post("/metrics/pipeline_stage")
 async def metric_pipeline_stage(stage: str, status: str):
     post_market_pipeline_runs_total.labels(stage=stage, status=status).inc()
+    logger.debug(
+        "monitoring.metric_pipeline_stage",
+        event="metric_update",
+        metric="post_market_pipeline_runs_total",
+        stage_label=stage,
+        status_label=status,
+    )
     return {
         "status": "ok",
         "metric": "post_market_pipeline_runs_total",

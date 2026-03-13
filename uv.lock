@@ -17,11 +17,10 @@ members = [
     "analysis-service",
     "backfill-service",
     "data-service",
-    "execution-service",
     "gateway-service",
     "monitoring-service",
-    "portfolio-service",
     "signal-service",
+    "trade-service",
 ]
 
 [[package]]
@@ -146,6 +145,7 @@ dependencies = [
     { name = "algo-trader-shared" },
     { name = "celery", extra = ["redis"] },
     { name = "fastapi" },
+    { name = "github-copilot-sdk" },
     { name = "openai" },
     { name = "uvicorn", extra = ["standard"] },
 ]
@@ -161,6 +161,7 @@ requires-dist = [
     { name = "algo-trader-shared", editable = "shared" },
     { name = "celery", extras = ["redis"] },
     { name = "fastapi" },
+    { name = "github-copilot-sdk", specifier = ">=0.1.32" },
     { name = "openai", specifier = ">=1.66.0" },
     { name = "pytest", marker = "extra == 'dev'" },
     { name = "pytest-asyncio", marker = "extra == 'dev'" },
@@ -749,31 +750,6 @@ wheels = [
 ]
 
 [[package]]
-name = "execution-service"
-version = "0.1.0"
-source = { virtual = "services/execution_service" }
-dependencies = [
-    { name = "algo-trader-shared" },
-    { name = "apscheduler" },
-    { name = "celery", extra = ["redis"] },
-    { name = "fastapi" },
-    { name = "grpcio" },
-    { name = "redis", extra = ["hiredis"] },
-    { name = "uvicorn", extra = ["standard"] },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "algo-trader-shared", editable = "shared" },
-    { name = "apscheduler", specifier = ">=3.10" },
-    { name = "celery", extras = ["redis"] },
-    { name = "fastapi" },
-    { name = "grpcio" },
-    { name = "redis", extras = ["hiredis"] },
-    { name = "uvicorn", extras = ["standard"] },
-]
-
-[[package]]
 name = "fastapi"
 version = "0.135.1"
 source = { registry = "https://pypi.org/simple" }
@@ -815,6 +791,23 @@ requires-dist = [
     { name = "fastapi" },
     { name = "httpx", specifier = ">=0.27" },
     { name = "uvicorn", extras = ["standard"] },
+]
+
+[[package]]
+name = "github-copilot-sdk"
+version = "0.1.32"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "pydantic" },
+    { name = "python-dateutil" },
+]
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/cd/67/ebd002c14fe7d2640d0fff47a0b29fdb21ed239b597afa2d2c6f6cfebb0b/github_copilot_sdk-0.1.32-py3-none-macosx_10_9_x86_64.whl", hash = "sha256:d97bc39fbd4b51e0aea3405299da1e643838ddbf6bff284f688a2d8c20d82ff8", size = 58576987, upload-time = "2026-03-07T15:28:24.062Z" },
+    { url = "https://files.pythonhosted.org/packages/a5/50/add440f61e19f5b7e6989c89c5cefcb14c23f06627621e7c3a15a1f75e5d/github_copilot_sdk-0.1.32-py3-none-macosx_11_0_arm64.whl", hash = "sha256:8098592f34e7ee7decbcbb7615c7eb924471e65a3e4d0d93bc49b0d112f8ec51", size = 55328145, upload-time = "2026-03-07T15:28:28.395Z" },
+    { url = "https://files.pythonhosted.org/packages/f9/b8/c3ca0678b21d8a0dd8fe3aa8fad4b7ec5f22cbe9d5fb3a11f82df4f40578/github_copilot_sdk-0.1.32-py3-none-manylinux_2_28_aarch64.whl", hash = "sha256:c20cae4bec3584ce007a65a363216a1f98a71428a3ca3b76622f9e556307eed2", size = 61456678, upload-time = "2026-03-07T15:28:32.646Z" },
+    { url = "https://files.pythonhosted.org/packages/21/5c/bdfe177353f88d44da9600c3ec478e2b0df7a838901947b168e869ba5ad7/github_copilot_sdk-0.1.32-py3-none-manylinux_2_28_x86_64.whl", hash = "sha256:0941fd445e97a9b13fb713086c4a8c09c20ec8c7ab854cf009bd7cc213488999", size = 59641536, upload-time = "2026-03-07T15:28:36.977Z" },
+    { url = "https://files.pythonhosted.org/packages/1e/d0/2f3a07c74ecd24587b8f7d26729738f73e63f3341bf4bdc9eb2bb73ddaaf/github_copilot_sdk-0.1.32-py3-none-win_amd64.whl", hash = "sha256:37a82ff0908e01512052b69df4aa498332fa5769999635425015ed43cd850622", size = 54077464, upload-time = "2026-03-07T15:28:41.34Z" },
+    { url = "https://files.pythonhosted.org/packages/1c/76/292088d6ccf2daf8bcb8a94b22b4f16005a6772087896f1b43c4f0d5edaa/github_copilot_sdk-0.1.32-py3-none-win_arm64.whl", hash = "sha256:3199c99604e8d393b1d60905be80b84da44e70d16d30b92e2ae9b92814cdc4ae", size = 52083845, upload-time = "2026-03-07T15:28:45.092Z" },
 ]
 
 [[package]]
@@ -1678,25 +1671,6 @@ wheels = [
 ]
 
 [[package]]
-name = "portfolio-service"
-version = "0.1.0"
-source = { virtual = "services/portfolio_service" }
-dependencies = [
-    { name = "algo-trader-shared" },
-    { name = "celery", extra = ["redis"] },
-    { name = "fastapi" },
-    { name = "uvicorn", extra = ["standard"] },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "algo-trader-shared", editable = "shared" },
-    { name = "celery", extras = ["redis"] },
-    { name = "fastapi" },
-    { name = "uvicorn", extras = ["standard"] },
-]
-
-[[package]]
 name = "prometheus-client"
 version = "0.24.1"
 source = { registry = "https://pypi.org/simple" }
@@ -2504,6 +2478,31 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/09/a9/6ba95a270c6f1fbcd8dac228323f2777d886cb206987444e4bce66338dd4/tqdm-4.67.3.tar.gz", hash = "sha256:7d825f03f89244ef73f1d4ce193cb1774a8179fd96f31d7e1dcde62092b960bb", size = 169598, upload-time = "2026-02-03T17:35:53.048Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/16/e1/3079a9ff9b8e11b846c6ac5c8b5bfb7ff225eee721825310c91b3b50304f/tqdm-4.67.3-py3-none-any.whl", hash = "sha256:ee1e4c0e59148062281c49d80b25b67771a127c85fc9676d3be5f243206826bf", size = 78374, upload-time = "2026-02-03T17:35:50.982Z" },
+]
+
+[[package]]
+name = "trade-service"
+version = "0.1.0"
+source = { virtual = "services/trade_service" }
+dependencies = [
+    { name = "algo-trader-shared" },
+    { name = "apscheduler" },
+    { name = "celery", extra = ["redis"] },
+    { name = "fastapi" },
+    { name = "grpcio" },
+    { name = "redis", extra = ["hiredis"] },
+    { name = "uvicorn", extra = ["standard"] },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "algo-trader-shared", editable = "shared" },
+    { name = "apscheduler", specifier = ">=3.10" },
+    { name = "celery", extras = ["redis"] },
+    { name = "fastapi" },
+    { name = "grpcio" },
+    { name = "redis", extras = ["hiredis"] },
+    { name = "uvicorn", extras = ["standard"] },
 ]
 
 [[package]]

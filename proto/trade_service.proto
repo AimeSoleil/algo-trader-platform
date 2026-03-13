@@ -1,8 +1,8 @@
 syntax = "proto3";
 
-package algo_trader.execution;
+package algo_trader.trade;
 
-option go_package = "algo_trader/execution";
+option go_package = "algo_trader/trade";
 
 message BlueprintStatusRequest {
   string trading_date = 1;
@@ -42,7 +42,7 @@ message ManualOverrideResponse {
   string message = 2;
 }
 
-service ExecutionService {
+service TradeService {
   rpc GetBlueprintStatus(BlueprintStatusRequest) returns (BlueprintStatusResponse);
   rpc GetOrderStatus(OrderStatusRequest) returns (OrderStatusResponse);
   // 人工干预通道

@@ -79,10 +79,10 @@ def _build_hybrid_instructions() -> str:
 class OpenAIProvider(LLMProviderBase):
     def __init__(self):
         settings = get_settings()
-        self.client = AsyncOpenAI(api_key=settings.llm.openai_api_key)
-        self.model = settings.llm.openai_model
-        self.temperature = settings.llm.openai_temperature
-        self.max_tokens = settings.llm.openai_max_tokens
+        self.client = AsyncOpenAI(api_key=settings.llm.openai.api_key)
+        self.model = settings.llm.openai.model
+        self.temperature = settings.llm.openai.temperature
+        self.max_tokens = settings.llm.openai.max_tokens
 
         # Pre-build the skill bundle once
         self._skill_bundle = _build_skill_bundle()

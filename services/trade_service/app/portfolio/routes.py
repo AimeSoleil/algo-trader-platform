@@ -5,10 +5,10 @@ from datetime import date
 
 from fastapi import APIRouter
 
-from services.portfolio_service.app.service import (
+from services.trade_service.app.portfolio.service import (
+    get_performance,
     get_portfolio_snapshot,
     get_positions,
-    get_performance,
 )
 
 router = APIRouter(tags=["portfolio"])

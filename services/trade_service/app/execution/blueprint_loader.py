@@ -1,15 +1,23 @@
 from __future__ import annotations
 
-from datetime import date, datetime
+from datetime import date
 from typing import Any
 
 from sqlalchemy import text
 
 from shared.db.session import get_postgres_session
-from shared.utils import now_utc
+from shared.utils import get_logger, now_utc
+
+logger = get_logger("execution_blueprint_loader")
 
 
 async def load_blueprint_for_date(trading_date: date) -> dict[str, Any] | None:
+    logger.debug(
+        "blueprint_loader.load_started",
+        event="load_blueprint",
+        stage="query",
+        trading_date=str(trading_date),
+    )
     async with get_postgres_session() as session:
         result = await session.execute(
             text(
@@ -26,8 +34,21 @@ async def load_blueprint_for_date(trading_date: date) -> dict[str, Any] | None:
         )
         row = result.mappings().first()
         if not row:
+            logger.debug(
+                "blueprint_loader.load_not_found",
+                event="load_blueprint",
+                stage="query_result",
+                trading_date=str(trading_date),
+            )
             return None
 
+        logger.debug(
+            "blueprint_loader.activate_started",
+            event="activate_blueprint",
+            stage="db_write",
+            trading_date=str(trading_date),
+            blueprint_id=row["id"],
+        )
         await session.execute(
             text(
                 """
@@ -37,6 +58,14 @@ async def load_blueprint_for_date(trading_date: date) -> dict[str, Any] | None:
                 """
             ),
             {"id": row["id"], "updated_at": now_utc()},
+        )
+        logger.debug(
+            "blueprint_loader.load_completed",
+            event="load_blueprint",
+            stage="completed",
+            trading_date=str(trading_date),
+            blueprint_id=row["id"],
+            status="active",
         )
 
         return {
@@ -48,6 +77,13 @@ async def load_blueprint_for_date(trading_date: date) -> dict[str, Any] | None:
 
 
 async def complete_blueprint(trading_date: date, execution_summary: dict[str, Any]) -> int:
+    logger.debug(
+        "blueprint_loader.complete_started",
+        event="complete_blueprint",
+        stage="db_write",
+        trading_date=str(trading_date),
+        has_execution_summary=bool(execution_summary),
+    )
     async with get_postgres_session() as session:
         result = await session.execute(
             text(
@@ -66,4 +102,12 @@ async def complete_blueprint(trading_date: date, execution_summary: dict[str, An
                 "updated_at": now_utc(),
             },
         )
-        return result.rowcount or 0
+        updated_rows = result.rowcount or 0
+        logger.debug(
+            "blueprint_loader.complete_finished",
+            event="complete_blueprint",
+            stage="completed",
+            trading_date=str(trading_date),
+            rows=updated_rows,
+        )
+        return updated_rows
