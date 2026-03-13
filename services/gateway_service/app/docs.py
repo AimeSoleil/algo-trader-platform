@@ -71,6 +71,14 @@ async def _build_merged_spec(request: Request) -> dict:
     spec["servers"] = [{"url": root_path or ""}]
     spec.setdefault("components", {}).setdefault("schemas", {})
 
+    # Tag gateway's own routes under "Gateway"
+    for _path_item in spec.get("paths", {}).values():
+        for _detail in _path_item.values():
+            if isinstance(_detail, dict) and "operationId" in _detail:
+                _detail["tags"] = ["Gateway"]
+
+    tag_meta: list[dict[str, str]] = [{"name": "Gateway", "description": "Gateway-level endpoints (health, etc.)"}]
+
     # Fetch all service specs in parallel
     tasks = [
         _fetch_service_spec(name, entry.url)
@@ -103,12 +111,13 @@ async def _build_merged_spec(request: Request) -> dict:
         prefixed_paths: dict[str, Any] = {}
         for path, path_item in service_paths.items():
             new_path = f"/{service_name}{path}"
-            # Prefix operationId for each method
+            # Prefix operationId and override tags for each method
             for method in ("get", "post", "put", "patch", "delete", "options", "head", "trace"):
-                if method in path_item and "operationId" in path_item[method]:
-                    path_item[method]["operationId"] = (
-                        f"{service_name}_{path_item[method]['operationId']}"
-                    )
+                if method in path_item and isinstance(path_item[method], dict):
+                    op = path_item[method]
+                    if "operationId" in op:
+                        op["operationId"] = f"{service_name}_{op['operationId']}"
+                    op["tags"] = [entry.title]
             prefixed_paths[new_path] = path_item
 
         # Rewrite $refs in paths: serialise → replace → deserialise
@@ -138,6 +147,11 @@ async def _build_merged_spec(request: Request) -> dict:
         spec["paths"].update(prefixed_paths)
         spec["components"]["schemas"].update(prefixed_schemas)
 
+        # Register tag metadata for this service
+        svc_desc = service_spec.get("info", {}).get("description", "")
+        tag_meta.append({"name": entry.title, "description": svc_desc})
+
+    spec["tags"] = tag_meta
     return spec
 
 
