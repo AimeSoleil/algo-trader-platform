@@ -52,7 +52,7 @@ async def _run_blueprint_pipeline(
     """Common pipeline: fetch positions → previous execution → LLM → return blueprint."""
     logger.debug(
         "blueprint.pipeline_started",
-        event="pipeline_start",
+        log_event="pipeline_start",
         stage="start",
         trading_date=str(td),
         signal_rows=len(signal_features),
@@ -63,14 +63,14 @@ async def _run_blueprint_pipeline(
         progress_cb("fetching_positions")
     logger.debug(
         "blueprint.pipeline_fetch_positions",
-        event="pipeline_stage",
+        log_event="pipeline_stage",
         stage="fetching_positions",
         trading_date=str(td),
     )
     current_positions = await _fetch_current_positions(td)
     logger.debug(
         "blueprint.pipeline_positions_ready",
-        event="pipeline_stage",
+        log_event="pipeline_stage",
         stage="positions_ready",
         trading_date=str(td),
         source=current_positions.get("source"),
@@ -95,7 +95,7 @@ async def _run_blueprint_pipeline(
             previous_execution = row[0]
     logger.debug(
         "blueprint.pipeline_previous_execution",
-        event="pipeline_stage",
+        log_event="pipeline_stage",
         stage="previous_execution_ready",
         trading_date=str(td),
         has_previous_execution=previous_execution is not None,
@@ -107,7 +107,7 @@ async def _run_blueprint_pipeline(
     adapter = _get_adapter()
     logger.debug(
         "blueprint.pipeline_generation_started",
-        event="pipeline_stage",
+        log_event="pipeline_stage",
         stage="generating_blueprint",
         trading_date=str(td),
     )
@@ -118,7 +118,7 @@ async def _run_blueprint_pipeline(
     )
     logger.debug(
         "blueprint.pipeline_generation_finished",
-        event="pipeline_stage",
+        log_event="pipeline_stage",
         stage="generation_finished",
         trading_date=str(td),
         provider=blueprint.model_provider,
@@ -138,7 +138,7 @@ def generate_daily_blueprint(self, trading_date: str | None = None, prev_result=
     """
     logger.debug(
         "blueprint.generate.start",
-        event="task_start",
+        log_event="task_start",
         stage="entry",
         task_id=getattr(self.request, "id", None),
         trading_date=trading_date,
@@ -153,7 +153,7 @@ async def _generate_blueprint_async(trading_date_str: str | None = None) -> dict
     started = perf_counter()
     logger.debug(
         "blueprint.generate.context",
-        event="task_context",
+        log_event="task_context",
         stage="start",
         trading_date=str(td),
         symbols=len(settings.watchlist),
@@ -175,7 +175,7 @@ async def _generate_blueprint_async(trading_date_str: str | None = None) -> dict
 
     logger.debug(
         "blueprint.generate.signals_loaded",
-        event="db_read",
+        log_event="db_read",
         stage="signals_ready",
         trading_date=str(td),
         rows=len(signal_features),
@@ -192,7 +192,7 @@ async def _generate_blueprint_async(trading_date_str: str | None = None) -> dict
     async with get_postgres_session() as session:
         logger.debug(
             "blueprint.generate.db_write_started",
-            event="db_write",
+            log_event="db_write",
             stage="before_write",
             trading_date=str(td),
             blueprint_id=blueprint.id,
@@ -217,7 +217,7 @@ async def _generate_blueprint_async(trading_date_str: str | None = None) -> dict
         )
         logger.debug(
             "blueprint.generate.db_write_finished",
-            event="db_write",
+            log_event="db_write",
             stage="after_write",
             trading_date=str(td),
             blueprint_id=blueprint.id,
@@ -238,7 +238,7 @@ async def _generate_blueprint_async(trading_date_str: str | None = None) -> dict
     }
     logger.debug(
         "blueprint.generate.cache_refresh_started",
-        event="cache_write",
+        log_event="cache_write",
         stage="before_refresh",
         trading_date=str(blueprint.trading_date),
     )
@@ -253,7 +253,7 @@ async def _generate_blueprint_async(trading_date_str: str | None = None) -> dict
 
     logger.debug(
         "blueprint.generate.summary",
-        event="task_summary",
+        log_event="task_summary",
         stage="completed",
         trading_date=str(blueprint.trading_date),
         blueprint_id=blueprint.id,
@@ -293,7 +293,7 @@ def manual_analyze(self, symbol: str, trading_date: str | None = None) -> dict:
     """
     logger.debug(
         "manual_analyze.start",
-        event="task_start",
+        log_event="task_start",
         stage="entry",
         task_id=getattr(self.request, "id", None),
         symbol=symbol.upper(),
@@ -308,7 +308,7 @@ async def _manual_analyze_async(task, symbol: str, trading_date_str: str | None 
     started = perf_counter()
     logger.debug(
         "manual_analyze.context",
-        event="task_context",
+        log_event="task_context",
         stage="start",
         symbol=symbol,
         trading_date=str(td),
@@ -335,7 +335,7 @@ async def _manual_analyze_async(task, symbol: str, trading_date_str: str | None 
 
     logger.debug(
         "manual_analyze.signals_loaded",
-        event="db_read",
+        log_event="db_read",
         stage="signals_ready",
         symbol=symbol,
         trading_date=str(td),
@@ -362,7 +362,7 @@ async def _manual_analyze_async(task, symbol: str, trading_date_str: str | None 
     async with get_postgres_session() as session:
         logger.debug(
             "manual_analyze.db_write_started",
-            event="db_write",
+            log_event="db_write",
             stage="before_write",
             symbol=symbol,
             trading_date=str(td),
@@ -387,7 +387,7 @@ async def _manual_analyze_async(task, symbol: str, trading_date_str: str | None 
         )
         logger.debug(
             "manual_analyze.db_write_finished",
-            event="db_write",
+            log_event="db_write",
             stage="after_write",
             symbol=symbol,
             trading_date=str(td),
@@ -398,7 +398,7 @@ async def _manual_analyze_async(task, symbol: str, trading_date_str: str | None 
     from services.analysis_service.app.cache import invalidate_blueprint_cache
     logger.debug(
         "manual_analyze.cache_invalidate_started",
-        event="cache_invalidate",
+        log_event="cache_invalidate",
         stage="before_invalidate",
         trading_date=str(blueprint.trading_date),
     )
@@ -414,7 +414,7 @@ async def _manual_analyze_async(task, symbol: str, trading_date_str: str | None 
     )
     logger.debug(
         "manual_analyze.summary",
-        event="task_summary",
+        log_event="task_summary",
         stage="completed",
         symbol=symbol,
         trading_date=str(blueprint.trading_date),
@@ -447,7 +447,7 @@ async def _fetch_current_positions(td: date) -> dict:
     """
     logger.debug(
         "blueprint.fetch_positions.start",
-        event="positions_fetch",
+        log_event="positions_fetch",
         stage="start",
         trading_date=str(td),
     )
@@ -458,7 +458,7 @@ async def _fetch_current_positions(td: date) -> dict:
         positions_data = await get_positions()
         logger.debug(
             "blueprint.fetch_positions.portfolio_result",
-            event="positions_fetch",
+            log_event="positions_fetch",
             stage="trade_service_portfolio",
             count=positions_data.get("count", 0),
         )
@@ -480,7 +480,7 @@ async def _fetch_current_positions(td: date) -> dict:
         check_date = td - timedelta(days=1 + lookback)
         logger.debug(
             "blueprint.fetch_positions.previous_blueprint_check",
-            event="positions_fetch",
+            log_event="positions_fetch",
             stage="previous_blueprint_lookup",
             trading_date=str(td),
             check_date=str(check_date),
@@ -556,7 +556,7 @@ def _infer_positions_from_blueprint(bp_data: dict) -> dict:
             })
     logger.debug(
         "blueprint.positions_inferred",
-        event="positions_infer",
+        log_event="positions_infer",
         stage="completed",
         count=len(positions),
     )

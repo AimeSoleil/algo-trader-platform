@@ -19,7 +19,7 @@ logger = get_logger("monitoring_routes")
 
 @router.get("/health/services")
 async def health_services():
-    logger.debug("monitoring.health_services_start", event="health_check", stage="start")
+    logger.debug("monitoring.health_services_start", log_event="health_check", stage="start")
     postgres_ok = False
     timescale_ok = False
     postgres_error = ""
@@ -41,7 +41,7 @@ async def health_services():
 
     logger.debug(
         "monitoring.health_services_done",
-        event="health_check",
+        log_event="health_check",
         stage="completed",
         postgres_ok=postgres_ok,
         timescale_ok=timescale_ok,
@@ -55,14 +55,14 @@ async def health_services():
 @router.get("/health/schedule")
 async def health_schedule():
     settings = get_settings()
-    logger.debug("monitoring.health_schedule", event="health_check", stage="schedule", has_schedule=bool(settings.schedule))
+    logger.debug("monitoring.health_schedule", log_event="health_check", stage="schedule", has_schedule=bool(settings.schedule))
     return settings.schedule.model_dump()
 
 
 @router.post("/metrics/blueprint_loaded")
 async def metric_blueprint_loaded():
     blueprint_loaded_total.inc()
-    logger.debug("monitoring.metric_blueprint_loaded", event="metric_update", metric="blueprint_loaded_total")
+    logger.debug("monitoring.metric_blueprint_loaded", log_event="metric_update", metric="blueprint_loaded_total")
     return {"status": "ok", "metric": "blueprint_loaded_total"}
 
 
@@ -71,7 +71,7 @@ async def metric_pipeline_stage(stage: str, status: str):
     post_market_pipeline_runs_total.labels(stage=stage, status=status).inc()
     logger.debug(
         "monitoring.metric_pipeline_stage",
-        event="metric_update",
+        log_event="metric_update",
         metric="post_market_pipeline_runs_total",
         stage_label=stage,
         status_label=status,

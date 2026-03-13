@@ -3,19 +3,19 @@ set -euo pipefail
 
 echo "[run_workers] 启动 Celery workers 与 beat..."
 
-celery -A shared.celery_app.celery_app worker -Q data -n data@%h --loglevel=INFO &
+uv run celery -A shared.celery_app.celery_app worker -Q data -n data@%h --loglevel=INFO &
 PID_DATA=$!
 
-celery -A shared.celery_app.celery_app worker -Q backfill -n backfill@%h --loglevel=INFO &
+uv run celery -A shared.celery_app.celery_app worker -Q backfill -n backfill@%h --loglevel=INFO &
 PID_BACKFILL=$!
 
-celery -A shared.celery_app.celery_app worker -Q signal -n signal@%h --loglevel=INFO &
+uv run celery -A shared.celery_app.celery_app worker -Q signal -n signal@%h --loglevel=INFO &
 PID_SIGNAL=$!
 
-celery -A shared.celery_app.celery_app worker -Q analysis -n analysis@%h --loglevel=INFO &
+uv run celery -A shared.celery_app.celery_app worker -Q analysis -n analysis@%h --loglevel=INFO &
 PID_ANALYSIS=$!
 
-celery -A shared.celery_app.celery_app beat --loglevel=INFO &
+uv run celery -A shared.celery_app.celery_app beat --loglevel=INFO &
 PID_BEAT=$!
 
 echo "[run_workers] data worker pid=${PID_DATA}"

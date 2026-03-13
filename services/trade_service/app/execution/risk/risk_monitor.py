@@ -70,7 +70,7 @@ async def run_stop_loss_checks(
     now = now_utc()
 
     if not stop_loss.enabled:
-        logger.info("risk_monitor.check_skipped", event="risk_check_skipped", reason="disabled")
+        logger.info("risk_monitor.check_skipped", log_event="risk_check_skipped", reason="disabled")
         return
 
     if not should_run_risk_check(
@@ -80,14 +80,14 @@ async def run_stop_loss_checks(
     ):
         logger.info(
             "risk_monitor.check_skipped",
-            event="risk_check_skipped",
+            log_event="risk_check_skipped",
             reason="interval_not_elapsed",
             check_interval_seconds=stop_loss.check_interval_seconds,
         )
         return
 
     risk_started = perf_counter()
-    logger.info("risk_monitor.check_start", event="risk_check_start")
+    logger.info("risk_monitor.check_start", log_event="risk_check_start")
 
     triggered_count = 0
     try:
@@ -125,7 +125,7 @@ async def run_stop_loss_checks(
             trigger_scope = "portfolio" if portfolio_triggered else "position"
             logger.warning(
                 "risk_monitor.triggered",
-                event="risk_triggered",
+                log_event="risk_triggered",
                 source=source,
                 trigger_scope=trigger_scope,
                 total_unrealized_pnl=total_unrealized_pnl,
@@ -175,7 +175,7 @@ async def run_stop_loss_checks(
                 )
                 logger.info(
                     "risk_monitor.order_sent",
-                    event="risk_order_sent",
+                    log_event="risk_order_sent",
                     symbol=symbol,
                     trigger=trigger_type,
                     qty=qty,
@@ -189,7 +189,7 @@ async def run_stop_loss_checks(
             else:
                 logger.warning(
                     "risk_monitor.order_failed",
-                    event="risk_order_failed",
+                    log_event="risk_order_failed",
                     symbol=symbol,
                     trigger=trigger_type,
                     qty=qty,
@@ -205,7 +205,7 @@ async def run_stop_loss_checks(
     except Exception as exc:
         logger.warning(
             "risk_monitor.check_done",
-            event="risk_check_done",
+            log_event="risk_check_done",
             status="error",
             error=str(exc),
             duration_ms=round((perf_counter() - risk_started) * 1000, 2),
@@ -214,7 +214,7 @@ async def run_stop_loss_checks(
         runtime_state.last_risk_check_at = now
         logger.info(
             "risk_monitor.check_done",
-            event="risk_check_done",
+            log_event="risk_check_done",
             status="ok",
             triggered_orders=triggered_count,
             events_count=len(runtime_state.stoploss_last_events),

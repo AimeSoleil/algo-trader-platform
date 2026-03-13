@@ -39,7 +39,7 @@ def compute_daily_signals(self, trading_date: str | None = None, prev_result=Non
     """
     logger.debug(
         "signal_compute.start",
-        event="task_start",
+        log_event="task_start",
         stage="entry",
         task_id=getattr(self.request, "id", None),
         trading_date=trading_date,
@@ -59,7 +59,7 @@ async def _compute_daily_signals_async(trading_date_str: str | None = None) -> d
     started = perf_counter()
     logger.debug(
         "signal_compute.context",
-        event="task_context",
+        log_event="task_context",
         stage="start",
         trading_date=str(td),
         symbols=len(settings.watchlist),
@@ -71,7 +71,7 @@ async def _compute_daily_signals_async(trading_date_str: str | None = None) -> d
         MIN_INTRADAY_ROWS = 30  # compute_stock_indicators 要求 >= 30 行
         logger.debug(
             "signal_compute.load_stock_bars_started",
-            event="db_read",
+            log_event="db_read",
             stage="before_query",
             symbol=symbol,
             trading_date=str(td),
@@ -92,7 +92,7 @@ async def _compute_daily_signals_async(trading_date_str: str | None = None) -> d
         if len(bars_rows) >= MIN_INTRADAY_ROWS:
             logger.debug(
                 "signal_compute.load_stock_bars_intraday",
-                event="db_read",
+                log_event="db_read",
                 stage="query_result",
                 symbol=symbol,
                 rows=len(bars_rows),
@@ -103,7 +103,7 @@ async def _compute_daily_signals_async(trading_date_str: str | None = None) -> d
         # intraday 不足（盘中、未采集或数据稀少）→ 回退到 daily 历史
         logger.debug(
             "signal_compute.load_stock_bars_fallback",
-            event="db_read",
+            log_event="db_read",
             stage="fallback",
             symbol=symbol,
             source="stock_daily",
@@ -123,7 +123,7 @@ async def _compute_daily_signals_async(trading_date_str: str | None = None) -> d
         if not daily_rows:
             logger.debug(
                 "signal_compute.load_stock_bars_empty",
-                event="db_read",
+                log_event="db_read",
                 stage="query_result",
                 symbol=symbol,
                 source="stock_daily",
@@ -134,7 +134,7 @@ async def _compute_daily_signals_async(trading_date_str: str | None = None) -> d
         daily_df = daily_df.sort_values("timestamp")
         logger.debug(
             "signal_compute.load_stock_bars_daily",
-            event="db_read",
+            log_event="db_read",
             stage="query_result",
             symbol=symbol,
             rows=len(daily_df),
@@ -145,7 +145,7 @@ async def _compute_daily_signals_async(trading_date_str: str | None = None) -> d
     async def _load_option_rows(symbol: str) -> pd.DataFrame:
         logger.debug(
             "signal_compute.load_option_rows_started",
-            event="db_read",
+            log_event="db_read",
             stage="before_query",
             symbol=symbol,
             trading_date=str(td),
@@ -167,7 +167,7 @@ async def _compute_daily_signals_async(trading_date_str: str | None = None) -> d
         if intraday_rows:
             logger.debug(
                 "signal_compute.load_option_rows_intraday",
-                event="db_read",
+                log_event="db_read",
                 stage="query_result",
                 symbol=symbol,
                 rows=len(intraday_rows),
@@ -184,7 +184,7 @@ async def _compute_daily_signals_async(trading_date_str: str | None = None) -> d
 
         logger.debug(
             "signal_compute.load_option_rows_fallback",
-            event="db_read",
+            log_event="db_read",
             stage="fallback",
             symbol=symbol,
             source="option_daily",
@@ -205,7 +205,7 @@ async def _compute_daily_signals_async(trading_date_str: str | None = None) -> d
         if not daily_rows:
             logger.debug(
                 "signal_compute.load_option_rows_empty",
-                event="db_read",
+                log_event="db_read",
                 stage="query_result",
                 symbol=symbol,
                 source="option_daily",
@@ -229,7 +229,7 @@ async def _compute_daily_signals_async(trading_date_str: str | None = None) -> d
                 symbol_started = perf_counter()
                 logger.debug(
                     "signal_compute.symbol_started",
-                    event="symbol_start",
+                    log_event="symbol_start",
                     stage="compute",
                     symbol=symbol,
                     trading_date=str(td),
@@ -238,7 +238,7 @@ async def _compute_daily_signals_async(trading_date_str: str | None = None) -> d
                 option_df = await _load_option_rows(symbol)
                 logger.debug(
                     "signal_compute.symbol_data_loaded",
-                    event="symbol_context",
+                    log_event="symbol_context",
                     stage="after_load",
                     symbol=symbol,
                     bar_rows=len(bars_df),
@@ -317,7 +317,7 @@ async def _compute_daily_signals_async(trading_date_str: str | None = None) -> d
                 async with get_postgres_session() as session:
                     logger.debug(
                         "signal_compute.db_write_started",
-                        event="db_write",
+                        log_event="db_write",
                         stage="before_write",
                         symbol=symbol,
                         trading_date=str(td),
@@ -338,7 +338,7 @@ async def _compute_daily_signals_async(trading_date_str: str | None = None) -> d
                     )
                     logger.debug(
                         "signal_compute.db_write_finished",
-                        event="db_write",
+                        log_event="db_write",
                         stage="after_write",
                         symbol=symbol,
                         trading_date=str(td),
@@ -357,7 +357,7 @@ async def _compute_daily_signals_async(trading_date_str: str | None = None) -> d
                 result["symbols_computed"] += 1
                 logger.debug(
                     "signal_compute.symbol_completed",
-                    event="symbol_summary",
+                    log_event="symbol_summary",
                     stage="completed",
                     symbol=symbol,
                     trading_date=str(td),
@@ -378,7 +378,7 @@ async def _compute_daily_signals_async(trading_date_str: str | None = None) -> d
 
     logger.debug(
         "signal_compute.summary",
-        event="task_summary",
+        log_event="task_summary",
         stage="completed",
         trading_date=str(td),
         symbols_total=len(settings.watchlist),

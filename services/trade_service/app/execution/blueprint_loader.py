@@ -14,7 +14,7 @@ logger = get_logger("execution_blueprint_loader")
 async def load_blueprint_for_date(trading_date: date) -> dict[str, Any] | None:
     logger.debug(
         "blueprint_loader.load_started",
-        event="load_blueprint",
+        log_event="load_blueprint",
         stage="query",
         trading_date=str(trading_date),
     )
@@ -36,7 +36,7 @@ async def load_blueprint_for_date(trading_date: date) -> dict[str, Any] | None:
         if not row:
             logger.debug(
                 "blueprint_loader.load_not_found",
-                event="load_blueprint",
+                log_event="load_blueprint",
                 stage="query_result",
                 trading_date=str(trading_date),
             )
@@ -44,7 +44,7 @@ async def load_blueprint_for_date(trading_date: date) -> dict[str, Any] | None:
 
         logger.debug(
             "blueprint_loader.activate_started",
-            event="activate_blueprint",
+            log_event="activate_blueprint",
             stage="db_write",
             trading_date=str(trading_date),
             blueprint_id=row["id"],
@@ -61,7 +61,7 @@ async def load_blueprint_for_date(trading_date: date) -> dict[str, Any] | None:
         )
         logger.debug(
             "blueprint_loader.load_completed",
-            event="load_blueprint",
+            log_event="load_blueprint",
             stage="completed",
             trading_date=str(trading_date),
             blueprint_id=row["id"],
@@ -79,7 +79,7 @@ async def load_blueprint_for_date(trading_date: date) -> dict[str, Any] | None:
 async def complete_blueprint(trading_date: date, execution_summary: dict[str, Any]) -> int:
     logger.debug(
         "blueprint_loader.complete_started",
-        event="complete_blueprint",
+        log_event="complete_blueprint",
         stage="db_write",
         trading_date=str(trading_date),
         has_execution_summary=bool(execution_summary),
@@ -105,7 +105,7 @@ async def complete_blueprint(trading_date: date, execution_summary: dict[str, An
         updated_rows = result.rowcount or 0
         logger.debug(
             "blueprint_loader.complete_finished",
-            event="complete_blueprint",
+            log_event="complete_blueprint",
             stage="completed",
             trading_date=str(trading_date),
             rows=updated_rows,

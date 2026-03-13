@@ -39,7 +39,7 @@ def detect_and_backfill_gaps(
     """盘后 pipeline：检测 4 表缺口并回填可修复项"""
     logger.debug(
         "backfill.detect.start",
-        event="task_start",
+        log_event="task_start",
         stage="entry",
         task_id=getattr(self.request, "id", None),
         trading_date=trading_date,
@@ -70,7 +70,7 @@ async def _detect_and_backfill_async(trading_date_str: str | None = None) -> dic
     started = perf_counter()
     logger.debug(
         "backfill.detect.context",
-        event="task_context",
+        log_event="task_context",
         stage="start",
         trading_date=str(td),
         symbols=len(settings.watchlist),
@@ -91,7 +91,7 @@ async def _detect_and_backfill_async(trading_date_str: str | None = None) -> dic
         symbol_started = perf_counter()
         logger.debug(
             "backfill.detect.symbol_started",
-            event="symbol_start",
+            log_event="symbol_start",
             stage="detect",
             symbol=symbol,
             trading_date=str(td),
@@ -102,7 +102,7 @@ async def _detect_and_backfill_async(trading_date_str: str | None = None) -> dic
         if s1m_gaps:
             logger.debug(
                 "backfill.detect.stock_1min_backfill_started",
-                event="backfill",
+                log_event="backfill",
                 stage="before_backfill",
                 symbol=symbol,
                 trading_date=str(td),
@@ -112,7 +112,7 @@ async def _detect_and_backfill_async(trading_date_str: str | None = None) -> dic
             result["stock_1min_filled"] += rows
             logger.debug(
                 "backfill.detect.stock_1min_backfill_finished",
-                event="backfill",
+                log_event="backfill",
                 stage="after_backfill",
                 symbol=symbol,
                 trading_date=str(td),
@@ -125,7 +125,7 @@ async def _detect_and_backfill_async(trading_date_str: str | None = None) -> dic
         if sd_gaps:
             logger.debug(
                 "backfill.detect.stock_daily_backfill_started",
-                event="backfill",
+                log_event="backfill",
                 stage="before_backfill",
                 symbol=symbol,
                 trading_date=str(td),
@@ -137,7 +137,7 @@ async def _detect_and_backfill_async(trading_date_str: str | None = None) -> dic
             result["stock_daily_filled"] += rows
             logger.debug(
                 "backfill.detect.stock_daily_backfill_finished",
-                event="backfill",
+                log_event="backfill",
                 stage="after_backfill",
                 symbol=symbol,
                 trading_date=str(td),
@@ -167,7 +167,7 @@ async def _detect_and_backfill_async(trading_date_str: str | None = None) -> dic
 
         logger.debug(
             "backfill.detect.symbol_summary",
-            event="symbol_summary",
+            log_event="symbol_summary",
             stage="completed",
             symbol=symbol,
             trading_date=str(td),
@@ -180,7 +180,7 @@ async def _detect_and_backfill_async(trading_date_str: str | None = None) -> dic
 
     logger.debug(
         "backfill.detect.summary",
-        event="task_summary",
+        log_event="task_summary",
         stage="completed",
         trading_date=str(td),
         stock_1min_gaps=result["stock_1min_gaps"],
@@ -219,7 +219,7 @@ async def _check_historical_async() -> dict:
     started = perf_counter()
     logger.debug(
         "backfill.historical.context",
-        event="task_context",
+        log_event="task_context",
         stage="start",
         trading_date=str(today),
         symbols=len(settings.watchlist),
@@ -243,7 +243,7 @@ async def _check_historical_async() -> dict:
             symbol_daily_filled = rows
         logger.debug(
             "backfill.historical.symbol_daily_summary",
-            event="symbol_summary",
+            log_event="symbol_summary",
             stage="daily_check",
             symbol=symbol,
             gaps=len(sd_gaps),
@@ -271,7 +271,7 @@ async def _check_historical_async() -> dict:
 
         logger.debug(
             "backfill.historical.symbol_1min_summary",
-            event="symbol_summary",
+            log_event="symbol_summary",
             stage="intraday_check",
             symbol=symbol,
             gaps=symbol_1min_gaps,
@@ -282,7 +282,7 @@ async def _check_historical_async() -> dict:
 
     logger.debug(
         "backfill.historical.summary",
-        event="task_summary",
+        log_event="task_summary",
         stage="completed",
         stock_daily_gaps=result["stock_daily_gaps"],
         stock_daily_filled=result["stock_daily_filled"],
@@ -302,7 +302,7 @@ def backfill_new_symbol(symbol: str, days: int = 90) -> dict:
     """手动触发：为新标的回填历史数据"""
     logger.debug(
         "backfill.new_symbol.start",
-        event="task_start",
+        log_event="task_start",
         stage="entry",
         symbol=symbol,
         days=days,
@@ -316,7 +316,7 @@ async def _backfill_new_symbol_async(symbol: str, days: int) -> dict:
     started = perf_counter()
     logger.debug(
         "backfill.new_symbol.backfill_started",
-        event="backfill",
+        log_event="backfill",
         stage="before_backfill",
         symbol=symbol,
         days=days,
@@ -324,7 +324,7 @@ async def _backfill_new_symbol_async(symbol: str, days: int) -> dict:
     result = await backfill_history(symbol, days)
     logger.debug(
         "backfill.new_symbol.backfill_finished",
-        event="backfill",
+        log_event="backfill",
         stage="after_backfill",
         symbol=symbol,
         days=days,

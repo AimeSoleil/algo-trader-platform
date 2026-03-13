@@ -45,7 +45,7 @@ async def _evaluation_tick(runtime_state: ExecutionRuntimeState) -> None:
 
     logger.debug(
         "execution.tick_started",
-        event="tick_start",
+        log_event="tick_start",
         stage="scheduler",
         paused=runtime_state.paused,
         trading_date=str(runtime_state.loaded_trading_date),
@@ -94,7 +94,7 @@ async def _evaluation_tick(runtime_state: ExecutionRuntimeState) -> None:
         runtime_state.last_tick_at = now_utc()
         logger.debug(
             "execution.tick_context",
-            event="tick_context",
+            log_event="tick_context",
             stage="evaluation",
             trading_date=str(runtime_state.loaded_trading_date),
             symbols_total=len(settings.watchlist),
@@ -106,7 +106,7 @@ async def _evaluation_tick(runtime_state: ExecutionRuntimeState) -> None:
     except Exception as exc:
         logger.error(
             "execution.tick_failed",
-            event="tick_failed",
+            log_event="tick_failed",
             stage="evaluation",
             trading_date=str(runtime_state.loaded_trading_date),
             error=str(exc),
@@ -137,7 +137,7 @@ def start_execution_scheduler(runtime_state: ExecutionRuntimeState) -> None:
     settings = get_settings()
     logger.debug(
         "execution.scheduler_starting",
-        event="scheduler_start",
+        log_event="scheduler_start",
         stage="startup",
         interval_seconds=settings.trading.execution_interval,
         timezone=settings.trading.timezone,
@@ -163,4 +163,4 @@ def stop_execution_scheduler() -> None:
         _scheduler.shutdown(wait=False)
         logger.info("execution.scheduler_stopped")
     else:
-        logger.debug("execution.scheduler_stop_skipped", event="scheduler_stop", reason="not_started")
+        logger.debug("execution.scheduler_stop_skipped", log_event="scheduler_stop", reason="not_started")

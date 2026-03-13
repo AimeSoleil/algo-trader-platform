@@ -35,7 +35,7 @@ def capture_post_market_data(self, trading_date: str | None = None) -> dict:
     """盘后统一采集：1m bars → stock_1min_bars, daily bar → stock_daily, option chain → option_daily"""
     logger.debug(
         "capture_post_market.start",
-        event="task_start",
+        log_event="task_start",
         stage="entry",
         task_id=getattr(self.request, "id", None),
         trading_date=trading_date,
@@ -64,7 +64,7 @@ async def _capture_post_market_async(trading_date_str: str | None = None) -> dic
     started = perf_counter()
     logger.debug(
         "capture_post_market.context",
-        event="pipeline_context",
+        log_event="pipeline_context",
         stage="start",
         trading_date=str(td),
         symbols=len(symbols),
@@ -83,7 +83,7 @@ async def _capture_post_market_async(trading_date_str: str | None = None) -> dic
         try:
             logger.debug(
                 "capture_post_market.symbol_started",
-                event="symbol_start",
+                log_event="symbol_start",
                 stage="collect",
                 symbol=symbol,
                 trading_date=str(td),
@@ -91,7 +91,7 @@ async def _capture_post_market_async(trading_date_str: str | None = None) -> dic
             # ── (a) 当天全天 1 分钟 K 线 → stock_1min_bars ──
             logger.debug(
                 "capture_post_market.fetch_stock_1m_started",
-                event="external_call",
+                log_event="external_call",
                 stage="before_fetch",
                 symbol=symbol,
                 provider="yfinance",
@@ -101,7 +101,7 @@ async def _capture_post_market_async(trading_date_str: str | None = None) -> dic
             bars_1m = await fetch_stock_bars(symbol, period="1d", interval="1m")
             logger.debug(
                 "capture_post_market.fetch_stock_1m_finished",
-                event="external_call",
+                log_event="external_call",
                 stage="after_fetch",
                 symbol=symbol,
                 rows=len(bars_1m) if bars_1m else 0,
@@ -121,7 +121,7 @@ async def _capture_post_market_async(trading_date_str: str | None = None) -> dic
                 ]
                 logger.debug(
                     "capture_post_market.write_stock_1m_started",
-                    event="db_write",
+                    log_event="db_write",
                     stage="before_write",
                     symbol=symbol,
                     rows=len(intraday_rows),
@@ -130,7 +130,7 @@ async def _capture_post_market_async(trading_date_str: str | None = None) -> dic
                 result["stock_1min_rows"] += written
                 logger.debug(
                     "capture_post_market.write_stock_1m_finished",
-                    event="db_write",
+                    log_event="db_write",
                     stage="after_write",
                     symbol=symbol,
                     rows=written,
@@ -139,7 +139,7 @@ async def _capture_post_market_async(trading_date_str: str | None = None) -> dic
             # ── (b) 日线 → stock_daily ──
             logger.debug(
                 "capture_post_market.fetch_stock_daily_started",
-                event="external_call",
+                log_event="external_call",
                 stage="before_fetch",
                 symbol=symbol,
                 provider="yfinance",
@@ -149,7 +149,7 @@ async def _capture_post_market_async(trading_date_str: str | None = None) -> dic
             bars_daily = await fetch_stock_bars(symbol, period="5d", interval="1d")
             logger.debug(
                 "capture_post_market.fetch_stock_daily_finished",
-                event="external_call",
+                log_event="external_call",
                 stage="after_fetch",
                 symbol=symbol,
                 rows=len(bars_daily) if bars_daily else 0,
@@ -167,7 +167,7 @@ async def _capture_post_market_async(trading_date_str: str | None = None) -> dic
                 }
                 logger.debug(
                     "capture_post_market.write_stock_daily_started",
-                    event="db_write",
+                    log_event="db_write",
                     stage="before_write",
                     symbol=symbol,
                     rows=1,
@@ -176,7 +176,7 @@ async def _capture_post_market_async(trading_date_str: str | None = None) -> dic
                 result["stock_daily_rows"] += written
                 logger.debug(
                     "capture_post_market.write_stock_daily_finished",
-                    event="db_write",
+                    log_event="db_write",
                     stage="after_write",
                     symbol=symbol,
                     rows=written,
@@ -185,7 +185,7 @@ async def _capture_post_market_async(trading_date_str: str | None = None) -> dic
             # ── (c) 期权链快照 → option_daily ──
             logger.debug(
                 "capture_post_market.fetch_option_chain_started",
-                event="external_call",
+                log_event="external_call",
                 stage="before_fetch",
                 symbol=symbol,
                 provider="yfinance",
@@ -195,7 +195,7 @@ async def _capture_post_market_async(trading_date_str: str | None = None) -> dic
                 option_rows = contracts_to_rows(snapshot, include_snapshot_date=True)
                 logger.debug(
                     "capture_post_market.write_option_daily_started",
-                    event="db_write",
+                    log_event="db_write",
                     stage="before_write",
                     symbol=symbol,
                     rows=len(option_rows),
@@ -204,7 +204,7 @@ async def _capture_post_market_async(trading_date_str: str | None = None) -> dic
                 result["option_daily_rows"] += written
                 logger.debug(
                     "capture_post_market.write_option_daily_finished",
-                    event="db_write",
+                    log_event="db_write",
                     stage="after_write",
                     symbol=symbol,
                     rows=written,
@@ -212,7 +212,7 @@ async def _capture_post_market_async(trading_date_str: str | None = None) -> dic
             else:
                 logger.debug(
                     "capture_post_market.option_chain_empty",
-                    event="external_call",
+                    log_event="external_call",
                     stage="after_fetch",
                     symbol=symbol,
                 )
@@ -224,7 +224,7 @@ async def _capture_post_market_async(trading_date_str: str | None = None) -> dic
 
     logger.debug(
         "capture_post_market.summary",
-        event="task_summary",
+        log_event="task_summary",
         stage="completed",
         trading_date=str(td),
         stock_1min_rows=result["stock_1min_rows"],
@@ -250,7 +250,7 @@ def batch_flush_to_db(self, trading_date: str | None = None, prev_result=None) -
     """将盘中期权链 Parquet 缓存批量写入 option_5min_snapshots（仅 intraday 模式产生数据）"""
     logger.debug(
         "batch_flush.start",
-        event="task_start",
+        log_event="task_start",
         stage="entry",
         task_id=getattr(self.request, "id", None),
         trading_date=trading_date,
@@ -271,14 +271,14 @@ async def _batch_flush_to_db_async(trading_date_str: str | None = None) -> dict:
     cache = MarketHoursCache()
     logger.debug(
         "batch_flush.cache_flush_started",
-        event="cache_flush",
+        log_event="cache_flush",
         stage="before_flush",
         trading_date=str(trading_date),
     )
     cache.flush_all()
     logger.debug(
         "batch_flush.cache_flush_finished",
-        event="cache_flush",
+        log_event="cache_flush",
         stage="after_flush",
         trading_date=str(trading_date),
     )
@@ -292,7 +292,7 @@ async def _batch_flush_to_db_async(trading_date_str: str | None = None) -> dict:
 
     logger.debug(
         "batch_flush.parquet_loaded",
-        event="cache_read",
+        log_event="cache_read",
         stage="after_read",
         trading_date=str(trading_date),
         rows=len(df),
@@ -301,7 +301,7 @@ async def _batch_flush_to_db_async(trading_date_str: str | None = None) -> dict:
     async with get_timescale_session() as session:
         logger.debug(
             "batch_flush.db_write_started",
-            event="db_write",
+            log_event="db_write",
             stage="before_write",
             trading_date=str(trading_date),
             rows=len(df),
@@ -318,7 +318,7 @@ async def _batch_flush_to_db_async(trading_date_str: str | None = None) -> dict:
         )
         logger.debug(
             "batch_flush.db_write_finished",
-            event="db_write",
+            log_event="db_write",
             stage="after_write",
             trading_date=str(trading_date),
             rows=len(df),
@@ -328,7 +328,7 @@ async def _batch_flush_to_db_async(trading_date_str: str | None = None) -> dict:
     cache.clear_parquet("option", trading_date)
     logger.debug(
         "batch_flush.summary",
-        event="task_summary",
+        log_event="task_summary",
         stage="completed",
         trading_date=str(trading_date),
         option_rows=result["option_rows"],
@@ -350,7 +350,7 @@ def run_post_market_pipeline(trading_date: str | None = None) -> str:
     td = trading_date or today_trading().isoformat()
     logger.debug(
         "post_market_pipeline.building",
-        event="pipeline_start",
+        log_event="pipeline_start",
         stage="compose_chain",
         trading_date=td,
     )
@@ -379,7 +379,7 @@ def run_post_market_pipeline(trading_date: str | None = None) -> str:
     logger.info("post_market_pipeline.started", trading_date=td, task_id=str(result.id))
     logger.debug(
         "post_market_pipeline.dispatched",
-        event="pipeline_start",
+        log_event="pipeline_start",
         stage="dispatched",
         trading_date=td,
         task_id=str(result.id),
@@ -409,7 +409,7 @@ def manual_collect(
     """
     logger.debug(
         "manual_collect.start",
-        event="task_start",
+        log_event="task_start",
         stage="entry",
         task_id=getattr(self.request, "id", None),
         symbols=len(symbols),
@@ -449,7 +449,7 @@ async def _manual_collect_async(
     started = perf_counter()
     logger.debug(
         "manual_collect.context",
-        event="task_context",
+        log_event="task_context",
         stage="start",
         symbols=len(symbols),
         data_types=data_types,
@@ -476,7 +476,7 @@ async def _manual_collect_async(
     for symbol in symbols:
         logger.debug(
             "manual_collect.symbol_started",
-            event="symbol_start",
+            log_event="symbol_start",
             stage="collect",
             symbol=symbol,
         )
@@ -495,7 +495,7 @@ async def _manual_collect_async(
             try:
                 logger.debug(
                     "manual_collect.fetch_bars_daily_started",
-                    event="external_call",
+                    log_event="external_call",
                     stage="before_fetch",
                     symbol=symbol,
                     provider="yfinance",
@@ -503,7 +503,7 @@ async def _manual_collect_async(
                 rows, warns = await fetch_stock_bars_range(symbol, sd, ed, interval="1d")
                 logger.debug(
                     "manual_collect.fetch_bars_daily_finished",
-                    event="external_call",
+                    log_event="external_call",
                     stage="after_fetch",
                     symbol=symbol,
                     rows=len(rows),
@@ -513,7 +513,7 @@ async def _manual_collect_async(
                 if rows:
                     logger.debug(
                         "manual_collect.write_bars_daily_started",
-                        event="db_write",
+                        log_event="db_write",
                         stage="before_write",
                         symbol=symbol,
                         rows=len(rows),
@@ -522,7 +522,7 @@ async def _manual_collect_async(
                     result["bars_daily_rows"] += written
                     logger.debug(
                         "manual_collect.write_bars_daily_finished",
-                        event="db_write",
+                        log_event="db_write",
                         stage="after_write",
                         symbol=symbol,
                         rows=written,
@@ -546,7 +546,7 @@ async def _manual_collect_async(
             try:
                 logger.debug(
                     "manual_collect.fetch_bars_1m_started",
-                    event="external_call",
+                    log_event="external_call",
                     stage="before_fetch",
                     symbol=symbol,
                     provider="yfinance",
@@ -554,7 +554,7 @@ async def _manual_collect_async(
                 rows, warns = await fetch_stock_bars_range(symbol, sd, ed, interval="1m")
                 logger.debug(
                     "manual_collect.fetch_bars_1m_finished",
-                    event="external_call",
+                    log_event="external_call",
                     stage="after_fetch",
                     symbol=symbol,
                     rows=len(rows),
@@ -564,7 +564,7 @@ async def _manual_collect_async(
                 if rows:
                     logger.debug(
                         "manual_collect.write_bars_1m_started",
-                        event="db_write",
+                        log_event="db_write",
                         stage="before_write",
                         symbol=symbol,
                         rows=len(rows),
@@ -573,7 +573,7 @@ async def _manual_collect_async(
                     result["bars_1m_rows"] += written
                     logger.debug(
                         "manual_collect.write_bars_1m_finished",
-                        event="db_write",
+                        log_event="db_write",
                         stage="after_write",
                         symbol=symbol,
                         rows=written,
@@ -603,7 +603,7 @@ async def _manual_collect_async(
                 try:
                     logger.debug(
                         "manual_collect.fetch_options_started",
-                        event="external_call",
+                        log_event="external_call",
                         stage="before_fetch",
                         symbol=symbol,
                         provider="yfinance",
@@ -613,7 +613,7 @@ async def _manual_collect_async(
                         option_rows = contracts_to_rows(snapshot, include_snapshot_date=True)
                         logger.debug(
                             "manual_collect.write_options_started",
-                            event="db_write",
+                            log_event="db_write",
                             stage="before_write",
                             symbol=symbol,
                             rows=len(option_rows),
@@ -622,7 +622,7 @@ async def _manual_collect_async(
                         result["options_daily_rows"] += written
                         logger.debug(
                             "manual_collect.write_options_finished",
-                            event="db_write",
+                            log_event="db_write",
                             stage="after_write",
                             symbol=symbol,
                             rows=written,
@@ -631,7 +631,7 @@ async def _manual_collect_async(
                         result["warnings"].append(f"{symbol}: no option chain returned")
                         logger.debug(
                             "manual_collect.fetch_options_empty",
-                            event="external_call",
+                            log_event="external_call",
                             stage="after_fetch",
                             symbol=symbol,
                         )
@@ -653,7 +653,7 @@ async def _manual_collect_async(
     )
     logger.debug(
         "manual_collect.summary",
-        event="task_summary",
+        log_event="task_summary",
         stage="completed",
         symbols=len(symbols),
         bars_1m_rows=result["bars_1m_rows"],

@@ -129,7 +129,7 @@ async def _refresh_specs() -> None:
     """Fetch /openapi.json from every backend and merge into one spec."""
     global _merged_spec
     started = perf_counter()
-    logger.debug("gateway.refresh_specs_start", event="spec_refresh", stage="start", services=len(SERVICE_REGISTRY))
+    logger.debug("gateway.refresh_specs_start", log_event="spec_refresh", stage="start", services=len(SERVICE_REGISTRY))
 
     merged: dict = {
         "openapi": "3.1.0",
@@ -145,10 +145,10 @@ async def _refresh_specs() -> None:
 
     async def _fetch_one(name: str, svc: dict):
         try:
-            logger.debug("gateway.spec_fetch_start", event="spec_fetch", service=name, url=svc["url"])
+            logger.debug("gateway.spec_fetch_start", log_event="spec_fetch", service=name, url=svc["url"])
             resp = await _http_client.get(f"{svc['url']}/openapi.json")  # type: ignore[union-attr]
             resp.raise_for_status()
-            logger.debug("gateway.spec_fetch_done", event="spec_fetch", service=name, status_code=resp.status_code)
+            logger.debug("gateway.spec_fetch_done", log_event="spec_fetch", service=name, status_code=resp.status_code)
             return name, svc, resp.json()
         except Exception as e:
             logger.warning("gateway.spec_fetch_failed", service=name, error=str(e))
@@ -220,7 +220,7 @@ async def _refresh_specs() -> None:
     healthy_specs = sum(1 for _name, _svc, spec in results if spec is not None)
     logger.debug(
         "gateway.refresh_specs_done",
-        event="spec_refresh",
+        log_event="spec_refresh",
         stage="completed",
         services=len(SERVICE_REGISTRY),
         healthy_specs=healthy_specs,
@@ -332,7 +332,7 @@ async def health():
 async def health_all():
     """Check health of all registered services."""
     started = perf_counter()
-    logger.debug("gateway.health_all_start", event="health_check", stage="start", services=len(SERVICE_REGISTRY))
+    logger.debug("gateway.health_all_start", log_event="health_check", stage="start", services=len(SERVICE_REGISTRY))
 
     async def _check(name: str, url: str):
         try:
@@ -348,7 +348,7 @@ async def health_all():
     all_ok = all(s["healthy"] for s in services.values())
     logger.debug(
         "gateway.health_all_done",
-        event="health_check",
+        log_event="health_check",
         stage="completed",
         healthy_count=sum(1 for s in services.values() if s["healthy"]),
         total_count=len(services),
@@ -361,7 +361,7 @@ async def health_all():
 @app.post("/specs/refresh")
 async def refresh_specs():
     """Force-refresh the merged OpenAPI spec."""
-    logger.debug("gateway.refresh_specs_endpoint", event="spec_refresh", stage="endpoint_triggered")
+    logger.debug("gateway.refresh_specs_endpoint", log_event="spec_refresh", stage="endpoint_triggered")
     await _refresh_specs()
     return {
         "status": "refreshed",
@@ -384,7 +384,7 @@ async def proxy(service: str, path: str, request: Request):
     started = perf_counter()
     svc = SERVICE_REGISTRY.get(service)
     if not svc:
-        logger.debug("gateway.proxy_unknown_service", event="proxy", service=service, path=path)
+        logger.debug("gateway.proxy_unknown_service", log_event="proxy", service=service, path=path)
         return JSONResponse(
             status_code=404,
             content={"error": f"Unknown service: {service}"},
@@ -399,7 +399,7 @@ async def proxy(service: str, path: str, request: Request):
     headers.pop("host", None)
     logger.debug(
         "gateway.proxy_forward_start",
-        event="proxy",
+        log_event="proxy",
         service=service,
         method=request.method,
         path=path,
@@ -420,7 +420,7 @@ async def proxy(service: str, path: str, request: Request):
         }
         logger.debug(
             "gateway.proxy_forward_done",
-            event="proxy",
+            log_event="proxy",
             service=service,
             method=request.method,
             path=path,
@@ -435,7 +435,7 @@ async def proxy(service: str, path: str, request: Request):
     except httpx.TimeoutException:
         logger.warning(
             "gateway.proxy_timeout",
-            event="proxy",
+            log_event="proxy",
             service=service,
             method=request.method,
             path=path,
@@ -445,7 +445,7 @@ async def proxy(service: str, path: str, request: Request):
     except Exception as e:
         logger.error(
             "gateway.proxy_error",
-            event="proxy",
+            log_event="proxy",
             service=service,
             method=request.method,
             path=path,

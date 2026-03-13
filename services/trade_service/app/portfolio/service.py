@@ -59,7 +59,7 @@ def _position_sign(side: str | None) -> int:
 
 
 async def _load_open_positions() -> list[dict[str, Any]]:
-    logger.debug("portfolio.positions_query_start", event="db_read", stage="before_query")
+    logger.debug("portfolio.positions_query_start", log_event="db_read", stage="before_query")
     query = text(
         """
         SELECT
@@ -86,7 +86,7 @@ async def _load_open_positions() -> list[dict[str, Any]]:
         rows = (await session.execute(query)).mappings().all()
     logger.debug(
         "portfolio.positions_query_done",
-        event="db_read",
+        log_event="db_read",
         stage="after_query",
         rows=len(rows),
     )
@@ -96,7 +96,7 @@ async def _load_open_positions() -> list[dict[str, Any]]:
 def _normalize_positions(rows: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], dict[str, float]]:
     logger.debug(
         "portfolio.normalize_start",
-        event="normalize",
+        log_event="normalize",
         stage="start",
         rows=len(rows),
     )
@@ -172,7 +172,7 @@ def _normalize_positions(rows: list[dict[str, Any]]) -> tuple[list[dict[str, Any
     }
     logger.debug(
         "portfolio.normalize_done",
-        event="normalize",
+        log_event="normalize",
         stage="completed",
         positions=len(positions),
         total_market_value=aggregates["total_market_value"],
@@ -182,12 +182,12 @@ def _normalize_positions(rows: list[dict[str, Any]]) -> tuple[list[dict[str, Any
 
 
 async def get_positions() -> dict[str, Any]:
-    logger.debug("portfolio.get_positions_start", event="api_service", stage="start")
+    logger.debug("portfolio.get_positions_start", log_event="api_service", stage="start")
     rows = await _load_open_positions()
     positions, aggregates = _normalize_positions(rows)
     logger.debug(
         "portfolio.get_positions_done",
-        event="api_service",
+        log_event="api_service",
         stage="completed",
         count=len(positions),
     )
@@ -200,12 +200,12 @@ async def get_positions() -> dict[str, Any]:
 
 
 async def get_portfolio_snapshot() -> dict[str, Any]:
-    logger.debug("portfolio.get_snapshot_start", event="api_service", stage="start")
+    logger.debug("portfolio.get_snapshot_start", log_event="api_service", stage="start")
     rows = await _load_open_positions()
     positions, aggregates = _normalize_positions(rows)
     logger.debug(
         "portfolio.get_snapshot_done",
-        event="api_service",
+        log_event="api_service",
         stage="completed",
         positions_count=len(positions),
     )
@@ -230,7 +230,7 @@ async def get_portfolio_snapshot() -> dict[str, Any]:
 async def get_performance(trading_date: date) -> dict[str, Any]:
     logger.debug(
         "portfolio.get_performance_start",
-        event="api_service",
+        log_event="api_service",
         stage="start",
         trading_date=trading_date.isoformat(),
     )
@@ -261,7 +261,7 @@ async def get_performance(trading_date: date) -> dict[str, Any]:
 
     logger.debug(
         "portfolio.get_performance_done",
-        event="api_service",
+        log_event="api_service",
         stage="completed",
         trading_date=trading_date.isoformat(),
         realized_pnl=realized_pnl,

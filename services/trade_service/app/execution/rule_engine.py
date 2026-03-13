@@ -12,7 +12,7 @@ class BlueprintRuleEngine:
         symbol = plan.get("symbol")
         logger.debug(
             "rule_engine.evaluate_started",
-            event="evaluate_symbol_plan",
+            log_event="evaluate_symbol_plan",
             stage="start",
             symbol=symbol,
             entry_conditions=len(plan.get("entry_conditions", [])),
@@ -28,7 +28,7 @@ class BlueprintRuleEngine:
 
         logger.debug(
             "rule_engine.evaluate_completed",
-            event="evaluate_symbol_plan",
+            log_event="evaluate_symbol_plan",
             stage="completed",
             symbol=symbol,
             entry_ok=entry_ok,
@@ -47,7 +47,7 @@ class BlueprintRuleEngine:
         if not conditions:
             logger.debug(
                 "rule_engine.conditions_empty",
-                event="evaluate_conditions",
+                log_event="evaluate_conditions",
                 stage="short_circuit",
             )
             return False
@@ -61,7 +61,7 @@ class BlueprintRuleEngine:
         if current is None:
             logger.debug(
                 "rule_engine.metric_missing",
-                event="eval_single_condition",
+                log_event="eval_single_condition",
                 stage="missing_metric",
                 metric=metric,
                 operator=operator,
@@ -82,7 +82,7 @@ class BlueprintRuleEngine:
             if not isinstance(value, (list, tuple)) or len(value) != 2:
                 logger.debug(
                     "rule_engine.between_value_invalid",
-                    event="eval_single_condition",
+                    log_event="eval_single_condition",
                     stage="invalid_value",
                     metric=metric,
                     operator=operator,
@@ -91,7 +91,7 @@ class BlueprintRuleEngine:
             return value[0] <= current <= value[1]
         logger.debug(
             "rule_engine.operator_unsupported",
-            event="eval_single_condition",
+            log_event="eval_single_condition",
             stage="unsupported_operator",
             metric=metric,
             operator=operator,
