@@ -30,8 +30,9 @@
 | Signal Service | `services/signal_service` | 指标与信号计算 |
 | Analysis Service | `services/analysis_service` | LLM 蓝图生成与回退 |
 | Trade Service | `services/trade_service` | 执行调度、止损风控、持仓与绩效 |
-| Monitoring Service | `services/monitoring_service` | 健康检查、指标暴露 |
 | Gateway Service | `services/gateway_service` | API 聚合与反向代理 |
+
+补充：监控不再拆分为独立服务。每个 API 服务各自暴露 `/metrics`，统一由 Prometheus 抓取，并可通过 Grafana 展示。
 
 ### 2.2 Trade Service 内部结构（合并后）
 - `app/execution/`：蓝图加载、路由、规则评估、调度任务。
@@ -56,7 +57,13 @@ graph TD
     Gateway --> Signal
     Gateway --> Analysis
     Gateway --> Trade
-    Gateway --> Monitoring[Monitoring Service]
+
+    Prometheus[Prometheus] --> Gateway
+    Prometheus --> Data
+    Prometheus --> Signal
+    Prometheus --> Analysis
+    Prometheus --> Trade
+    Grafana[Grafana] --> Prometheus
 ```
 
 ---
@@ -89,7 +96,9 @@ graph TD
 - `broker`：`type` + `paper` + `futu`
 - `services`：`data_service` / `option_strategy` / `llm`
 - `trading`：`trading` / `risk` / `schedule` / `watchlist`
-- `observability`：`logging`
+- `observability`：`logging`（当前代码）
+
+补充：指标采集采用服务内嵌式 Prometheus 模式，当前 `config/config.yaml` 尚未抽象出独立 metrics 配置节；Prometheus 抓取目标定义在 [config/prometheus.yml](config/prometheus.yml)。
 
 ### 4.2 LLM 配置（已嵌套）
 ```yaml
@@ -130,8 +139,8 @@ risk:
 - Signal: `/api/v1/*`
 - Analysis: `/api/v1/*`
 - Trade: `/api/v1/trade/*`
-- Monitoring: `/api/v1/*`
 - Gateway: 聚合各服务 OpenAPI 并反向代理
+- Metrics: 各服务独立暴露 `/metrics`，由 Prometheus 抓取
 
 ### 5.2 Proto（已与 trade 语义统一）
 `proto/` 当前包含：
@@ -192,6 +201,8 @@ risk:
 ### 8.2 运行入口
 - API 服务：FastAPI + Uvicorn
 - 异步任务：Celery Worker + Beat
+- 指标：各服务 `/metrics` + Prometheus
+- 可视化：Grafana
 - 日志：结构化日志（json/console，可配置文件滚动）
 
 ---
@@ -207,6 +218,7 @@ risk:
 ### 9.2 待增强（不影响当前主流程）
 - `futu` 实盘适配的完整 SDK 调用链。
 - 更完整的规则模板与多策略执行编排。
+- 各服务定制业务指标与告警规则。
 - 端到端集成测试、回测闭环与生产级告警联动。
 
 ---

@@ -31,10 +31,6 @@ _DEFAULTS: dict[str, dict[str, str]] = {
         "url": "http://algo_trade_service:8004",
         "title": "Trade Service",
     },
-    "monitoring": {
-        "url": "http://algo_monitoring_service:8006",
-        "title": "Monitoring Service",
-    },
 }
 
 

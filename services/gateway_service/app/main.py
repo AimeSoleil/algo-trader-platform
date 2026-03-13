@@ -15,6 +15,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from shared.config import get_settings
+from shared.metrics import setup_metrics
 from shared.utils import setup_logging, get_logger
 
 from . import docs, proxy, routes
@@ -94,6 +95,8 @@ def create_app() -> FastAPI:
         allow_methods=["*"],
         allow_headers=["*"],
     )
+
+    setup_metrics(application)
 
     # Dependency injection into sub-modules
     docs.configure(registry, _get_http)

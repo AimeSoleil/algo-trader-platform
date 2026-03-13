@@ -89,13 +89,7 @@ async def health_legacy():
 async def health_all_legacy():
     return RedirectResponse(url="/api/v1/health/all", status_code=307)
 
-
-# ---------------------------------------------------------------------------
-# Spec management
-# ---------------------------------------------------------------------------
-
-
-@router.post("/specs/refresh")
+@router.get("/specs/refresh")
 async def refresh_specs():
     """Invalidate the cached merged OpenAPI spec so it rebuilds on next request."""
     docs.invalidate_cache()

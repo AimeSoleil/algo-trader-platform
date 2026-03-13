@@ -1,4 +1,6 @@
 services:
+  #===================== Infrastructure Services
+
   timescaledb:
     image: timescale/timescaledb:latest-pg16
     container_name: algo_timescaledb
@@ -88,6 +90,37 @@ services:
       - minio_data:/data
     networks:
       - algo_trader_net
+  
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: algo_prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./config/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    networks:
+      - algo_trader_net
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.retention.time=30d"
+
+  grafana:
+    image: grafana/grafana:latest
+    container_name: algo_grafana
+    ports:
+      - "3000:3000"
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: admin
+    volumes:
+      - grafana_data:/var/lib/grafana
+    depends_on:
+      - prometheus
+    networks:
+      - algo_trader_net
+  
+  # Application Services
 
   data_service:
     profiles: ["app"]
@@ -180,26 +213,6 @@ services:
     networks:
       - algo_trader_net
 
-  monitoring_service:
-    profiles: ["app"]
-    build:
-      context: .
-      dockerfile: services/monitoring_service/Dockerfile
-    container_name: algo_monitoring_service
-    env_file:
-      - .env
-    environment:
-      PYTHONPATH: /app
-    ports:
-      - "8006:8006"
-    depends_on:
-      timescaledb:
-        condition: service_healthy
-      postgres:
-        condition: service_healthy
-    networks:
-      - algo_trader_net
-
   gateway:
     profiles: ["app"]
     build:
@@ -225,3 +238,5 @@ volumes:
   redis_data:
   rabbitmq_data:
   minio_data:
+  prometheus_data:
+  grafana_data:

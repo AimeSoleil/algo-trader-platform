@@ -1,0 +1,24 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+scrape_configs:
+  - job_name: gateway
+    static_configs:
+      - targets: ["algo_gateway:8000"]
+
+  - job_name: data_service
+    static_configs:
+      - targets: ["algo_data_service:8001"]
+
+  - job_name: signal_service
+    static_configs:
+      - targets: ["algo_signal_service:8002"]
+
+  - job_name: analysis_service
+    static_configs:
+      - targets: ["algo_analysis_service:8003"]
+
+  - job_name: trade_service
+    static_configs:
+      - targets: ["algo_trade_service:8004"]

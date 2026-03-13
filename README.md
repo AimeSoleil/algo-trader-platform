@@ -6,9 +6,10 @@
 
 已完成阶段 0/1 骨架搭建（可启动、可扩展）：
 
-- 基础设施：TimescaleDB、PostgreSQL、Redis、RabbitMQ、MinIO
+- 基础设施：TimescaleDB、PostgreSQL、Redis、RabbitMQ、MinIO、Prometheus、Grafana
 - 共享层：Pydantic 模型、配置系统、双数据库会话、Celery 共享实例
-- 服务层：Data / Backfill / Signal / Analysis / Trade / Monitoring / Gateway
+- 服务层：Data / Backfill / Signal / Analysis / Trade / Gateway
+- 可观测性：各服务内置 Prometheus `/metrics`，配套 Prometheus + Grafana
 - 运维脚本：数据库初始化、watchlist 种子、Celery worker 启动脚本
 
 ## 快速开始
@@ -17,7 +18,7 @@
 # 1) 复制环境变量
 cp .env.example .env
 
-# 2) 启动本地基础设施（默认）
+# 2) 启动本地基础设施（默认，含 Prometheus + Grafana）
 docker compose up -d
 
 # 3) 安装 Python 依赖
@@ -36,13 +37,13 @@ uv run python -m scripts.seed_watchlist
 ### 开发模式：服务按需逐个启动
 
 ```bash
-# 只启动基础设施（timescaledb/postgres/redis/rabbitmq/minio）
+# 只启动基础设施（timescaledb/postgres/redis/rabbitmq/minio/prometheus/grafana）
 docker compose up -d
 
 # 单独启动某个服务（示例：data_service）
 docker compose up -d data_service
 
-# 启动全部应用服务（data/signal/analysis/trade/monitoring/gateway）
+# 启动全部应用服务（data/signal/analysis/trade/gateway）
 docker compose --profile app up -d
 
 # 查看所有容器状态
@@ -110,8 +111,28 @@ curl http://localhost:8003/api/v1/analyze/<task_id>
 | Signal Service | `services/signal_service` | 盘后批量指标计算与信号生成 |
 | Analysis Service | `services/analysis_service` | LLM 蓝图生成（OpenAI / Copilot，自动回退） |
 | Trade Service | `services/trade_service` | 蓝图加载、规则评估、止损风控、持仓快照、绩效查询 |
-| Monitoring Service | `services/monitoring_service` | 健康检查、Prometheus 指标暴露 |
 | Gateway Service | `services/gateway_service` | 聚合文档与服务反向代理入口 |
+
+## 监控与指标
+
+- 每个 API 服务都暴露自己的 Prometheus 指标端点：`/metrics`
+- 默认已接入的服务：Gateway、Data、Signal、Analysis、Trade
+- 指标采集由 [config/prometheus.yml](config/prometheus.yml) 配置，Prometheus 默认运行在 `http://localhost:9090`
+- Grafana 默认运行在 `http://localhost:3000`，默认账号密码均为 `admin`
+- 当前 MVP 先提供通用 HTTP 指标（请求数、延迟、响应大小等）；后续可在各服务内补充业务指标
+
+常用检查方式：
+
+```bash
+# 查看 Prometheus targets
+open http://localhost:9090/targets
+
+# 查看 Grafana
+open http://localhost:3000
+
+# 直接查看某个服务的 metrics（示例：gateway）
+curl http://localhost:8000/metrics
+```
 
 ## LLM 配置
 

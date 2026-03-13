@@ -9,6 +9,7 @@ from sqlalchemy import text
 
 from shared.config import get_settings
 from shared.db.session import get_timescale_session, get_postgres_session
+from shared.metrics import setup_metrics
 from shared.utils import setup_logging, get_logger
 
 from services.signal_service.app.routes import router
@@ -39,6 +40,7 @@ app = FastAPI(
     version="0.1.0",
     lifespan=lifespan,
 )
+setup_metrics(app)
 
 app.include_router(router, prefix="/api/v1")
 

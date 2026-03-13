@@ -7,6 +7,7 @@ from fastapi import FastAPI
 from fastapi.responses import RedirectResponse
 
 from shared.config import get_settings
+from shared.metrics import setup_metrics
 from shared.utils import get_logger, setup_logging
 
 from services.trade_service.app.execution.routes import router as execution_router
@@ -52,6 +53,7 @@ app = FastAPI(
     version="0.1.0",
     lifespan=lifespan,
 )
+setup_metrics(app)
 
 app.include_router(execution_router, prefix="/api/v1/trade")
 app.include_router(portfolio_router, prefix="/api/v1/trade")
