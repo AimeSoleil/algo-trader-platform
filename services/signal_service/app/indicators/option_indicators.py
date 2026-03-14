@@ -97,20 +97,24 @@ def calculate_pcr(option_data: pd.DataFrame) -> tuple[float, float]:
 
 def calculate_iv_skew(option_data: pd.DataFrame, underlying_price: float) -> float:
     """
-    计算 IV 偏斜：25-delta put IV - 25-delta call IV
+    计算 IV 偏斜：25-delta put IV - 25-delta call IV（仅使用最近到期日）
     """
     if option_data.empty or underlying_price <= 0:
         return 0.0
+
+    # Use only the nearest expiry to avoid dilution from far-month contracts
+    nearest_expiry = option_data["expiry"].min()
+    near = option_data[option_data["expiry"] == nearest_expiry]
 
     # 近似：取 OTM 5% put IV - OTM 5% call IV
     otm_put_strike = underlying_price * 0.95
     otm_call_strike = underlying_price * 1.05
 
-    puts = option_data[
-        (option_data["option_type"] == "put") & (option_data["strike"] <= otm_put_strike)
+    puts = near[
+        (near["option_type"] == "put") & (near["strike"] <= otm_put_strike)
     ]
-    calls = option_data[
-        (option_data["option_type"] == "call") & (option_data["strike"] >= otm_call_strike)
+    calls = near[
+        (near["option_type"] == "call") & (near["strike"] >= otm_call_strike)
     ]
 
     if puts.empty or calls.empty:

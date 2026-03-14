@@ -66,46 +66,24 @@ async def _compute_daily_signals_async(trading_date_str: str | None = None) -> d
     )
     result = {"date": str(td), "symbols_computed": 0, "errors": []}
 
-    async def _load_stock_bars(symbol: str) -> pd.DataFrame:
-        # 优先使用 intraday 1min，但需足够多行才能计算技术指标；否则回退到 daily
-        MIN_INTRADAY_ROWS = 30  # compute_stock_indicators 要求 >= 30 行
+    async def _load_stock_bars(symbol: str) -> tuple[pd.DataFrame, str]:
+        """Return (daily_df, bar_type).
+
+        * daily_df  — up to 260 daily bars; used for ALL technical indicators,
+                       price, and volume.  Post-market task runs after daily bars
+                       are written, so today's close & volume are already in here.
+        * bar_type  — 'intraday_1min' when sufficient intraday 1-min data exists
+                       in the DB (metadata only), otherwise 'daily'.
+        """
+        MIN_INTRADAY_ROWS = 30
+
+        # ── 1) Load daily history ──
         logger.debug(
-            "signal_compute.load_stock_bars_started",
+            "signal_compute.load_daily_bars_started",
             log_event="db_read",
             stage="before_query",
             symbol=symbol,
             trading_date=str(td),
-            source="stock_1min_bars",
-        )
-        async with get_timescale_session() as session:
-            bars_result = await session.execute(
-                text(
-                    "SELECT timestamp, open, high, low, close, volume "
-                    "FROM stock_1min_bars "
-                    "WHERE symbol = :symbol AND timestamp::date = :date "
-                    "ORDER BY timestamp"
-                ),
-                {"symbol": symbol, "date": td},
-            )
-            bars_rows = bars_result.fetchall()
-
-        if len(bars_rows) >= MIN_INTRADAY_ROWS:
-            logger.debug(
-                "signal_compute.load_stock_bars_intraday",
-                log_event="db_read",
-                stage="query_result",
-                symbol=symbol,
-                rows=len(bars_rows),
-                source="stock_1min_bars",
-            )
-            return pd.DataFrame(bars_rows, columns=["timestamp", "open", "high", "low", "close", "volume"])
-
-        # intraday 不足（盘中、未采集或数据稀少）→ 回退到 daily 历史
-        logger.debug(
-            "signal_compute.load_stock_bars_fallback",
-            log_event="db_read",
-            stage="fallback",
-            symbol=symbol,
             source="stock_daily",
         )
         async with get_timescale_session() as session:
@@ -122,25 +100,50 @@ async def _compute_daily_signals_async(trading_date_str: str | None = None) -> d
 
         if not daily_rows:
             logger.debug(
-                "signal_compute.load_stock_bars_empty",
+                "signal_compute.load_daily_bars_empty",
                 log_event="db_read",
                 stage="query_result",
                 symbol=symbol,
                 source="stock_daily",
             )
-            return pd.DataFrame()
+            return pd.DataFrame(), "daily"
 
-        daily_df = pd.DataFrame(daily_rows, columns=["timestamp", "open", "high", "low", "close", "volume"])
+        daily_df = pd.DataFrame(
+            daily_rows,
+            columns=["timestamp", "open", "high", "low", "close", "volume"],
+        )
         daily_df = daily_df.sort_values("timestamp")
         logger.debug(
-            "signal_compute.load_stock_bars_daily",
+            "signal_compute.load_daily_bars_done",
             log_event="db_read",
             stage="query_result",
             symbol=symbol,
             rows=len(daily_df),
             source="stock_daily",
         )
-        return daily_df
+
+        # ── 2) Check whether intraday data exists (metadata flag only) ──
+        async with get_timescale_session() as session:
+            count_result = await session.execute(
+                text(
+                    "SELECT COUNT(*) FROM stock_1min_bars "
+                    "WHERE symbol = :symbol AND timestamp::date = :date"
+                ),
+                {"symbol": symbol, "date": td},
+            )
+            intraday_count = count_result.scalar() or 0
+
+        bar_type = "intraday_1min" if intraday_count >= MIN_INTRADAY_ROWS else "daily"
+        logger.debug(
+            "signal_compute.load_stock_bars_done",
+            log_event="db_read",
+            stage="query_result",
+            symbol=symbol,
+            daily_rows=len(daily_df),
+            intraday_rows=intraday_count,
+            bar_type=bar_type,
+        )
+        return daily_df, bar_type
 
     async def _load_option_rows(symbol: str) -> pd.DataFrame:
         logger.debug(
@@ -234,38 +237,51 @@ async def _compute_daily_signals_async(trading_date_str: str | None = None) -> d
                     symbol=symbol,
                     trading_date=str(td),
                 )
-                bars_df = await _load_stock_bars(symbol)
+                bars_df, bar_type = await _load_stock_bars(symbol)
                 option_df = await _load_option_rows(symbol)
                 logger.debug(
                     "signal_compute.symbol_data_loaded",
                     log_event="symbol_context",
                     stage="after_load",
                     symbol=symbol,
-                    bar_rows=len(bars_df),
+                    daily_rows=len(bars_df),
                     option_rows=len(option_df),
+                    bar_type=bar_type,
                 )
 
                 if bars_df.empty:
                     logger.warning("signal_compute.no_bars", symbol=symbol, date=str(td))
                     return
 
-                # Determine bar type for downstream consumers
-                bar_type = "intraday_1min" if "timestamp" in bars_df.columns and len(bars_df) > 260 else "daily"
-
-                # 3) 计算指标
+                # All price/volume/indicator data comes from daily bars.
+                # Post-market task runs after daily bars are written, so
+                # today's close & volume are already present.
                 close_price = float(bars_df["close"].iloc[-1])
-                prev_close = float(bars_df["close"].iloc[0])
+                prev_close = float(bars_df["close"].iloc[-2]) if len(bars_df) >= 2 else close_price
                 daily_return = (close_price - prev_close) / prev_close if prev_close > 0 else 0.0
-                total_volume = int(bars_df["volume"].sum())
+                total_volume = int(bars_df["volume"].iloc[-1])
 
                 stock_indicators = compute_stock_indicators(bars_df)
                 option_indicators = await compute_option_indicators(symbol, option_df, close_price)
 
                 # Cross-asset features
                 bar_returns = bars_df["close"].pct_change().dropna()
-                iv_changes = option_df["iv"].pct_change().dropna() if not option_df.empty else pd.Series(dtype=float)
 
+                # Aggregate per-timestamp mean IV before computing changes
+                # (raw option_df mixes different contracts; pct_change across
+                # contracts is meaningless)
                 corr = 0.0
+                if not option_df.empty and "timestamp" in option_df.columns:
+                    avg_iv = (
+                        option_df[option_df["iv"] > 0]
+                        .groupby("timestamp")["iv"]
+                        .mean()
+                        .sort_index()
+                    )
+                    iv_changes = avg_iv.pct_change().dropna()
+                else:
+                    iv_changes = pd.Series(dtype=float)
+
                 if len(bar_returns) > 10 and len(iv_changes) > 10:
                     sample_size = min(len(bar_returns), len(iv_changes))
                     merged = pd.DataFrame(
@@ -304,6 +320,7 @@ async def _compute_daily_signals_async(trading_date_str: str | None = None) -> d
                 # 4) 生成综合信号
                 features = generate_signal(
                     symbol=symbol,
+                    trading_date=td,
                     close_price=close_price,
                     daily_return=daily_return,
                     volume=total_volume,

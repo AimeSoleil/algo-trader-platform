@@ -5,6 +5,8 @@
 """
 from __future__ import annotations
 
+from datetime import date
+
 from shared.models.signal import CrossAssetIndicators, SignalFeatures, OptionIndicators, StockIndicators
 from shared.config import get_settings
 from shared.utils import get_logger, now_utc, today_trading
@@ -21,6 +23,7 @@ def generate_signal(
     stock_indicators: StockIndicators,
     cross_asset_indicators: CrossAssetIndicators,
     bar_type: str = "unknown",
+    trading_date: date | None = None,
 ) -> SignalFeatures:
     """组装 SignalFeatures，仅做 volatility_regime 分类。"""
     settings = get_settings()
@@ -37,7 +40,7 @@ def generate_signal(
 
     return SignalFeatures(
         symbol=symbol,
-        date=today_trading(),
+        date=trading_date or today_trading(),
         computed_at=now_utc(),
         close_price=close_price,
         daily_return=daily_return,

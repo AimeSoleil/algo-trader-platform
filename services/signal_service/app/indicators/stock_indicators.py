@@ -253,6 +253,7 @@ def compute_stock_indicators(bars_df: pd.DataFrame) -> StockIndicators:
     bollinger_width = round((bb_upper - bb_lower) / bb_mid, 6) if abs(bb_mid) > 1e-9 else 0.0
 
     ret = close.pct_change().dropna()
+    # Always daily bars now (intraday is handled separately in tasks.py)
     hv_20d = round(float(ret.tail(20).std() * np.sqrt(252)), 6) if len(ret) >= 2 else 0.0
     garch_forecast = _garch_like_forecast(close)
 
@@ -267,14 +268,17 @@ def compute_stock_indicators(bars_df: pd.DataFrame) -> StockIndicators:
     rsi_div = _rsi_divergence(close, rsi)
     macd_div = _macd_hist_divergence(close, macd_hist)
 
-    # 趋势判断
+    # 趋势判断 — ema_50 不可用时退回 neutral 避免误判
     current_price = float(close.iloc[-1])
-    if ema_20 > ema_50 and current_price > ema_20:
+    if ema_50 == 0.0:
+        trend = "neutral"
+        trend_strength = 0.0
+    elif ema_20 > ema_50 and current_price > ema_20:
         trend = "bullish"
-        trend_strength = min((current_price - ema_50) / ema_50 * 10, 1.0) if ema_50 > 0 else 0.5
+        trend_strength = min((current_price - ema_50) / ema_50 * 10, 1.0)
     elif ema_20 < ema_50 and current_price < ema_20:
         trend = "bearish"
-        trend_strength = min((ema_50 - current_price) / ema_50 * 10, 1.0) if ema_50 > 0 else 0.5
+        trend_strength = min((ema_50 - current_price) / ema_50 * 10, 1.0)
     else:
         trend = "neutral"
         trend_strength = 0.3
