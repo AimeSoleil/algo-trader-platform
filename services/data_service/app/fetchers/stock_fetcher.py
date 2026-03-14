@@ -6,7 +6,7 @@ from datetime import date, datetime, timedelta
 
 import yfinance as yf
 
-from shared.utils import get_logger, now_utc, today_trading
+from shared.utils import ensure_utc, get_logger, now_utc, today_trading
 
 logger = get_logger("stock_fetcher")
 
@@ -60,7 +60,7 @@ def _fetch_stock_bars_sync(
             bars.append(
                 {
                     "symbol": symbol,
-                    "timestamp": ts.isoformat(),
+                    "timestamp": ensure_utc(ts.to_pydatetime()),
                     "open": float(row["Open"]),
                     "high": float(row["High"]),
                     "low": float(row["Low"]),
@@ -140,7 +140,7 @@ def _fetch_stock_bars_range_sync(
             if interval == "1d":
                 entry["trading_date"] = ts.to_pydatetime().date()
             else:
-                entry["timestamp"] = ts.isoformat()
+                entry["timestamp"] = ensure_utc(ts.to_pydatetime())
             rows.append(entry)
         logger.debug("stock_fetcher.range_transform_done", symbol=symbol, interval=interval, rows=len(rows))
         return rows, warnings
