@@ -9,203 +9,27 @@ import pandas as pd
 from shared.models.signal import StockIndicators
 from shared.utils import get_logger
 
+from .cal_utils import (
+    adx as _adx,
+    atr as _atr,
+    bollinger_bands as _bollinger_bands,
+    cmf as _cmf,
+    ema as _ema,
+    garch_like_forecast as _garch_like_forecast,
+    ichimoku as _ichimoku,
+    linear_reg_slope as _linear_reg_slope,
+    macd as _macd,
+    macd_hist_divergence as _macd_hist_divergence,
+    rsi as _rsi,
+    rsi_divergence as _rsi_divergence,
+    sanitize_float as _sanitize_float,
+    sma as _sma,
+    stoch_rsi as _stoch_rsi,
+    tick_volume_delta as _tick_volume_delta,
+    volume_profile as _volume_profile,
+)
+
 logger = get_logger("stock_indicators")
-
-
-def _ema(series: pd.Series, period: int) -> pd.Series:
-    return series.ewm(span=period, adjust=False).mean()
-
-
-def _sma(series: pd.Series, period: int) -> pd.Series:
-    return series.rolling(window=period).mean()
-
-
-def _rsi(series: pd.Series, period: int = 14) -> float:
-    delta = series.diff()
-    gain = delta.where(delta > 0, 0.0)
-    loss = -delta.where(delta < 0, 0.0)
-    avg_gain = gain.rolling(window=period).mean()
-    avg_loss = loss.rolling(window=period).mean()
-
-    if avg_loss.iloc[-1] == 0:
-        return 100.0
-    rs = avg_gain.iloc[-1] / avg_loss.iloc[-1]
-    return round(100 - (100 / (1 + rs)), 2)
-
-
-def _macd(series: pd.Series, fast: int = 12, slow: int = 26, signal: int = 9) -> tuple[float, float, float]:
-    ema_fast = _ema(series, fast)
-    ema_slow = _ema(series, slow)
-    macd_line = ema_fast - ema_slow
-    signal_line = _ema(macd_line, signal)
-    histogram = macd_line - signal_line
-    return (
-        round(float(macd_line.iloc[-1]), 4),
-        round(float(signal_line.iloc[-1]), 4),
-        round(float(histogram.iloc[-1]), 4),
-    )
-
-
-def _bollinger_bands(series: pd.Series, period: int = 20, std_dev: float = 2.0) -> tuple[float, float, float]:
-    mid = _sma(series, period)
-    std = series.rolling(window=period).std()
-    upper = mid + std_dev * std
-    lower = mid - std_dev * std
-    return (
-        round(float(upper.iloc[-1]), 4),
-        round(float(lower.iloc[-1]), 4),
-        round(float(mid.iloc[-1]), 4),
-    )
-
-
-def _atr(high: pd.Series, low: pd.Series, close: pd.Series, period: int = 14) -> float:
-    tr1 = high - low
-    tr2 = (high - close.shift(1)).abs()
-    tr3 = (low - close.shift(1)).abs()
-    tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
-    return round(float(tr.rolling(window=period).mean().iloc[-1]), 4)
-
-
-def _adx(high: pd.Series, low: pd.Series, close: pd.Series, period: int = 14) -> float:
-    up_move = high.diff()
-    down_move = -low.diff()
-
-    plus_dm = up_move.where((up_move > down_move) & (up_move > 0), 0.0)
-    minus_dm = down_move.where((down_move > up_move) & (down_move > 0), 0.0)
-
-    tr1 = high - low
-    tr2 = (high - close.shift(1)).abs()
-    tr3 = (low - close.shift(1)).abs()
-    tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
-    atr = tr.rolling(window=period).mean()
-
-    plus_di = 100 * (plus_dm.rolling(window=period).mean() / atr.replace(0, np.nan))
-    minus_di = 100 * (minus_dm.rolling(window=period).mean() / atr.replace(0, np.nan))
-
-    dx = (100 * (plus_di - minus_di).abs() / (plus_di + minus_di).replace(0, np.nan)).fillna(0)
-    adx_series = dx.rolling(window=period).mean()
-    return round(float(adx_series.iloc[-1]), 4) if not adx_series.empty else 0.0
-
-
-def _ichimoku(high: pd.Series, low: pd.Series) -> tuple[float, float, float, float]:
-    tenkan = ((high.rolling(9).max() + low.rolling(9).min()) / 2).iloc[-1]
-    kijun = ((high.rolling(26).max() + low.rolling(26).min()) / 2).iloc[-1]
-    span_a = (tenkan + kijun) / 2
-    span_b = ((high.rolling(52).max() + low.rolling(52).min()) / 2).iloc[-1]
-    return tuple(round(float(v), 4) if pd.notna(v) else 0.0 for v in (tenkan, kijun, span_a, span_b))
-
-
-def _linear_reg_slope(series: pd.Series, period: int = 20) -> float:
-    if len(series) < period:
-        return 0.0
-    y = series.tail(period).to_numpy(dtype=float)
-    x = np.arange(period, dtype=float)
-    slope = np.polyfit(x, y, 1)[0]
-    base = abs(y[-1]) if abs(y[-1]) > 1e-9 else 1.0
-    return round(float(slope / base), 6)
-
-
-def _cmf(high: pd.Series, low: pd.Series, close: pd.Series, volume: pd.Series, period: int = 20) -> float:
-    denom = (high - low).replace(0, np.nan)
-    mfm = ((close - low) - (high - close)) / denom
-    mfv = mfm.fillna(0.0) * volume
-    cmf_series = mfv.rolling(period).sum() / volume.rolling(period).sum().replace(0, np.nan)
-    return round(float(cmf_series.iloc[-1]), 4) if not cmf_series.empty else 0.0
-
-
-def _stoch_rsi(series: pd.Series, period: int = 14) -> float:
-    rsi_series = series.diff().pipe(lambda d: d.where(d > 0, 0.0)).rolling(period).mean() / (
-        -series.diff().pipe(lambda d: d.where(d < 0, 0.0)).rolling(period).mean().replace(0, np.nan)
-    )
-    rsi_series = 100 - 100 / (1 + rsi_series.replace([np.inf, -np.inf], np.nan)).fillna(50)
-    rsi_min = rsi_series.rolling(period).min()
-    rsi_max = rsi_series.rolling(period).max()
-    stoch = (rsi_series - rsi_min) / (rsi_max - rsi_min).replace(0, np.nan)
-    return round(float(stoch.iloc[-1]), 4) if not stoch.empty else 0.0
-
-
-def _tick_volume_delta(open_: pd.Series, close: pd.Series, volume: pd.Series) -> float:
-    signed = np.where(close >= open_, volume, -volume)
-    denom = float(volume.sum()) if float(volume.sum()) > 0 else 1.0
-    return round(float(np.sum(signed) / denom), 4)
-
-
-def _volume_profile(close: pd.Series, volume: pd.Series, bins: int = 20) -> tuple[float, float, float]:
-    if close.empty:
-        return 0.0, 0.0, 0.0
-
-    min_p, max_p = float(close.min()), float(close.max())
-    if max_p - min_p < 1e-9:
-        return round(min_p, 4), round(min_p, 4), round(max_p, 4)
-
-    edges = np.linspace(min_p, max_p, bins + 1)
-    bucket_idx = np.clip(np.digitize(close.to_numpy(), edges) - 1, 0, bins - 1)
-    vol_by_bucket = np.zeros(bins)
-    for idx, vol in zip(bucket_idx, volume.to_numpy()):
-        vol_by_bucket[idx] += float(vol)
-
-    poc_idx = int(np.argmax(vol_by_bucket))
-    poc = (edges[poc_idx] + edges[poc_idx + 1]) / 2
-
-    sorted_idx = np.argsort(vol_by_bucket)[::-1]
-    total = vol_by_bucket.sum()
-    target = total * 0.7
-    cum = 0.0
-    used = []
-    for idx in sorted_idx:
-        used.append(idx)
-        cum += vol_by_bucket[idx]
-        if cum >= target:
-            break
-
-    val = edges[min(used)]
-    vah = edges[max(used) + 1]
-    return round(float(poc), 4), round(float(val), 4), round(float(vah), 4)
-
-
-def _garch_like_forecast(close: pd.Series, period: int = 30) -> float:
-    ret = close.pct_change().dropna().tail(period)
-    if ret.empty:
-        return 0.0
-
-    try:
-        from arch import arch_model  # type: ignore
-
-        model = arch_model(ret * 100, vol="GARCH", p=1, q=1, mean="Zero", dist="normal")
-        fit = model.fit(disp="off")
-        forecast = fit.forecast(horizon=1)
-        var = float(forecast.variance.iloc[-1, 0]) / 10000
-        return round(float(np.sqrt(max(var, 0.0)) * np.sqrt(252)), 6)
-    except Exception:
-        lam = 0.94
-        ewma_var = 0.0
-        for r in ret:
-            ewma_var = lam * ewma_var + (1 - lam) * float(r) ** 2
-        return round(float(np.sqrt(max(ewma_var, 0.0)) * np.sqrt(252)), 6)
-
-
-def _rsi_divergence(close: pd.Series, rsi_value: float, period: int = 14) -> float:
-    if len(close) < period + 5:
-        return 0.0
-    px_change = float(close.iloc[-1] - close.iloc[-period])
-    rsi_centered = rsi_value - 50.0
-    score = np.sign(px_change) * -np.sign(rsi_centered)
-    return round(float(score), 4)
-
-
-def _macd_hist_divergence(close: pd.Series, macd_hist: float, period: int = 10) -> float:
-    if len(close) < period + 1:
-        return 0.0
-    px_momentum = float(close.iloc[-1] - close.iloc[-period])
-    score = np.sign(px_momentum) * np.sign(macd_hist)
-    return round(float(score), 4)
-
-
-def _sanitize_float(v: float) -> float:
-    """Replace NaN / Inf with 0.0."""
-    if isinstance(v, float) and (math.isnan(v) or math.isinf(v)):
-        return 0.0
-    return v
 
 
 def _sanitize_stock_indicators(ind: StockIndicators) -> StockIndicators:
@@ -225,7 +49,39 @@ def _sanitize_stock_indicators(ind: StockIndicators) -> StockIndicators:
 
 
 def compute_stock_indicators(bars_df: pd.DataFrame) -> StockIndicators:
-    """从K线 DataFrame 计算完整股票指标集"""
+    """从日线 DataFrame 计算完整股票技术指标集。
+
+    输入要求:
+        bars_df — 按时间升序的 daily OHLCV，最多 260 行（约 1 年）。
+        最少 30 行才能计算，否则返回默认值。
+
+    指标说明:
+    ┌─────────────────────────┬──────────────────────────────────────────────────┬──────────┐
+    │ 指标                    │ 用途                                             │ 最少天数  │
+    ├─────────────────────────┼──────────────────────────────────────────────────┼──────────┤
+    │ RSI(14)                 │ 超买/超卖震荡器 (0-100)                          │ 15       │
+    │ MACD(12,26,9)           │ 趋势/动量信号 (金叉/死叉)                        │ 35       │
+    │ Bollinger Bands(20,2σ)  │ 波动率通道，突破/回归交易                        │ 20       │
+    │ ATR(14)                 │ 平均真实波幅，用于止损/仓位计算                   │ 15       │
+    │ ADX(14)                 │ 趋势强度 (0-100)，>25 有趋势，>40 强趋势          │ 28       │
+    │ EMA(20) / EMA(50)       │ 短/中期均线，交叉判断趋势方向                     │ 20 / 50  │
+    │ SMA(200)                │ 长期趋势基准，牛/熊分界线                        │ 200      │
+    │ Keltner Channel         │ EMA(20) ± 1.5×ATR，与 BB 配合检测 squeeze       │ 20       │
+    │ Ichimoku Cloud          │ 多维支撑/阻力系统 (转换线/基准线/先行带)          │ 52       │
+    │ Linear Reg Slope(20)    │ 20 日收盘价线性回归斜率，归一化为每日变化率        │ 20       │
+    │ BB Width                │ (上轨-下轨)/中轨，低值 = 波动率压缩               │ 20       │
+    │ HV(20d)                 │ 20 日历史波动率 (年化 √252)                      │ 20       │
+    │ GARCH forecast          │ GARCH(1,1) 或 EWMA 波动率预测 (年化)             │ 30       │
+    │ VWAP                    │ 成交量加权平均价，机构公允价格参考                │ 1        │
+    │ Volume Profile          │ POC/VAL/VAH — 成交量密集区上下沿                 │ 1        │
+    │ CMF(20)                 │ Chaikin 资金流 (-1~+1)，正=买压，负=卖压          │ 20       │
+    │ Tick Volume Delta       │ 涨跌 bar 成交量净比，衡量盘中买卖力道             │ 1        │
+    │ Stochastic RSI(14)      │ RSI 的随机指标化 (0-1)，更灵敏的超买超卖          │ 28       │
+    │ RSI Divergence          │ 价格方向 vs RSI 方向不一致评分 (-1/0/+1)          │ 19       │
+    │ MACD Hist Divergence    │ 价格动量 vs MACD Histogram 方向一致性              │ 11       │
+    │ Trend / Trend Strength  │ EMA20 vs EMA50 交叉 + 价格位置判断趋势方向/强度   │ 50       │
+    └─────────────────────────┴──────────────────────────────────────────────────┴──────────┘
+    """
     if bars_df.empty or len(bars_df) < 30:
         logger.warning("stock_indicators.insufficient_data", rows=len(bars_df))
         return StockIndicators()

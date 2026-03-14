@@ -13,6 +13,8 @@ from shared.db.session import get_timescale_session
 from shared.models.signal import OptionIndicators
 from shared.utils import get_logger, today_trading
 
+from .cal_utils import sanitize_float as _sanitize_float
+
 logger = get_logger("option_indicators")
 
 
@@ -34,13 +36,6 @@ async def get_historical_iv(symbol: str, lookback_days: int = 30) -> list[float]
             {"symbol": symbol, "start_date": start_date},
         )
         return [float(row[0]) for row in result.fetchall() if row[0]]
-
-
-def _sanitize_float(v: float) -> float:
-    """Replace NaN / Inf with 0.0."""
-    if isinstance(v, float) and (math.isnan(v) or math.isinf(v)):
-        return 0.0
-    return v
 
 
 def _sanitize_option_indicators(ind: OptionIndicators) -> OptionIndicators:
@@ -144,7 +139,54 @@ def calculate_term_structure(option_data: pd.DataFrame, underlying_price: float)
 
 
 async def compute_option_indicators(symbol: str, option_data: pd.DataFrame, underlying_price: float, historical_iv: list[float] | None = None) -> OptionIndicators:
-    """计算完整期权指标集"""
+    """计算完整期权指标集。
+
+    输入:
+        symbol           — 标的代码 (e.g. 'NVDA')
+        option_data      — 当日期权链快照 DataFrame，含多个 expiry/strike/option_type
+        underlying_price — 标的当前价格
+        historical_iv    — 可选，预加载的 30 日历史 IV 列表
+
+    指标说明:
+    ┌──────────────────────────────┬───────────────────────────────────────────────────────┐
+    │ 指标                         │ 用途                                                  │
+    ├──────────────────────────────┼───────────────────────────────────────────────────────┤
+    │ IV Rank                      │ Min-Max 归一化: (当前IV-历史最低)/(最高-最低)×100      │
+    │                              │ 高值 → 当前波动率处于历史高位，适合卖权策略            │
+    │ IV Percentile                │ 当前 IV 在 30 日历史中的百分位排名 (scipy)             │
+    │                              │ 与 IV Rank 互补，更抗极端值                           │
+    │ Current IV                   │ 全链有效 IV 的均值，代表市场对未来波动的定价           │
+    │ Historical IV 30d            │ 30 日历史 IV 均值，作为 current_iv 的基准参照          │
+    │ PCR Volume / PCR OI          │ Put/Call 成交量比 & 持仓量比                           │
+    │                              │ >1 偏空，<1 偏多；OI 比 Volume 更稳定                 │
+    │ IV Skew                      │ OTM Put IV - OTM Call IV (最近到期日)                  │
+    │                              │ 正值 = 下行保护溢价高，市场偏防御                     │
+    │ Term Structure Slope         │ 远月 ATM IV - 近月 ATM IV                              │
+    │                              │ 正常正斜率；倒挂 = 近期事件风险溢价                   │
+    │ ATM IV per Expiry            │ 各到期日 ATM 合约 IV，用于构建期限结构曲线            │
+    │ Vol Surface Fit Error        │ 二次多项式拟合 moneyness-IV 的 RMSE                   │
+    │                              │ 高值 = 微笑形态不规则，可能存在定价异常               │
+    │ Delta Exposure Profile       │ OI 加权的 delta 总敞口 (total/call/put)                │
+    │                              │ 衡量市场持仓方向性偏移                                │
+    │ Gamma Peak Strike            │ |gamma|×OI 最大的行权价                                │
+    │                              │ 做市商 gamma 风险集中区，价格接近时波动放大            │
+    │ Theta Decay Rate             │ |theta|×OI / 总OI，每日时间衰减速率                    │
+    │ Vanna (approx)               │ delta×IV×OI / 总OI 的加权近似                          │
+    │                              │ IV 变化对 delta 的二阶影响                             │
+    │ Charm (approx)               │ delta/DTE×OI / 总OI，时间对 delta 的衰减影响           │
+    │ Portfolio Greeks             │ OI 加权的合计 delta/gamma/theta/vega                   │
+    │ OI Concentration Top5        │ 各到期日前 5 大行权价 OI 占比的平均值                  │
+    │                              │ 高集中度 = 流动性集中，gamma pin 效应更强              │
+    │ Bid-Ask Spread Ratio         │ (ask-bid)/mid 的全链平均，衡量流动性成本               │
+    │ Option Volume Imbalance      │ (call_vol - put_vol) / (call_vol + put_vol)             │
+    │                              │ 正值 = call 活跃偏多，负值 = put 活跃偏空             │
+    │ Vertical Spread R/R          │ 相邻行权价 bull call spread 的平均风险收益比            │
+    │ Calendar Spread Theta        │ 近月 - 远月 |theta| 均值，日历价差 theta 捕获潜力      │
+    │ Butterfly Pricing Error      │ 蝶式组合市场价偏离理论值的均值，检测定价异常           │
+    │ Box Spread Arbitrage         │ (K_high-K_low - box_price) / (K_high-K_low)             │
+    │                              │ 非零值 = 无风险套利机会 (含利率分量)                  │
+    └──────────────────────────────┴───────────────────────────────────────────────────────┘
+    """
     if option_data.empty:
         return OptionIndicators()
 
