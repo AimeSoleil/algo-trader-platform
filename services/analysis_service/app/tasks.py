@@ -41,6 +41,17 @@ def _get_adapter():
     return _adapter
 
 
+def _parse_signal_features(raw: object) -> SignalFeatures:
+    """Parse SignalFeatures from DB value that may be JSON string or Python dict.
+
+    Postgres/SQLAlchemy may return JSONB as ``dict`` directly, while some drivers
+    may return serialized JSON text/bytes.
+    """
+    if isinstance(raw, (str, bytes, bytearray)):
+        return SignalFeatures.model_validate_json(raw)
+    return SignalFeatures.model_validate(raw)
+
+
 # ── Common pipeline (steps 2-4) ───────────────────────────────
 
 
@@ -168,7 +179,7 @@ async def _generate_blueprint_async(trading_date_str: str | None = None) -> dict
         )
         for row in result.fetchall():
             try:
-                sf = SignalFeatures.model_validate_json(row[0])
+                sf = _parse_signal_features(row[0])
                 signal_features.append(sf)
             except Exception as e:
                 logger.warning("blueprint.signal_parse_error", error=str(e))
@@ -328,7 +339,7 @@ async def _manual_analyze_async(task, symbol: str, trading_date_str: str | None 
         )
         for row in result.fetchall():
             try:
-                sf = SignalFeatures.model_validate_json(row[0])
+                sf = _parse_signal_features(row[0])
                 signal_features.append(sf)
             except Exception as e:
                 logger.warning("manual_analyze.signal_parse_error", symbol=symbol, error=str(e))

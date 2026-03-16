@@ -39,7 +39,7 @@ broker:
 # ── Services — 各服务业务配置 ────────────────────────────────
 
 data_service:
-  intraday_enabled: false            # true: 叠加盘中 5min 期权链采集
+  intraday_enabled: true            # true: 叠加盘中 5min 期权链采集
   providers:
     stock: "yfinance"                # stock bar data provider
     options: "yfinance"              # option chain data provider
