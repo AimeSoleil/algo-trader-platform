@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import json
 import re
+import shutil
 from datetime import date, datetime, timedelta
 from pathlib import Path
 
@@ -19,6 +20,21 @@ logger = get_logger("copilot_provider")
 
 # Directory containing the trading-analysis/ skill subdirectory
 _SKILLS_DIR = str(Path(__file__).resolve().parents[1] / "skills")
+
+
+def _resolve_cli_path(configured_cli: str) -> str:
+    """Resolve configured Copilot CLI to an executable path when possible.
+
+    This avoids PATH mismatch issues between interactive shell and Celery workers.
+    """
+    cli = configured_cli.strip() if configured_cli else "copilot"
+    if Path(cli).is_absolute() or "/" in cli:
+        return cli
+
+    resolved = shutil.which(cli)
+    if resolved:
+        return resolved
+    return cli
 
 
 def _build_structured_prompt(user_prompt: str) -> str:
@@ -63,7 +79,7 @@ class CopilotProvider(LLMProviderBase):
 
     def __init__(self):
         settings = get_settings()
-        self.cli_path = settings.llm.copilot.cli_path
+        self.cli_path = _resolve_cli_path(settings.llm.copilot.cli_path)
         self.github_token = settings.llm.copilot.github_token
         self.model = settings.llm.copilot.model
         reasoning_effort = settings.llm.copilot.reasoning_effort.lower()
@@ -86,12 +102,15 @@ class CopilotProvider(LLMProviderBase):
 
                 self._client = CopilotClient(config)
                 await self._client.start()
-                logger.info("copilot.client_started")
+                logger.info("copilot.client_started", cli_path=self.cli_path)
             except ImportError:
                 logger.error("copilot.sdk_not_installed")
                 raise ImportError(
                     "Copilot SDK import failed. Install/upgrade with: pip install -U github-copilot-sdk"
                 )
+            except Exception as e:
+                logger.error("copilot.client_start_failed", cli_path=self.cli_path, error=str(e))
+                raise
         return self._client
 
     async def generate_blueprint(
