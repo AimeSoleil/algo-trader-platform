@@ -69,11 +69,13 @@ llm:
     model: "claude-opus-4.6"
     temperature: 0.1
     max_tokens: 8192
+    request_timeout_seconds: 600
   copilot:
     cli_path: "copilot"
     github_token: ""                  # or env: LLM__COPILOT__GITHUB_TOKEN
     model: "claude-opus-4.6"
     reasoning_effort: "medium"        # low / medium / high
+    request_timeout_seconds: 600
   cache_enabled: true
   cache_ttl: 3600
   skill_dir: ""

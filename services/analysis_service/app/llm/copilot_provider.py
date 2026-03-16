@@ -1,7 +1,6 @@
 """GitHub Copilot SDK LLM Provider — native skill mounting via skill_directories."""
 from __future__ import annotations
 
-import asyncio
 import json
 import re
 import shutil
@@ -82,6 +81,7 @@ class CopilotProvider(LLMProviderBase):
         self.cli_path = _resolve_cli_path(settings.llm.copilot.cli_path)
         self.github_token = settings.llm.copilot.github_token
         self.model = settings.llm.copilot.model
+        self.request_timeout = settings.llm.copilot.request_timeout_seconds
         reasoning_effort = settings.llm.copilot.reasoning_effort.lower()
         if reasoning_effort not in {"low", "medium", "high", "xhigh"}:
             reasoning_effort = "medium"
@@ -145,9 +145,9 @@ class CopilotProvider(LLMProviderBase):
                     "on_permission_request": self._on_permission_request,
                 })
 
-                result = await asyncio.wait_for(
-                    session.send_and_wait({"prompt": full_prompt}),
-                    timeout=120,
+                result = await session.send_and_wait(
+                    {"prompt": full_prompt},
+                    timeout=self.request_timeout,
                 )
                 await session.disconnect()
 

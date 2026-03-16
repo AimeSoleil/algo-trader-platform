@@ -31,6 +31,7 @@ class OpenAILLMSettings(BaseSettings):
     model: str = "gpt-4o"
     temperature: float = 0.1
     max_tokens: int = 8192
+    request_timeout_seconds: int = 600
 
 
 class CopilotLLMSettings(BaseSettings):
@@ -38,6 +39,7 @@ class CopilotLLMSettings(BaseSettings):
     github_token: str = ""
     model: str = "gpt-4o"  # model used inside Copilot session
     reasoning_effort: str = "medium"  # low / medium / high / xhigh
+    request_timeout_seconds: int = 600
 
 class LLMSettings(BaseSettings):
     provider: str = "openai"  # "openai" / "copilot"

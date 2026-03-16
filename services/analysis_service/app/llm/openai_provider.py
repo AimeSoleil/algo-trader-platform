@@ -83,6 +83,7 @@ class OpenAIProvider(LLMProviderBase):
         self.model = settings.llm.openai.model
         self.temperature = settings.llm.openai.temperature
         self.max_tokens = settings.llm.openai.max_tokens
+        self.request_timeout = settings.llm.openai.request_timeout_seconds
 
         # Pre-build the skill bundle once
         self._skill_bundle = _build_skill_bundle()
@@ -124,6 +125,7 @@ class OpenAIProvider(LLMProviderBase):
                     text={"format": {"type": "json_object"}},
                     temperature=self.temperature,
                     max_output_tokens=self.max_tokens,
+                    timeout=self.request_timeout,
                 )
 
                 content = response.output_text
