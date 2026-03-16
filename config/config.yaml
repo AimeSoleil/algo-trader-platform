@@ -66,13 +66,13 @@ llm:
   provider: "copilot"                 # openai / copilot
   openai:
     api_key: ""                       # or env: LLM__OPENAI__API_KEY
-    model: "gpt-4o"
+    model: "claude-opus-4.6"
     temperature: 0.1
     max_tokens: 8192
   copilot:
     cli_path: "copilot"
     github_token: ""                  # or env: LLM__COPILOT__GITHUB_TOKEN
-    model: "gpt-4o"
+    model: "claude-opus-4.6"
     reasoning_effort: "medium"        # low / medium / high
   cache_enabled: true
   cache_ttl: 3600
