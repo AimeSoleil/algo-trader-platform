@@ -130,6 +130,21 @@ def _normalize_manual_end_date(end_date: date) -> tuple[date, str | None]:
     return end_date, None
 
 
+def _build_collect_suggested_body(
+    req: CollectRequest,
+    *,
+    start_date: date,
+    end_date: date,
+) -> dict:
+    """Build a copy-pasteable suggested request body for collect API."""
+    return {
+        "symbols": req.symbols,
+        "start_date": start_date.isoformat(),
+        "end_date": end_date.isoformat(),
+        "data_types": req.data_types,
+    }
+
+
 # ── Health / config endpoints ──────────────────────────────
 
 
@@ -408,10 +423,53 @@ async def trigger_collection(req: CollectRequest):
 
     if not req.symbols:
         raise HTTPException(status_code=422, detail="symbols list must not be empty")
-    if req.start_date > normalized_end_date:
-        raise HTTPException(status_code=422, detail="start_date must be <= end_date")
-    if normalized_end_date > today_trading():
-        raise HTTPException(status_code=422, detail="end_date cannot be in the future")
+
+    today = today_trading()
+
+    if req.end_date > today:
+        suggested_end = today
+        suggested_start = min(req.start_date, suggested_end)
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "error": "end_date cannot be in the future",
+                "suggested_request_body": _build_collect_suggested_body(
+                    req,
+                    start_date=suggested_start,
+                    end_date=suggested_end,
+                ),
+            },
+        )
+
+    if normalization_warning is not None:
+        suggested_end = normalized_end_date
+        suggested_start = min(req.start_date, suggested_end)
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "error": normalization_warning,
+                "suggested_request_body": _build_collect_suggested_body(
+                    req,
+                    start_date=suggested_start,
+                    end_date=suggested_end,
+                ),
+            },
+        )
+
+    if req.start_date > req.end_date:
+        suggested_start = min(req.start_date, req.end_date)
+        suggested_end = max(req.start_date, req.end_date)
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "error": "start_date must be <= end_date",
+                "suggested_request_body": _build_collect_suggested_body(
+                    req,
+                    start_date=suggested_start,
+                    end_date=suggested_end,
+                ),
+            },
+        )
 
     valid_types = {"bars_1m", "bars_daily", "options_daily"}
     invalid = set(req.data_types) - valid_types
@@ -427,16 +485,14 @@ async def trigger_collection(req: CollectRequest):
 
     task = celery_app.send_task(
         "data_service.tasks.manual_collect",
-        args=[symbols, req.start_date.isoformat(), normalized_end_date.isoformat(), req.data_types],
+        args=[symbols, req.start_date.isoformat(), req.end_date.isoformat(), req.data_types],
         queue="data",
     )
 
     message = (
         f"Collection queued for {len(symbols)} symbols, "
-        f"{req.start_date} to {normalized_end_date}, types={req.data_types}"
+        f"{req.start_date} to {req.end_date}, types={req.data_types}"
     )
-    if normalization_warning:
-        message = f"{message}. Warning: {normalization_warning}"
 
     return CollectResponse(
         task_id=task.id,

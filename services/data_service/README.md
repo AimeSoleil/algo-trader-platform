@@ -38,7 +38,8 @@
 Manual Collection 日期规则：
 - `start_date` 必须 `<= end_date`。
 - `end_date` 不能晚于 `today_trading()`（按交易时区计算）。
-- 若 `end_date == today_trading()` 且当前时间早于开盘（`data_service.market_hours.start`），系统会自动将 `end_date` 归一化为上一个交易日，并在响应/任务结果中附带 warning。
+- 若 `end_date == today_trading()` 且当前时间早于开盘（`data_service.market_hours.start`），接口会返回 `422`（不再静默归一化）。
+- 所有日期相关 `422` 错误会在 `detail.suggested_request_body` 中返回可直接重试的建议请求体。
 
 ## Data Providers (FetcherProtocol)
 配置位于 `config/config.yaml` → `data_service.providers`:
