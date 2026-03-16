@@ -87,12 +87,13 @@ class CopilotProvider(LLMProviderBase):
             reasoning_effort = "medium"
         self.reasoning_effort = reasoning_effort
         self._client = None
+        self._on_permission_request = None
 
     async def _get_client(self):
         """Lazy-init the CopilotClient."""
         if self._client is None:
             try:
-                from copilot import CopilotClient
+                from copilot import CopilotClient, PermissionHandler
 
                 config = {"cli_path": self.cli_path, "auto_start": True}
                 if self.github_token:
@@ -101,6 +102,7 @@ class CopilotProvider(LLMProviderBase):
                     config["use_logged_in_user"] = True
 
                 self._client = CopilotClient(config)
+                self._on_permission_request = PermissionHandler.approve_all
                 await self._client.start()
                 logger.info("copilot.client_started", cli_path=self.cli_path)
             except ImportError:
@@ -135,10 +137,12 @@ class CopilotProvider(LLMProviderBase):
         max_retries = 3
         for attempt in range(max_retries):
             try:
+                await self._get_client()
                 session = await client.create_session({
                     "model": self.model,
                     "reasoning_effort": self.reasoning_effort,
                     "skill_directories": [_SKILLS_DIR],
+                    "on_permission_request": self._on_permission_request,
                 })
 
                 result = await asyncio.wait_for(
