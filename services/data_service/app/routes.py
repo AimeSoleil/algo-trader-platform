@@ -416,7 +416,7 @@ async def list_option_dates(symbol: str):
 # ── Manual collection endpoints ────────────────────────────
 
 
-@router.post("/collect", status_code=202, response_model=CollectResponse)
+@router.post("/collect/stock", status_code=202, response_model=CollectResponse)
 async def trigger_collection(req: CollectRequest):
     """Trigger manual data collection for specific symbols and date range."""
     normalized_end_date, normalization_warning = _normalize_manual_end_date(req.end_date)
