@@ -705,3 +705,183 @@ async def _manual_collect_async(
         duration_ms=round((perf_counter() - started) * 1000, 2),
     )
     return result
+
+
+# ── Options collection task (triggered via REST API) ───────
+
+
+@celery_app.task(
+    name="data_service.tasks.collect_options",
+    bind=True,
+    max_retries=1,
+)
+def collect_options(
+    self,
+    symbols: list[str],
+    historical_date: str | None = None,
+) -> dict:
+    """Collect option chain data for given symbols.
+
+    - If ``historical_date`` is None → fetch today's live chain.
+    - If ``historical_date`` is provided → use the options_historical provider.
+    """
+    logger.debug(
+        "collect_options.start",
+        log_event="task_start",
+        stage="entry",
+        task_id=getattr(self.request, "id", None),
+        symbols=len(symbols),
+        historical_date=historical_date,
+        retry=getattr(self.request, "retries", 0),
+    )
+    try:
+        return asyncio.run(
+            _collect_options_async(self, symbols, historical_date)
+        )
+    except Exception as exc:
+        logger.error("collect_options.failed", error=str(exc))
+        raise self.retry(exc=exc, countdown=30) from exc
+
+
+async def _collect_options_async(
+    task,
+    symbols: list[str],
+    historical_date_str: str | None = None,
+) -> dict:
+    from services.data_service.app.converters import contracts_to_rows
+    from services.data_service.app.fetchers.option_fetcher import fetch_option_chain
+    from services.data_service.app.storage import write_swing_options
+
+    settings = get_settings()
+    started = perf_counter()
+    historical_provider = settings.data_service.providers.options_historical
+
+    result: dict = {
+        "status": "completed",
+        "symbols": symbols,
+        "mode": "historical" if historical_date_str else "live",
+        "options_rows": 0,
+        "warnings": [],
+        "errors": [],
+    }
+
+    total_steps = len(symbols)
+
+    if historical_date_str is not None:
+        # ── Historical mode ──
+        target_date = date.fromisoformat(historical_date_str)
+        result["historical_date"] = historical_date_str
+        result["historical_provider"] = historical_provider
+
+        if historical_provider == "none":
+            result["status"] = "failed"
+            result["errors"].append("options_historical provider is 'none' — no historical data available")
+            return result
+
+        # Mock provider — placeholder for future real implementation
+        for idx, symbol in enumerate(symbols, 1):
+            task.update_state(
+                state="PROGRESS",
+                meta={
+                    "current_step": idx,
+                    "total_steps": total_steps,
+                    "symbol": symbol,
+                    "mode": "historical",
+                },
+            )
+            try:
+                snapshot = await _fetch_historical_options_mock(symbol, target_date, historical_provider)
+                if snapshot:
+                    option_rows = contracts_to_rows(snapshot, include_snapshot_date=True)
+                    written = await write_swing_options(option_rows)
+                    result["options_rows"] += written
+                    logger.info(
+                        "collect_options.historical_written",
+                        symbol=symbol,
+                        date=str(target_date),
+                        rows=written,
+                        provider=historical_provider,
+                    )
+                else:
+                    result["warnings"].append(
+                        f"{symbol}: historical options mock returned no data for {target_date}"
+                    )
+            except Exception as e:
+                result["errors"].append(f"{symbol}/historical: {e}")
+                logger.error("collect_options.historical_error", symbol=symbol, error=str(e))
+    else:
+        # ── Live mode (today's option chain) ──
+        for idx, symbol in enumerate(symbols, 1):
+            task.update_state(
+                state="PROGRESS",
+                meta={
+                    "current_step": idx,
+                    "total_steps": total_steps,
+                    "symbol": symbol,
+                    "mode": "live",
+                },
+            )
+            try:
+                logger.debug("collect_options.fetch_live_start", symbol=symbol)
+                snapshot = await fetch_option_chain(symbol)
+                if snapshot:
+                    option_rows = contracts_to_rows(snapshot, include_snapshot_date=True)
+                    written = await write_swing_options(option_rows)
+                    result["options_rows"] += written
+                    logger.info("collect_options.live_written", symbol=symbol, rows=written)
+                else:
+                    result["warnings"].append(f"{symbol}: no option chain returned")
+            except Exception as e:
+                result["errors"].append(f"{symbol}/live: {e}")
+                logger.error("collect_options.live_error", symbol=symbol, error=str(e))
+
+    if result["errors"]:
+        result["status"] = "completed_with_errors"
+
+    logger.info(
+        "collect_options.done",
+        symbols=len(symbols),
+        mode=result["mode"],
+        options_rows=result["options_rows"],
+        warnings=len(result["warnings"]),
+        errors=len(result["errors"]),
+    )
+    logger.debug(
+        "collect_options.summary",
+        log_event="task_summary",
+        stage="completed",
+        symbols=len(symbols),
+        mode=result["mode"],
+        options_rows=result["options_rows"],
+        duration_ms=round((perf_counter() - started) * 1000, 2),
+    )
+    return result
+
+
+async def _fetch_historical_options_mock(
+    symbol: str,
+    target_date: date,
+    provider: str,
+):
+    """Mock historical options data fetch — placeholder for real implementation.
+
+    When a real historical options provider is configured (e.g. 'cboe', 'orats',
+    'thetadata'), this function should be replaced with an actual data fetch.
+    Currently returns None to indicate no data available.
+
+    TODO: implement real providers:
+      - 'cboe': CBOE DataShop historical options
+      - 'orats': ORATS historical IV & chain data
+      - 'thetadata': ThetaData historical options
+    """
+    logger.info(
+        "collect_options.historical_mock",
+        symbol=symbol,
+        target_date=str(target_date),
+        provider=provider,
+        message="Historical options mock — no real data returned. "
+                "Implement provider-specific fetcher to enable.",
+    )
+    # Return None — mock has no data. Real implementation would return
+    # an OptionChainSnapshot populated from the historical provider.
+    return None

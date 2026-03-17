@@ -79,6 +79,9 @@ llm:
   cache_enabled: true
   cache_ttl: 3600
   skill_dir: ""
+  chunk_size: 5                        # max symbols per LLM chunk (excl. benchmarks)
+  max_concurrent_chunks: 3             # max parallel LLM calls for large watchlists
+  benchmark_symbols: ["SPY", "QQQ"]    # injected into every chunk for market context
 
 
 # ── Trading — 交易执行与风控 ─────────────────────────────────

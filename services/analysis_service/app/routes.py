@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from celery.result import AsyncResult
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel, Field
 
 from shared.celery_app import celery_app
@@ -16,10 +16,29 @@ router = APIRouter(tags=["analysis"])
 
 
 @router.get("/blueprint/{trading_date}")
-async def get_blueprint(trading_date: str, by_pass_cache: bool = False):
-    """查询某天的蓝图"""
+async def get_blueprint(
+    trading_date: str,
+    symbols: list[str] | None = Query(None, description="Filter blueprint plans by symbols (comma-separated)"),
+    by_pass_cache: bool = False,
+):
+    """查询某天的蓝图，可按 symbols 过滤 symbol_plans"""
     from services.analysis_service.app.queries import query_blueprint
-    return await query_blueprint(trading_date, by_pass_cache=by_pass_cache)
+
+    result = await query_blueprint(trading_date, by_pass_cache=by_pass_cache)
+
+    # Apply symbol filter if requested
+    if symbols and "blueprint" in result and result["blueprint"]:
+        upper_symbols = {s.strip().upper() for s in symbols}
+        bp = result["blueprint"]
+        # blueprint may be dict or JSON-parsed object
+        if isinstance(bp, dict) and "symbol_plans" in bp:
+            bp["symbol_plans"] = [
+                plan for plan in bp["symbol_plans"]
+                if plan.get("underlying", "").upper() in upper_symbols
+            ]
+        result["_symbol_filter"] = list(upper_symbols)
+
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -28,7 +47,11 @@ async def get_blueprint(trading_date: str, by_pass_cache: bool = False):
 
 
 class AnalyzeRequest(BaseModel):
-    symbol: str = Field(..., description="Ticker symbol to analyze, e.g. AAPL")
+    symbols: list[str] = Field(
+        ...,
+        min_length=1,
+        description="Ticker symbols to analyze, e.g. ['AAPL', 'MSFT']",
+    )
     trading_date: str | None = Field(
         None,
         description="Signal date (ISO format). Defaults to today.",
@@ -36,33 +59,40 @@ class AnalyzeRequest(BaseModel):
 
 
 class AnalyzeResponse(BaseModel):
-    task_id: str
+    task_ids: list[dict] = Field(
+        default_factory=list,
+        description="List of {symbol, task_id} for each queued analysis",
+    )
     status: str
     message: str
 
 
 @router.post("/analyze", status_code=202, response_model=AnalyzeResponse)
 async def trigger_analysis(req: AnalyzeRequest):
-    """Trigger manual LLM analysis for a single symbol.
+    """Trigger manual LLM analysis for one or more symbols.
 
-    Returns a task_id that can be polled via GET /analyze/{task_id}.
-    Signal features for the symbol must already exist in the DB.
+    Each symbol is dispatched as a separate Celery task.
+    Returns task_ids that can be polled via GET /analyze/{task_id}.
+    Signal features for the symbols must already exist in the DB.
     """
-    symbol = req.symbol.strip().upper()
-    if not symbol:
-        raise HTTPException(status_code=422, detail="symbol must not be empty")
+    clean_symbols = list(dict.fromkeys(s.strip().upper() for s in req.symbols if s.strip()))
+    if not clean_symbols:
+        raise HTTPException(status_code=422, detail="symbols list must not be empty")
 
-    task = celery_app.send_task(
-        "analysis_service.tasks.manual_analyze",
-        args=[symbol, req.trading_date],
-        queue="analysis",
-    )
+    task_ids: list[dict] = []
+    for symbol in clean_symbols:
+        task = celery_app.send_task(
+            "analysis_service.tasks.manual_analyze",
+            args=[symbol, req.trading_date],
+            queue="analysis",
+        )
+        task_ids.append({"symbol": symbol, "task_id": task.id})
 
+    date_suffix = f" (date={req.trading_date})" if req.trading_date else ""
     return AnalyzeResponse(
-        task_id=task.id,
+        task_ids=task_ids,
         status="queued",
-        message=f"Analysis queued for {symbol}"
-                + (f" (date={req.trading_date})" if req.trading_date else ""),
+        message=f"Analysis queued for {len(clean_symbols)} symbol(s): {', '.join(clean_symbols)}{date_suffix}",
     )
 
 

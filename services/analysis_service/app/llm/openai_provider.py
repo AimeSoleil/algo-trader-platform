@@ -95,10 +95,13 @@ class OpenAIProvider(LLMProviderBase):
         signal_features: list[SignalFeatures],
         current_positions: dict | None = None,
         previous_execution: dict | None = None,
+        *,
+        chunk_mode: bool = False,
     ) -> LLMTradingBlueprint:
         """Call OpenAI Responses API with the trading-analysis skill mounted."""
         prompt = build_blueprint_prompt(
-            signal_features, current_positions, previous_execution
+            signal_features, current_positions, previous_execution,
+            chunk_mode=chunk_mode,
         )
 
         max_retries = 3

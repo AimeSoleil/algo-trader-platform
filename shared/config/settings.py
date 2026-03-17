@@ -52,6 +52,14 @@ class LLMSettings(BaseSettings):
     cache_ttl: int = 3600  # seconds
     skill_dir: str = ""  # path to skills directory (provider resolves default)
 
+    # ── Chunking ──
+    chunk_size: int = 5                    # max symbols per LLM chunk (excl. benchmarks)
+    max_concurrent_chunks: int = 3         # max parallel LLM calls
+    benchmark_symbols: list[str] = Field(
+        default_factory=lambda: ["SPY", "QQQ"],
+        description="Symbols injected into every chunk for market context",
+    )
+
 class TradingSettings(BaseSettings):
     timezone: str = "America/New_York"
     execution_interval: int = 300  # seconds (5 min)

@@ -16,8 +16,17 @@ class LLMProviderBase(ABC):
         signal_features: list[SignalFeatures],
         current_positions: dict | None = None,
         previous_execution: dict | None = None,
+        *,
+        chunk_mode: bool = False,
     ) -> LLMTradingBlueprint:
-        """生成次日交易蓝图"""
+        """生成次日交易蓝图
+
+        Parameters
+        ----------
+        chunk_mode:
+            When *True*, prompt instructions are adapted for a subset
+            of the full watchlist (parallel chunking mode).
+        """
         ...
 
     @abstractmethod

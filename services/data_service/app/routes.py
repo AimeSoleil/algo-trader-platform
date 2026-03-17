@@ -6,7 +6,7 @@ from typing import Literal
 
 from celery.result import AsyncResult
 from fastapi import APIRouter, HTTPException, Query
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy import text
 
 from services.data_service.app.scheduler import (
@@ -88,11 +88,11 @@ class ModeSwitchRequest(BaseModel):
 
 
 class CollectRequest(BaseModel):
-    """Manual data collection request."""
+    """Manual stock data collection request."""
     symbols: list[str]
     start_date: date
     end_date: date
-    data_types: list[str] = ["bars_1m", "bars_daily", "options_daily"]
+    data_types: list[str] = ["bars_1m", "bars_daily"]
 
 
 class CollectResponse(BaseModel):
@@ -471,7 +471,7 @@ async def trigger_collection(req: CollectRequest):
             },
         )
 
-    valid_types = {"bars_1m", "bars_daily", "options_daily"}
+    valid_types = {"bars_1m", "bars_daily"}
     invalid = set(req.data_types) - valid_types
     if invalid:
         raise HTTPException(
@@ -490,7 +490,7 @@ async def trigger_collection(req: CollectRequest):
     )
 
     message = (
-        f"Collection queued for {len(symbols)} symbols, "
+        f"Stock data collection queued for {len(symbols)} symbols, "
         f"{req.start_date} to {req.end_date}, types={req.data_types}"
     )
 
@@ -519,3 +519,84 @@ async def get_collection_status(task_id: str):
         response["error"] = str(result.result)
 
     return response
+
+
+# ── Options collection endpoints ───────────────────────────
+
+
+class OptionsCollectRequest(BaseModel):
+    """Manual options data collection request."""
+    symbols: list[str] = Field(..., min_length=1, description="Ticker symbols to collect options for")
+    historical_date: date | None = Field(
+        None,
+        description="Target date for historical options. Requires a provider that supports "
+                    "historical data (see data_service.providers.options_historical config). "
+                    "If omitted, collects today's live option chain.",
+    )
+
+
+class OptionsCollectResponse(BaseModel):
+    task_id: str
+    status: str = "queued"
+    message: str = ""
+    historical_provider: str | None = None
+
+
+@router.post("/collect/options", status_code=202, response_model=OptionsCollectResponse)
+async def trigger_options_collection(req: OptionsCollectRequest):
+    """Collect option chain data for specified symbols.
+
+    - Without ``historical_date``: fetches today's live option chain via the
+      configured options provider (e.g. yfinance).
+    - With ``historical_date``: uses the ``options_historical`` provider.
+      If configured as ``\"none\"``, returns 422.
+    """
+    if not req.symbols:
+        raise HTTPException(status_code=422, detail="symbols list must not be empty")
+
+    symbols = [s.strip().upper() for s in req.symbols if s.strip()]
+    if not symbols:
+        raise HTTPException(status_code=422, detail="symbols list must not be empty")
+
+    settings = get_settings()
+    historical_provider = settings.data_service.providers.options_historical
+
+    if req.historical_date is not None:
+        today = today_trading()
+        if req.historical_date > today:
+            raise HTTPException(status_code=422, detail="historical_date cannot be in the future")
+
+        if historical_provider == "none":
+            raise HTTPException(
+                status_code=422,
+                detail="Historical options data not available: options_historical provider "
+                       "is set to 'none'. Configure a supported provider in "
+                       "data_service.providers.options_historical to enable this feature.",
+            )
+
+        task = celery_app.send_task(
+            "data_service.tasks.collect_options",
+            args=[symbols],
+            kwargs={"historical_date": req.historical_date.isoformat()},
+            queue="data",
+        )
+
+        return OptionsCollectResponse(
+            task_id=task.id,
+            status="queued",
+            message=f"Historical options collection queued for {len(symbols)} symbol(s), date={req.historical_date}",
+            historical_provider=historical_provider,
+        )
+
+    # Live collection (today's option chain)
+    task = celery_app.send_task(
+        "data_service.tasks.collect_options",
+        args=[symbols],
+        queue="data",
+    )
+
+    return OptionsCollectResponse(
+        task_id=task.id,
+        status="queued",
+        message=f"Options collection queued for {len(symbols)} symbol(s) (today's live chain)",
+    )

@@ -87,17 +87,31 @@ async def query_signal_features(
     return {**data, "_from_cache": False}
 
 
-async def query_batch_signal_features(date_str: str | None = None) -> list[dict]:
-    """查询当日所有标的的信号特征（支持批量）"""
+async def query_batch_signal_features(
+    date_str: str | None = None,
+    symbols: list[str] | None = None,
+) -> list[dict]:
+    """查询当日所有标的的信号特征（支持批量），可按 symbols 过滤"""
     target_date = date.fromisoformat(date_str) if date_str else today_trading()
+
+    conditions = ["date = :date"]
+    params: dict = {"date": target_date}
+
+    if symbols:
+        upper_symbols = [s.strip().upper() for s in symbols if s.strip()]
+        if upper_symbols:
+            conditions.append("symbol = ANY(:symbols)")
+            params["symbols"] = upper_symbols
+
+    where = " AND ".join(conditions)
 
     async with get_postgres_session() as session:
         result = await session.execute(
             text(
-                "SELECT symbol, features_json FROM signal_features "
-                "WHERE date = :date ORDER BY symbol"
+                f"SELECT symbol, features_json FROM signal_features "
+                f"WHERE {where} ORDER BY symbol"
             ),
-            {"date": target_date},
+            params,
         )
         rows = result.fetchall()
 

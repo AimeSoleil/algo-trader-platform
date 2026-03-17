@@ -50,6 +50,8 @@ def build_blueprint_prompt(
     signal_features: list[SignalFeatures],
     current_positions: dict | None = None,
     previous_execution: dict | None = None,
+    *,
+    chunk_mode: bool = False,
 ) -> str:
     """Build the user prompt containing market data and task instructions.
 
@@ -57,6 +59,15 @@ def build_blueprint_prompt(
     provided by the ``trading-analysis`` skill bundle that is already
     mounted in the LLM runtime.  This function supplies only the
     *concrete market data* for the model to analyse.
+
+    Parameters
+    ----------
+    chunk_mode:
+        When *True*, the task instructions are adapted for a subset of
+        the full watchlist (parallel chunking mode).  Benchmark symbols
+        (SPY, QQQ) are included for market context but the LLM is told
+        to generate plans for all provided symbols rather than selecting
+        a small number from a larger pool.
     """
     sections: list[str] = []
 
@@ -78,7 +89,7 @@ def build_blueprint_prompt(
     sections.append(f"## Previous Execution Review\n\n{prev_exec_text}")
 
     # Task
-    sections.append(_build_task_section())
+    sections.append(_build_task_section(chunk_mode=chunk_mode))
 
     return "\n\n".join(sections) + "\n"
 
@@ -265,7 +276,20 @@ def _build_positions_section(current_positions: dict | None) -> str:
     return "\n".join(lines)
 
 
-def _build_task_section() -> str:
+def _build_task_section(*, chunk_mode: bool = False) -> str:
+    if chunk_mode:
+        return (
+            f"## Task\n\n"
+            f"Generate a Trading Blueprint for **{_next_trading_day()}**.\n\n"
+            f"This is a **subset** of the full watchlist processed in parallel. "
+            f"Benchmark symbols (SPY, QQQ) are included for market context only — "
+            f"do NOT generate plans for them unless they present actionable setups.\n\n"
+            f"Follow the trading-analysis skill workflow. Generate trading plans for "
+            f"ALL non-benchmark symbols provided in the signal data. Design concrete "
+            f"strategies with fully defined legs for each.\n\n"
+            f"If the Current Portfolio section shows open positions, evaluate each for "
+            f"hold / increase / decrease / close before proposing new trades."
+        )
     return (
         f"## Task\n\n"
         f"Generate a Trading Blueprint for **{_next_trading_day()}**.\n\n"

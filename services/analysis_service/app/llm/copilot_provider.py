@@ -120,6 +120,8 @@ class CopilotProvider(LLMProviderBase):
         signal_features: list[SignalFeatures],
         current_positions: dict | None = None,
         previous_execution: dict | None = None,
+        *,
+        chunk_mode: bool = False,
     ) -> LLMTradingBlueprint:
         """Generate a next-day trading blueprint via Copilot SDK.
 
@@ -130,7 +132,8 @@ class CopilotProvider(LLMProviderBase):
         """
         client = await self._get_client()
         prompt = build_blueprint_prompt(
-            signal_features, current_positions, previous_execution
+            signal_features, current_positions, previous_execution,
+            chunk_mode=chunk_mode,
         )
         full_prompt = _build_structured_prompt(prompt)
 

@@ -32,10 +32,11 @@ def _run_async(coro):
 
 
 @celery_app.task(name="signal_service.tasks.compute_daily_signals", bind=True, max_retries=2)
-def compute_daily_signals(self, trading_date: str | None = None, prev_result=None) -> dict:
+def compute_daily_signals(self, trading_date: str | None = None, prev_result=None, symbols: list[str] | None = None) -> dict:
     """
     17:00 Celery 任务：批量计算当日所有标的的信号特征
     prev_result: 上游任务 (backfill) 的结果
+    symbols: 可选，仅计算指定标的（默认使用完整 watchlist）
     """
     logger.debug(
         "signal_compute.start",
@@ -43,12 +44,13 @@ def compute_daily_signals(self, trading_date: str | None = None, prev_result=Non
         stage="entry",
         task_id=getattr(self.request, "id", None),
         trading_date=trading_date,
+        symbols=symbols,
         retry=getattr(self.request, "retries", 0),
     )
-    return _run_async(_compute_daily_signals_async(trading_date))
+    return _run_async(_compute_daily_signals_async(trading_date, symbols=symbols))
 
 
-async def _compute_daily_signals_async(trading_date_str: str | None = None) -> dict:
+async def _compute_daily_signals_async(trading_date_str: str | None = None, *, symbols: list[str] | None = None) -> dict:
     from services.signal_service.app.indicators.option_indicators import compute_option_indicators
     from services.signal_service.app.indicators.stock_indicators import compute_stock_indicators
     from services.signal_service.app.queries import delete_signal_cache, set_signal_cache
@@ -56,13 +58,15 @@ async def _compute_daily_signals_async(trading_date_str: str | None = None) -> d
 
     settings = get_settings()
     td = date.fromisoformat(trading_date_str) if trading_date_str else today_trading()
+    target_symbols = [s.upper() for s in symbols] if symbols else settings.watchlist
     started = perf_counter()
     logger.debug(
         "signal_compute.context",
         log_event="task_context",
         stage="start",
         trading_date=str(td),
-        symbols=len(settings.watchlist),
+        symbols=len(target_symbols),
+        custom_symbols=symbols is not None,
     )
     result = {"date": str(td), "symbols_computed": 0, "errors": []}
 
@@ -391,7 +395,7 @@ async def _compute_daily_signals_async(trading_date_str: str | None = None) -> d
                 result["errors"].append(f"{symbol}: {str(e)}")
                 logger.error("signal_compute.failed", symbol=symbol, error=str(e))
 
-    await asyncio.gather(*[_process_symbol(s) for s in settings.watchlist])
+    await asyncio.gather(*[_process_symbol(s) for s in target_symbols])
 
     logger.debug(
         "signal_compute.summary",
