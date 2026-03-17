@@ -30,23 +30,23 @@ class SignalComputeResponse(BaseModel):
 
 @router.get("/signals/batch")
 async def get_batch_signal_features(
-    date: str | None = None,
+    trading_date: str | None = Query(None, description="Filter by trading_date (YYYY-MM-DD)"),
     symbols: list[str] | None = Query(None, description="Filter by symbols"),
 ):
     """查询当日所有标的的信号特征（Analysis Service 调用），支持按 symbols 过滤"""
     from services.signal_service.app.queries import query_batch_signal_features
-    return await query_batch_signal_features(date, symbols=symbols)
+    return await query_batch_signal_features(trading_date, symbols=symbols)
 
 
 @router.get("/signals/{symbol}")
 async def get_signal_features(
     symbol: str,
-    date: str | None = None,
+    trading_date: str | None = Query(None, description="Target trading_date (YYYY-MM-DD)"),
     by_pass_cache: bool = False,
 ):
     """查询某标的的信号特征"""
     from services.signal_service.app.queries import query_signal_features
-    return await query_signal_features(symbol, date, by_pass_cache=by_pass_cache)
+    return await query_signal_features(symbol, trading_date, by_pass_cache=by_pass_cache)
 
 
 @router.post("/signals/compute", status_code=202, response_model=SignalComputeResponse)

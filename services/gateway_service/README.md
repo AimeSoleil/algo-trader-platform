@@ -17,6 +17,23 @@
 - Gateway-only OpenAPI: `GET /openapi/gateway.json`
 - Service-scoped OpenAPI: `GET /openapi/{service}.json`
 
+参数约定（跨服务统一）：
+- 所有“交易日”查询参数统一使用 `trading_date`（例如 `?trading_date=2026-03-12`）
+- 不再兼容旧参数名 `date`
+
+示例（通过 Gateway 代理访问）：
+
+```bash
+# Signal batch query
+curl "http://localhost:8000/signal/api/v1/signals/batch?trading_date=2026-03-12&symbols=AAPL"
+
+# Trade portfolio performance
+curl "http://localhost:8000/trade/api/v1/portfolio/performance?trading_date=2026-03-12"
+
+# Trade blueprint status
+curl "http://localhost:8000/trade/api/v1/blueprint/status?trading_date=2026-03-12"
+```
+
 OpenAPI 聚合行为：
 - Gateway 从每个后端服务的标准端点 `/{service_base}/openapi.json` 拉取原始 spec。
 - 保持约定：各服务自身 OpenAPI 入口仍是其本地 `GET /openapi.json`，无需改成其他路径。

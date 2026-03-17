@@ -22,7 +22,9 @@ class ManualOverrideRequest(BaseModel):
 
 
 @router.get("/blueprint/status")
-async def blueprint_status(trading_date: date = Query(alias="date")):
+async def blueprint_status(
+    trading_date: date = Query(..., description="Target trading_date (YYYY-MM-DD)"),
+):
     async with get_postgres_session() as session:
         result = await session.execute(
             text(
@@ -61,7 +63,9 @@ async def blueprint_status(trading_date: date = Query(alias="date")):
 
 
 @router.post("/blueprint/load")
-async def load_blueprint(trading_date: date = Query(alias="date")):
+async def load_blueprint(
+    trading_date: date = Query(..., description="Target trading_date (YYYY-MM-DD)"),
+):
     blueprint = await load_blueprint_for_date(trading_date)
     if not blueprint:
         raise HTTPException(status_code=404, detail="blueprint_not_found_or_not_pending")

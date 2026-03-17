@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from datetime import date
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Query
 
 from services.trade_service.app.portfolio.service import (
     get_performance,
@@ -25,5 +25,7 @@ async def portfolio_positions():
 
 
 @router.get("/portfolio/performance")
-async def portfolio_performance(date: date):
-    return await get_performance(date)
+async def portfolio_performance(
+    trading_date: date = Query(..., description="Target trading_date (YYYY-MM-DD)"),
+):
+    return await get_performance(trading_date)

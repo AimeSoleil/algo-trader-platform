@@ -91,13 +91,18 @@ curl -X POST http://localhost:8002/api/v1/signals/compute \
 # 轮询 signal 任务状态
 curl http://localhost:8002/api/v1/signals/compute/<task_id>
 
-# 3) Analysis Service: 手动触发单标的分析（需先有 signal_features）
+# 3) Analysis Service: 手动触发分析（需先有 signal_features）
 curl -X POST http://localhost:8003/api/v1/analyze \
   -H "Content-Type: application/json" \
-  -d '{"symbol":"AAPL","trading_date":"2026-03-12"}'
+  -d '{"symbols":["AAPL"],"trading_date":"2026-03-12"}'
 
 # 轮询 analysis 任务状态
 curl http://localhost:8003/api/v1/analyze/<task_id>
+
+# 4) 通过 Gateway 查询（日期参数统一使用 trading_date）
+curl "http://localhost:8000/signal/api/v1/signals/batch?trading_date=2026-03-12&symbols=AAPL&symbols=MSFT"
+curl "http://localhost:8000/trade/api/v1/portfolio/performance?trading_date=2026-03-12"
+curl "http://localhost:8000/trade/api/v1/blueprint/status?trading_date=2026-03-12"
 ```
 
 运行上述接口前，请确认对应 worker 已启动并监听正确队列（`data` / `signal` / `analysis`）。
