@@ -7,6 +7,7 @@ from shared.utils.time import (
     previous_trading_day,
     next_trading_day,
     now_utc,
+    resolve_trading_date_arg,
     to_market_tz,
     today_trading,
 )
@@ -20,6 +21,7 @@ __all__ = [
     "previous_trading_day",
     "next_trading_day",
     "now_utc",
+    "resolve_trading_date_arg",
     "to_market_tz",
     "today_trading",
 ]

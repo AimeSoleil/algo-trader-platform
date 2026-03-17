@@ -11,7 +11,7 @@ from shared.celery_app import celery_app
 from shared.config import get_settings
 from shared.db.session import get_postgres_session
 from shared.models.signal import SignalFeatures
-from shared.utils import get_logger, today_trading
+from shared.utils import get_logger, resolve_trading_date_arg, today_trading
 
 logger = get_logger("analysis_tasks")
 
@@ -147,15 +147,17 @@ def generate_daily_blueprint(self, trading_date: str | None = None, prev_result=
     17:10 Celery 任务：生成次日交易蓝图
     prev_result: 上游任务 (compute_signals) 的结果
     """
+    resolved_trading_date = resolve_trading_date_arg(trading_date, prev_result)
     logger.debug(
         "blueprint.generate.start",
         log_event="task_start",
         stage="entry",
         task_id=getattr(self.request, "id", None),
         trading_date=trading_date,
+        resolved_trading_date=resolved_trading_date,
         retry=getattr(self.request, "retries", 0),
     )
-    return _run_async(_generate_blueprint_async(trading_date))
+    return _run_async(_generate_blueprint_async(resolved_trading_date))
 
 
 async def _generate_blueprint_async(trading_date_str: str | None = None) -> dict:

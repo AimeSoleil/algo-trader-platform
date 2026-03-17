@@ -13,7 +13,7 @@ from time import perf_counter
 
 from shared.celery_app import celery_app
 from shared.config import get_settings
-from shared.utils import get_logger, today_trading
+from shared.utils import get_logger, resolve_trading_date_arg, today_trading
 
 logger = get_logger("backfill_tasks")
 
@@ -37,16 +37,18 @@ def detect_and_backfill_gaps(
     prev_result=None,
 ) -> dict:
     """盘后 pipeline：检测 4 表缺口并回填可修复项"""
+    resolved_trading_date = resolve_trading_date_arg(trading_date, prev_result)
     logger.debug(
         "backfill.detect.start",
         log_event="task_start",
         stage="entry",
         task_id=getattr(self.request, "id", None),
         trading_date=trading_date,
+        resolved_trading_date=resolved_trading_date,
         retry=getattr(self.request, "retries", 0),
     )
     try:
-        return asyncio.run(_detect_and_backfill_async(trading_date))
+        return asyncio.run(_detect_and_backfill_async(resolved_trading_date))
     except Exception as exc:
         logger.error("backfill.detect_failed", error=str(exc))
         raise self.retry(exc=exc, countdown=120) from exc

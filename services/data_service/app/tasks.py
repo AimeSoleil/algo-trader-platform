@@ -18,7 +18,13 @@ from celery import chain as celery_chain
 from shared.celery_app import celery_app
 from shared.config import get_settings
 from shared.db.session import get_timescale_session
-from shared.utils import get_logger, market_tz, previous_trading_day, today_trading
+from shared.utils import (
+    get_logger,
+    market_tz,
+    previous_trading_day,
+    resolve_trading_date_arg,
+    today_trading,
+)
 
 logger = get_logger("data_tasks")
 
@@ -275,16 +281,18 @@ async def _capture_post_market_async(trading_date_str: str | None = None) -> dic
 )
 def batch_flush_to_db(self, trading_date: str | None = None, prev_result=None) -> dict:
     """将盘中期权链 Parquet 缓存批量写入 option_5min_snapshots（仅 intraday 模式产生数据）"""
+    resolved_trading_date = resolve_trading_date_arg(trading_date, prev_result)
     logger.debug(
         "batch_flush.start",
         log_event="task_start",
         stage="entry",
         task_id=getattr(self.request, "id", None),
         trading_date=trading_date,
+        resolved_trading_date=resolved_trading_date,
         retry=getattr(self.request, "retries", 0),
     )
     try:
-        return asyncio.run(_batch_flush_to_db_async(trading_date))
+        return asyncio.run(_batch_flush_to_db_async(resolved_trading_date))
     except Exception as exc:
         logger.error("batch_flush.failed", error=str(exc))
         raise self.retry(exc=exc, countdown=60) from exc
@@ -383,22 +391,25 @@ def run_post_market_pipeline(trading_date: str | None = None) -> str:
     )
 
     pipeline = celery_chain(
-        capture_post_market_data.s(td),
-        batch_flush_to_db.s(td),
+        capture_post_market_data.si(td),
+        batch_flush_to_db.si(td),
         celery_app.signature(
             "backfill_service.tasks.detect_and_backfill_gaps",
             args=[td],
             queue="backfill",
+            immutable=True,
         ),
         celery_app.signature(
             "signal_service.tasks.compute_daily_signals",
             args=[td],
             queue="signal",
+            immutable=True,
         ),
         celery_app.signature(
             "analysis_service.tasks.generate_daily_blueprint",
             args=[td],
             queue="analysis",
+            immutable=True,
         ),
     )
 

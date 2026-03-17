@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from datetime import date, datetime, timezone
 from functools import lru_cache
+from typing import Any
 from zoneinfo import ZoneInfo
 
 # ── Constants ──────────────────────────────────────────────
@@ -100,3 +101,29 @@ def previous_trading_day(from_date: date | None = None) -> date:
     while d.weekday() >= 5:
         d -= timedelta(days=1)
     return d
+
+
+def resolve_trading_date_arg(trading_date: Any, prev_result: Any = None) -> str | None:
+    """解析任务入口 trading_date 参数，兼容 Celery chain 上游结果注入。
+
+    支持以下输入形态：
+    - 直接传入 ``str`` / ``date``
+    - 上游结果 ``dict`` 中的 ``trading_date`` 或 ``date`` 字段
+    """
+
+    def _extract(value: Any) -> str | None:
+        if value is None:
+            return None
+        if isinstance(value, str):
+            return value
+        if isinstance(value, date):
+            return value.isoformat()
+        if isinstance(value, dict):
+            candidate = value.get("trading_date") or value.get("date")
+            if isinstance(candidate, str):
+                return candidate
+            if isinstance(candidate, date):
+                return candidate.isoformat()
+        return None
+
+    return _extract(trading_date) or _extract(prev_result)

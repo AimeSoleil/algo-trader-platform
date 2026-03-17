@@ -12,7 +12,7 @@ from shared.celery_app import celery_app
 from shared.config import get_settings
 from shared.db.session import get_timescale_session, get_postgres_session
 from shared.models.signal import CrossAssetIndicators
-from shared.utils import get_logger, today_trading
+from shared.utils import get_logger, resolve_trading_date_arg, today_trading
 
 logger = get_logger("signal_tasks")
 
@@ -38,16 +38,18 @@ def compute_daily_signals(self, trading_date: str | None = None, prev_result=Non
     prev_result: 上游任务 (backfill) 的结果
     symbols: 可选，仅计算指定标的（默认使用完整 watchlist）
     """
+    resolved_trading_date = resolve_trading_date_arg(trading_date, prev_result)
     logger.debug(
         "signal_compute.start",
         log_event="task_start",
         stage="entry",
         task_id=getattr(self.request, "id", None),
         trading_date=trading_date,
+        resolved_trading_date=resolved_trading_date,
         symbols=symbols,
         retry=getattr(self.request, "retries", 0),
     )
-    return _run_async(_compute_daily_signals_async(trading_date, symbols=symbols))
+    return _run_async(_compute_daily_signals_async(resolved_trading_date, symbols=symbols))
 
 
 async def _compute_daily_signals_async(trading_date_str: str | None = None, *, symbols: list[str] | None = None) -> dict:
