@@ -763,7 +763,6 @@ async def _collect_options_async(
 
     settings = get_settings()
     started = perf_counter()
-    options_provider = settings.data_service.providers.options.strip().lower()
     historical_provider = settings.data_service.providers.options_historical.strip().lower()
 
     result: dict = {
@@ -779,17 +778,24 @@ async def _collect_options_async(
 
     if historical_date_str is not None:
         # ── Historical mode ──
-        target_date = date.fromisoformat(historical_date_str)
+        requested_date = date.fromisoformat(historical_date_str)
+        target_date = requested_date
         today = today_trading()
-        use_premarket_yf_fallback = False
-        if options_provider == "yfinance":
-            from shared.utils import before_market_open
+        from shared.utils import before_market_open
 
-            if before_market_open():
-                prev_day = previous_trading_day(today)
-                use_premarket_yf_fallback = target_date in {today, prev_day}
+        is_premarket = before_market_open()
+        prev_day = previous_trading_day(today)
+
+        if is_premarket and requested_date == today:
+            target_date = prev_day
+            result["warnings"].append(
+                f"historical_date {requested_date} normalized to {target_date}: pre-market fallback"
+            )
+
+        use_premarket_yf_fallback = is_premarket and target_date in {today, prev_day}
 
         result["historical_date"] = historical_date_str
+        result["effective_historical_date"] = target_date.isoformat()
         result["historical_provider"] = historical_provider
         if use_premarket_yf_fallback and historical_provider == "none":
             result["historical_provider"] = "yfinance_live_premarket_fallback"
