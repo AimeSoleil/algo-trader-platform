@@ -530,7 +530,9 @@ class OptionsCollectRequest(BaseModel):
         None,
         description="Target date for historical options. Requires a provider that supports "
                     "historical data (see data_service.providers.options_historical config). "
-                    "If omitted, collects today's live option chain.",
+                    "If omitted, collects today's live option chain. "
+                    "Special case: before market open, historical_date=previous trading day "
+                    "can fallback to yfinance live snapshot.",
     )
 
 
@@ -547,8 +549,9 @@ async def trigger_options_collection(req: OptionsCollectRequest):
 
     - Without ``historical_date``: fetches today's live option chain via the
       configured options provider (e.g. yfinance).
-    - With ``historical_date``: uses the ``options_historical`` provider.
-      If configured as ``\"none\"``, returns 422.
+        - With ``historical_date``: uses the ``options_historical`` provider.
+            Special case: before market open, previous trading day can fallback to
+            yfinance live snapshot.
     """
     if not req.symbols:
         raise HTTPException(status_code=422, detail="symbols list must not be empty")
@@ -565,7 +568,16 @@ async def trigger_options_collection(req: OptionsCollectRequest):
         if req.historical_date > today:
             raise HTTPException(status_code=422, detail="historical_date cannot be in the future")
 
-        if historical_provider == "none":
+        use_premarket_yf_fallback = (
+            settings.data_service.providers.options == "yfinance"
+            and req.historical_date == previous_trading_day(today)
+        )
+        if use_premarket_yf_fallback:
+            from shared.utils import before_market_open
+
+            use_premarket_yf_fallback = before_market_open()
+
+        if historical_provider == "none" and not use_premarket_yf_fallback:
             raise HTTPException(
                 status_code=422,
                 detail="Historical options data not available: options_historical provider "
@@ -584,7 +596,11 @@ async def trigger_options_collection(req: OptionsCollectRequest):
             task_id=task.id,
             status="queued",
             message=f"Historical options collection queued for {len(symbols)} symbol(s), date={req.historical_date}",
-            historical_provider=historical_provider,
+            historical_provider=(
+                "yfinance_live_premarket_fallback"
+                if use_premarket_yf_fallback and historical_provider == "none"
+                else historical_provider
+            ),
         )
 
     # Live collection (today's option chain)

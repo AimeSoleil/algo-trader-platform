@@ -33,6 +33,7 @@
 
 ### Manual Collection
 - `POST /api/v1/collect` — 触发手动采集（异步 Celery task）
+- `POST /api/v1/collect/options` — 触发期权链采集（支持 `historical_date`）
 - `GET /api/v1/collect/{task_id}` — 查询采集任务状态
 
 Manual Collection 日期规则：
@@ -47,8 +48,12 @@ Manual Collection 日期规则：
 providers:
   stock: "yfinance"
   options: "yfinance"
-  options_historical: "none"   # yfinance 不支持历史期权链
+  options_historical: "none"   # yfinance 不支持通用历史期权链 API
 ```
+说明：当 `options="yfinance"` 且当前时间早于开盘时，`/collect/options`
+允许 `historical_date=previous_trading_day(today_trading())`，并使用盘前 live snapshot
+作为上一交易日回填（落库 `snapshot_date` 会写为请求的 `historical_date`）。
+
 新增数据源只需：
 1. 实现 `StockFetcherProtocol` / `OptionFetcherProtocol`
 2. 在 `fetchers/registry.py` 注册

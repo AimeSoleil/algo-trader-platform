@@ -779,12 +779,73 @@ async def _collect_options_async(
     if historical_date_str is not None:
         # ── Historical mode ──
         target_date = date.fromisoformat(historical_date_str)
+        today = today_trading()
+        use_premarket_yf_fallback = (
+            settings.data_service.providers.options == "yfinance"
+            and target_date == previous_trading_day(today)
+        )
+        if use_premarket_yf_fallback:
+            from shared.utils import before_market_open
+
+            use_premarket_yf_fallback = before_market_open()
+
         result["historical_date"] = historical_date_str
         result["historical_provider"] = historical_provider
+        if use_premarket_yf_fallback and historical_provider == "none":
+            result["historical_provider"] = "yfinance_live_premarket_fallback"
 
-        if historical_provider == "none":
+        if historical_provider == "none" and not use_premarket_yf_fallback:
             result["status"] = "failed"
             result["errors"].append("options_historical provider is 'none' — no historical data available")
+            return result
+
+        if use_premarket_yf_fallback:
+            result["warnings"].append(
+                "Using yfinance live pre-market snapshot as previous-trading-day historical fallback"
+            )
+            for idx, symbol in enumerate(symbols, 1):
+                task.update_state(
+                    state="PROGRESS",
+                    meta={
+                        "current_step": idx,
+                        "total_steps": total_steps,
+                        "symbol": symbol,
+                        "mode": "historical",
+                    },
+                )
+                try:
+                    logger.debug(
+                        "collect_options.fetch_live_fallback_start",
+                        symbol=symbol,
+                        target_date=str(target_date),
+                    )
+                    snapshot = await fetch_option_chain(symbol)
+                    if snapshot:
+                        option_rows = contracts_to_rows(snapshot, include_snapshot_date=True)
+                        for row in option_rows:
+                            row["snapshot_date"] = target_date
+                        written = await write_swing_options(option_rows)
+                        result["options_rows"] += written
+                        logger.info(
+                            "collect_options.historical_fallback_written",
+                            symbol=symbol,
+                            date=str(target_date),
+                            rows=written,
+                            provider="yfinance",
+                        )
+                    else:
+                        result["warnings"].append(
+                            f"{symbol}: no option chain returned for pre-market fallback ({target_date})"
+                        )
+                except Exception as e:
+                    result["errors"].append(f"{symbol}/historical_fallback: {e}")
+                    logger.error(
+                        "collect_options.historical_fallback_error",
+                        symbol=symbol,
+                        error=str(e),
+                    )
+            if result["errors"]:
+                result["status"] = "completed_with_errors"
             return result
 
         # Mock provider — placeholder for future real implementation
