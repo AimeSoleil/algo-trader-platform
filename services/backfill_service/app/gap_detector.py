@@ -14,12 +14,18 @@ from zoneinfo import ZoneInfo
 from sqlalchemy import text
 
 from shared.db.session import get_timescale_session
-from shared.utils import get_logger, market_tz
+from shared.utils import get_logger, market_tz, parse_hhmm
+from shared.config import get_settings
 
 logger = get_logger("gap_detector")
 
-MARKET_OPEN = time(9, 30)
-MARKET_CLOSE = time(16, 0)
+
+def _market_open() -> time:
+    return parse_hhmm(get_settings().data_service.market_hours.start)
+
+
+def _market_close() -> time:
+    return parse_hhmm(get_settings().data_service.market_hours.end)
 
 
 # ── 辅助函数 ───────────────────────────────────────────────
@@ -32,8 +38,8 @@ def _expected_intraday_timestamps(
     """生成某交易日预期的盘中时间戳序列（UTC，与 DB TIMESTAMPTZ 对齐）"""
     tz = market_tz()
     timestamps: list[datetime] = []
-    current = datetime.combine(trading_date, MARKET_OPEN, tzinfo=tz)
-    end = datetime.combine(trading_date, MARKET_CLOSE, tzinfo=tz)
+    current = datetime.combine(trading_date, _market_open(), tzinfo=tz)
+    end = datetime.combine(trading_date, _market_close(), tzinfo=tz)
     delta = timedelta(minutes=interval_minutes)
     while current <= end:
         timestamps.append(current.astimezone(ZoneInfo("UTC")))

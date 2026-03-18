@@ -20,7 +20,6 @@ from shared.config import get_settings
 from shared.db.session import get_timescale_session
 from shared.utils import (
     get_logger,
-    market_tz,
     previous_trading_day,
     resolve_trading_date_arg,
     today_trading,
@@ -33,22 +32,21 @@ def _normalize_manual_end_date(end_date: date) -> tuple[date, str | None]:
     """Task-level fallback normalization for pre-market manual collection.
 
     Keeps behavior consistent when task is invoked directly (bypassing REST route).
+    Uses trading.timezone for all time comparisons.
     """
+    from shared.utils import before_market_open, now_market as _now_market
+
     today = today_trading()
     if end_date != today:
         return end_date, None
 
-    settings = get_settings()
-    open_hour, open_minute = map(int, settings.data_service.market_hours.start.split(":"))
-    tz = market_tz()
-    now_market = datetime.now(tz)
-    market_open_dt = datetime.combine(today, time(open_hour, open_minute), tzinfo=tz)
-
-    if now_market < market_open_dt:
+    if before_market_open():
+        now_mkt = _now_market()
+        settings = get_settings()
         normalized = previous_trading_day(today)
         warning = (
             f"manual_collect: end_date {end_date} adjusted to {normalized}; "
-            f"current market time {now_market.strftime('%H:%M')} is before open "
+            f"current market time {now_mkt.strftime('%H:%M')} is before open "
             f"{settings.data_service.market_hours.start}"
         )
         return normalized, warning

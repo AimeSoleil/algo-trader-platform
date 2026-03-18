@@ -17,7 +17,7 @@ from services.data_service.app.scheduler import (
 from shared.celery_app import celery_app
 from shared.config import get_settings
 from shared.db.session import get_timescale_session
-from shared.utils import market_tz, previous_trading_day, today_trading
+from shared.utils import previous_trading_day, today_trading
 
 router = APIRouter(tags=["data"])
 
@@ -107,22 +107,21 @@ def _normalize_manual_end_date(end_date: date) -> tuple[date, str | None]:
     Rule:
     - if end_date == today_trading() and current market time is before market open,
       shift end_date to previous trading day and emit a warning message.
+    Uses trading.timezone for all time comparisons.
     """
+    from shared.utils import before_market_open, now_market as _now_market
+
     today = today_trading()
     if end_date != today:
         return end_date, None
 
-    settings = get_settings()
-    open_hour, open_minute = map(int, settings.data_service.market_hours.start.split(":"))
-    tz = market_tz()
-    now_market = datetime.now(tz)
-    market_open_dt = datetime.combine(today, time(open_hour, open_minute), tzinfo=tz)
-
-    if now_market < market_open_dt:
+    if before_market_open():
+        now_mkt = _now_market()
+        settings = get_settings()
         normalized = previous_trading_day(today)
         warning = (
             f"end_date {end_date} adjusted to {normalized}: current market time "
-            f"{now_market.strftime('%H:%M')} is before market open "
+            f"{now_mkt.strftime('%H:%M')} is before market open "
             f"{settings.data_service.market_hours.start}"
         )
         return normalized, warning

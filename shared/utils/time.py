@@ -4,18 +4,18 @@ Design:
   - DB 列全部为 TIMESTAMPTZ（PostgreSQL 底层 UTC）
   - 代码中 datetime 统一用 UTC 生成 → ``now_utc()``
   - trading date 按配置时区（默认 America/New_York）计算 → ``today_trading()``
-  - 需要展示/比较美东时间时 → ``to_market_tz()``
+  - 需要交易时区当前时间时 → ``now_market()``
 """
 from __future__ import annotations
 
-from datetime import date, datetime, timezone
+from datetime import date, datetime, time, timezone
 from functools import lru_cache
 from typing import Any
 from zoneinfo import ZoneInfo
 
 # ── Constants ──────────────────────────────────────────────
 
-UTC = timezone.utc
+_UTC = timezone.utc
 
 
 # ── Core helpers ───────────────────────────────────────────
@@ -26,7 +26,7 @@ def now_utc() -> datetime:
 
     替代所有 ``datetime.now()`` / ``datetime.utcnow()``。
     """
-    return datetime.now(UTC)
+    return datetime.now(_UTC)
 
 
 @lru_cache(maxsize=1)
@@ -51,27 +51,6 @@ def today_trading() -> date:
     return datetime.now(_trading_tz()).date()
 
 
-def to_market_tz(dt: datetime) -> datetime:
-    """将任意 tz-aware datetime 转为配置交易时区。
-
-    Parameters
-    ----------
-    dt : datetime
-        必须是 tz-aware（推荐 UTC）。
-
-    Raises
-    ------
-    ValueError
-        如果传入 naive datetime。
-    """
-    if dt.tzinfo is None:
-        raise ValueError(
-            "to_market_tz() requires a tz-aware datetime. "
-            "Use now_utc() instead of datetime.now()."
-        )
-    return dt.astimezone(_trading_tz())
-
-
 def ensure_utc(dt: datetime) -> datetime:
     """确保 datetime 为 UTC tz-aware。
 
@@ -79,8 +58,8 @@ def ensure_utc(dt: datetime) -> datetime:
     - naive → 假定为 UTC 并附加 tzinfo
     """
     if dt.tzinfo is None:
-        return dt.replace(tzinfo=UTC)
-    return dt.astimezone(UTC)
+        return dt.replace(tzinfo=_UTC)
+    return dt.astimezone(_UTC)
 
 
 def next_trading_day(from_date: date | None = None) -> date:
@@ -101,6 +80,51 @@ def previous_trading_day(from_date: date | None = None) -> date:
     while d.weekday() >= 5:
         d -= timedelta(days=1)
     return d
+
+
+# ── Market-hours helpers (always use trading.timezone) ─────
+
+
+def now_market() -> datetime:
+    """当前时间，始终为 trading.timezone（tz-aware）。
+
+    所有 market_hours / schedule 时间比较应使用此函数，
+    而非 ``datetime.now()`` 或 ``datetime.now(some_tz)``。
+    """
+    return datetime.now(_UTC).astimezone(_trading_tz())
+
+
+def parse_hhmm(hhmm: str) -> time:
+    """解析 ``"HH:MM"`` 字符串为 ``datetime.time``。"""
+    h, m = map(int, hhmm.split(":"))
+    return time(h, m)
+
+
+def is_market_open() -> bool:
+    """判断当前是否处于 [market_hours.start, market_hours.end]（交易日 + 交易时段）。
+
+    始终按 ``trading.timezone`` 判断，不受服务器本地时区影响。
+    """
+    from shared.config import get_settings
+
+    now = now_market()
+    if now.weekday() >= 5:          # 周末
+        return False
+
+    settings = get_settings()
+    start = parse_hhmm(settings.data_service.market_hours.start)
+    end = parse_hhmm(settings.data_service.market_hours.end)
+    now_t = now.time().replace(second=0, microsecond=0)
+    return start <= now_t <= end
+
+
+def before_market_open() -> bool:
+    """判断当前时刻是否早于今日开盘时间（按 trading.timezone）。"""
+    from shared.config import get_settings
+
+    now = now_market()
+    open_t = parse_hhmm(get_settings().data_service.market_hours.start)
+    return now.time() < open_t
 
 
 def resolve_trading_date_arg(trading_date: Any, prev_result: Any = None) -> str | None:

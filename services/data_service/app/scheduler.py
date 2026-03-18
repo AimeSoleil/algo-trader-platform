@@ -8,8 +8,6 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass
-from datetime import datetime
-from zoneinfo import ZoneInfo
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.interval import IntervalTrigger
@@ -19,7 +17,7 @@ from services.data_service.app.converters import contracts_to_rows
 from services.data_service.app.fetchers.option_fetcher import fetch_option_chain
 from services.data_service.app.storage import apply_intraday_retention
 from shared.config.settings import Settings
-from shared.utils import get_logger
+from shared.utils import get_logger, is_market_open
 
 logger = get_logger("scheduler")
 
@@ -32,23 +30,6 @@ class SchedulerState:
     settings: Settings
     cache: MarketHoursCache
     intraday_enabled: bool
-
-
-def _market_tz(settings: Settings) -> ZoneInfo:
-    return ZoneInfo(settings.trading.timezone)
-
-
-def _is_market_open(settings: Settings) -> bool:
-    now = datetime.now(_market_tz(settings))
-    if now.weekday() >= 5:
-        return False
-
-    start_hour, start_min = map(int, settings.data_service.market_hours.start.split(":"))
-    end_hour, end_min = map(int, settings.data_service.market_hours.end.split(":"))
-    now_minutes = now.hour * 60 + now.minute
-    start_minutes = start_hour * 60 + start_min
-    end_minutes = end_hour * 60 + end_min
-    return start_minutes <= now_minutes <= end_minutes
 
 
 # ── 公共查询接口 ───────────────────────────────────────────
@@ -70,7 +51,7 @@ def get_data_service_config() -> dict:
 
 async def _capture_intraday(state: SchedulerState) -> None:
     """盘中定时任务：每 5 分钟采集期权链快照 → L1 + L2 缓存"""
-    if not _is_market_open(state.settings):
+    if not is_market_open():
         logger.info("scheduler.intraday_skipped", reason="outside_market_hours")
         return
 

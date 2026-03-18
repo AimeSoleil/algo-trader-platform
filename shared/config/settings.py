@@ -142,10 +142,10 @@ class ScheduleSettings(BaseSettings):
     blueprint_load_time: str = "09:20"
     market_open: str = "09:30"
     market_close: str = "16:00"
-    batch_flush_time: str = "16:30"
-    backfill_time: str = "16:35"
-    signal_compute_time: str = "17:00"
-    blueprint_generate_time: str = "17:10"
+    batch_flush_time: str = "18:30"
+    backfill_time: str = "19:00"
+    signal_compute_time: str = "19:30"
+    blueprint_generate_time: str = "20:00"
 
 class LoggingSettings(BaseSettings):
     level: str = "INFO"

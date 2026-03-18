@@ -102,10 +102,10 @@ schedule:
   blueprint_load_time: "09:20"       # 每日 9:20 加载当天的策略蓝图（盘前准备）
   market_open: "09:30"               # 9:30 市场开盘，开始执行策略
   market_close: "16:00"              # 16:00 市场收盘，停止交易
-  batch_flush_time: "16:30"          # 16:30 批量 flush 当日交易数据
-  backfill_time: "16:35"             # 16:35 开始执行盘后数据 backfill
-  signal_compute_time: "17:00"       # 17:00 计算交易信号
-  blueprint_generate_time: "17:10"   # 17:10 生成明天的策略蓝图
+  batch_flush_time: "18:30"          # 18:30 批量 flush 当日交易数据
+  backfill_time: "19:00"             # 19:00 开始执行盘后数据 backfill
+  signal_compute_time: "19:30"       # 19:30 计算交易信号
+  blueprint_generate_time: "20:00"   # 20:00 生成明天的策略蓝图
 
 watchlist:
   - "AAPL"
