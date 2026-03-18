@@ -3,8 +3,20 @@ from __future__ import annotations
 
 from celery import Celery
 from celery.schedules import crontab
+from celery.signals import after_setup_logger
 
 from shared.config.settings import get_settings
+
+
+# ── Celery logging hook ────────────────────────────────────
+# Celery workers have their own logging bootstrap.  This signal fires
+# right after Celery configures its root logger, giving us a chance to
+# inject our TZ-aware formatter + file handler.
+
+@after_setup_logger.connect
+def _on_celery_setup_logger(**kwargs):
+    from shared.utils.logging import setup_celery_logging
+    setup_celery_logging(**kwargs)
 
 
 def create_celery_app() -> Celery:
