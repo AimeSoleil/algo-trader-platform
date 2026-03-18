@@ -763,7 +763,8 @@ async def _collect_options_async(
 
     settings = get_settings()
     started = perf_counter()
-    historical_provider = settings.data_service.providers.options_historical
+    options_provider = settings.data_service.providers.options.strip().lower()
+    historical_provider = settings.data_service.providers.options_historical.strip().lower()
 
     result: dict = {
         "status": "completed",
@@ -780,14 +781,13 @@ async def _collect_options_async(
         # ── Historical mode ──
         target_date = date.fromisoformat(historical_date_str)
         today = today_trading()
-        use_premarket_yf_fallback = (
-            settings.data_service.providers.options == "yfinance"
-            and target_date == previous_trading_day(today)
-        )
-        if use_premarket_yf_fallback:
+        use_premarket_yf_fallback = False
+        if options_provider == "yfinance":
             from shared.utils import before_market_open
 
-            use_premarket_yf_fallback = before_market_open()
+            if before_market_open():
+                prev_day = previous_trading_day(today)
+                use_premarket_yf_fallback = target_date in {today, prev_day}
 
         result["historical_date"] = historical_date_str
         result["historical_provider"] = historical_provider

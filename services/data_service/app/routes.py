@@ -561,21 +561,21 @@ async def trigger_options_collection(req: OptionsCollectRequest):
         raise HTTPException(status_code=422, detail="symbols list must not be empty")
 
     settings = get_settings()
-    historical_provider = settings.data_service.providers.options_historical
+    options_provider = settings.data_service.providers.options.strip().lower()
+    historical_provider = settings.data_service.providers.options_historical.strip().lower()
 
     if req.historical_date is not None:
         today = today_trading()
         if req.historical_date > today:
             raise HTTPException(status_code=422, detail="historical_date cannot be in the future")
 
-        use_premarket_yf_fallback = (
-            settings.data_service.providers.options == "yfinance"
-            and req.historical_date == previous_trading_day(today)
-        )
-        if use_premarket_yf_fallback:
+        use_premarket_yf_fallback = False
+        if options_provider == "yfinance":
             from shared.utils import before_market_open
 
-            use_premarket_yf_fallback = before_market_open()
+            if before_market_open():
+                prev_day = previous_trading_day(today)
+                use_premarket_yf_fallback = req.historical_date in {today, prev_day}
 
         if historical_provider == "none" and not use_premarket_yf_fallback:
             raise HTTPException(
