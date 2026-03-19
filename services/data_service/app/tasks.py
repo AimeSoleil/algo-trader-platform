@@ -187,9 +187,12 @@ async def _capture_post_market_async(trading_date_str: str | None = None) -> dic
             )
             if bars_daily:
                 latest = bars_daily[-1]
+                # timestamp is already a datetime object from ensure_utc()
+                ts = latest["timestamp"]
+                trading_date_val = ts.date() if isinstance(ts, datetime) else datetime.fromisoformat(str(ts)).date()
                 daily_row = {
                     "symbol": latest["symbol"],
-                    "trading_date": datetime.fromisoformat(latest["timestamp"]).date(),
+                    "trading_date": trading_date_val,
                     "open": latest["open"],
                     "high": latest["high"],
                     "low": latest["low"],
