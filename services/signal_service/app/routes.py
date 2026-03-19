@@ -36,7 +36,7 @@ class SignalComputeResponse(BaseModel):
 
 @router.get("/signals")
 async def query_signals(
-    symbols: list[str] | None = Query(None, description="Filter by symbols (repeatable)"),
+    symbols: str | None = Query(None, description="Comma-separated symbols, e.g. 'AAPL,MSFT'"),
     start_date: date | None = Query(None, description="Start trading date (YYYY-MM-DD). Defaults to today."),
     end_date: date | None = Query(None, description="End trading date (YYYY-MM-DD). Defaults to start_date."),
     bypass_cache: bool = Query(False, description="Skip Redis cache and read directly from DB"),
@@ -58,9 +58,11 @@ async def query_signals(
     - ``GET /signals?sort_by=daily_return&sort_order=desc&limit=20`` — 排序分页
     """
     from services.signal_service.app.queries import query_signals as _query
-
+    symbols_list = None
+    if symbols:
+        symbols_list = [s.strip().upper() for s in symbols.split(",") if s.strip()]
     return await _query(
-        symbols=symbols,
+        symbols=symbols_list,
         start_date=start_date,
         end_date=end_date,
         bypass_cache=bypass_cache,
@@ -81,15 +83,24 @@ async def get_signal_features(
     symbol: str,
     trading_date: date | None = Query(None, description="Trading date (YYYY-MM-DD). Defaults to today."),
     bypass_cache: bool = Query(False, alias="by_pass_cache", description="Skip Redis cache"),
+    volatility_regime: str | None = Query(None, description="Filter: high / normal / low"),
+    trend: str | None = Query(None, description="Filter stock trend: bullish / bearish / neutral"),
+    sort_by: str | None = Query(None, description="Sort field name inside features (e.g. close_price, daily_return)"),
+    sort_order: str = Query("asc", description="Sort order: asc / desc"),
 ):
-    """查询单个标的的信号特征（向后兼容快捷入口，内部代理到 /signals）。"""
+    """查询单个标的的信号特征（向后兼容快捷入口，内部代理到 /signals）。支持更多过滤。"""
     from services.signal_service.app.queries import query_signals as _query
-
     result = await _query(
         symbols=[symbol],
         start_date=trading_date,
         end_date=trading_date,
         bypass_cache=bypass_cache,
+        volatility_regime=volatility_regime,
+        trend=trend,
+        sort_by=sort_by,
+        sort_order=sort_order,
+        limit=1,
+        offset=0,
     )
     data = result.get("data", [])
     if not data:
