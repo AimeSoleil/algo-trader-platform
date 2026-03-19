@@ -1,0 +1,6 @@
+[project]
+name = "celery-worker"
+version = "0.1.0"
+description = "Universal Celery worker Docker image — not a Python package"
+requires-python = ">=3.11"
+dependencies = []
