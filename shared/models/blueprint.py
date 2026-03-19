@@ -6,6 +6,8 @@ from typing import Any
 from pydantic import BaseModel, Field
 import uuid
 
+from shared.models.signal import DataQuality
+
 
 class BlueprintStatus(str, Enum):
     PENDING = "pending"      # 已生成，待次日加载
@@ -158,7 +160,12 @@ class SymbolPlan(BaseModel):
     # LLM推理
     reasoning: str = ""  # LLM 推理过程
     confidence: float = 0.5  # 置信度 0-1
-    
+
+    # 信号数据质量标注（由 analysis-service 后处理注入）
+    data_quality_score: float = Field(1.0, ge=0.0, le=1.0, description="信号数据综合质量 0-1")
+    data_quality_warnings: list[str] = Field(default_factory=list, description="数据质量问题描述")
+    signal_data_quality: DataQuality | None = Field(None, description="完整信号数据质量对象")
+
     # 执行状态（盘中更新）
     is_entered: bool = False
     entry_time: datetime | None = None
@@ -193,6 +200,10 @@ class LLMTradingBlueprint(BaseModel):
     
     # 状态
     status: BlueprintStatus = BlueprintStatus.PENDING
-    
+
+    # 数据质量全局摘要（所有 symbol_plan 中的最低 data_quality_score）
+    min_data_quality_score: float = Field(1.0, ge=0.0, le=1.0, description="所有标的中最低数据质量分")
+    data_quality_summary: list[str] = Field(default_factory=list, description="全局数据质量警告")
+
     # 盘后执行摘要（收盘后回填）
     execution_summary: dict[str, Any] | None = None

@@ -71,19 +71,22 @@ async def _compute_daily_signals_async(trading_date_str: str | None = None, *, s
         custom_symbols=symbols is not None,
     )
     result = {"date": str(td), "symbols_computed": 0, "errors": []}
+    symbols_no_data: list[str] = []  # symbols with no stock bars on target date
 
     async def _load_stock_bars(symbol: str) -> tuple[pd.DataFrame, str]:
-        """Return (daily_df, bar_type).
+        """Return (bars_df, bar_type).
 
-        * daily_df  — up to 260 daily bars; used for ALL technical indicators,
-                       price, and volume.  Post-market task runs after daily bars
-                       are written, so today's close & volume are already in here.
-        * bar_type  — 'intraday_1min' when sufficient intraday 1-min data exists
-                       in the DB (metadata only), otherwise 'daily'.
+        Priority: daily bars first (``stock_daily``).  If no daily data is
+        available, fall back to aggregating 1-min bars (``stock_1min_bars``)
+        into daily-like OHLCV rows.
+
+        * bars_df   — up to 260 rows of OHLCV used for ALL technical indicators.
+        * bar_type  — 'daily' when sourced from stock_daily,
+                       'intraday_1min' when aggregated from 1-min bars.
         """
         MIN_INTRADAY_ROWS = 30
 
-        # ── 1) Load daily history ──
+        # ── 1) Try daily history first (preferred) ──
         logger.debug(
             "signal_compute.load_daily_bars_started",
             log_event="db_read",
@@ -104,98 +107,94 @@ async def _compute_daily_signals_async(trading_date_str: str | None = None, *, s
             )
             daily_rows = daily_result.fetchall()
 
-        if not daily_rows:
+        if daily_rows:
+            daily_df = pd.DataFrame(
+                daily_rows,
+                columns=["timestamp", "open", "high", "low", "close", "volume"],
+            )
+            daily_df = daily_df.sort_values("timestamp")
             logger.debug(
-                "signal_compute.load_daily_bars_empty",
+                "signal_compute.load_daily_bars_done",
                 log_event="db_read",
                 stage="query_result",
                 symbol=symbol,
+                rows=len(daily_df),
                 source="stock_daily",
+            )
+            return daily_df, "daily"
+
+        # ── 2) Fallback: aggregate 1-min bars into daily OHLCV ──
+        logger.debug(
+            "signal_compute.load_daily_bars_empty_fallback_intraday",
+            log_event="db_read",
+            stage="fallback",
+            symbol=symbol,
+            source="stock_1min_bars",
+        )
+        async with get_timescale_session() as session:
+            intraday_result = await session.execute(
+                text(
+                    "SELECT timestamp::date AS trading_date, "
+                    "       (array_agg(open ORDER BY timestamp))[1] AS open, "
+                    "       MAX(high) AS high, "
+                    "       MIN(low) AS low, "
+                    "       (array_agg(close ORDER BY timestamp DESC))[1] AS close, "
+                    "       SUM(volume) AS volume "
+                    "FROM stock_1min_bars "
+                    "WHERE symbol = :symbol AND timestamp::date <= :date "
+                    "GROUP BY timestamp::date "
+                    "HAVING COUNT(*) >= :min_rows "
+                    "ORDER BY trading_date DESC LIMIT 260"
+                ),
+                {"symbol": symbol, "date": td, "min_rows": MIN_INTRADAY_ROWS},
+            )
+            intraday_rows = intraday_result.fetchall()
+
+        if not intraday_rows:
+            logger.debug(
+                "signal_compute.load_stock_bars_empty",
+                log_event="db_read",
+                stage="query_result",
+                symbol=symbol,
+                source="stock_1min_bars",
             )
             return pd.DataFrame(), "daily"
 
-        daily_df = pd.DataFrame(
-            daily_rows,
+        intraday_df = pd.DataFrame(
+            intraday_rows,
             columns=["timestamp", "open", "high", "low", "close", "volume"],
         )
-        daily_df = daily_df.sort_values("timestamp")
-        logger.debug(
-            "signal_compute.load_daily_bars_done",
-            log_event="db_read",
-            stage="query_result",
-            symbol=symbol,
-            rows=len(daily_df),
-            source="stock_daily",
-        )
-
-        # ── 2) Check whether intraday data exists (metadata flag only) ──
-        async with get_timescale_session() as session:
-            count_result = await session.execute(
-                text(
-                    "SELECT COUNT(*) FROM stock_1min_bars "
-                    "WHERE symbol = :symbol AND timestamp::date = :date"
-                ),
-                {"symbol": symbol, "date": td},
-            )
-            intraday_count = count_result.scalar() or 0
-
-        bar_type = "intraday_1min" if intraday_count >= MIN_INTRADAY_ROWS else "daily"
+        intraday_df = intraday_df.sort_values("timestamp")
         logger.debug(
             "signal_compute.load_stock_bars_done",
             log_event="db_read",
             stage="query_result",
             symbol=symbol,
-            daily_rows=len(daily_df),
-            intraday_rows=intraday_count,
-            bar_type=bar_type,
+            rows=len(intraday_df),
+            source="stock_1min_bars",
+            bar_type="intraday_1min",
         )
-        return daily_df, bar_type
+        return intraday_df, "intraday_1min"
 
     async def _load_option_rows(symbol: str) -> pd.DataFrame:
+        """Load option chain rows for *symbol* on target date.
+
+        Priority: daily snapshot (``option_daily``) first.
+        Fallback : intraday 5-min snapshots (``option_5min_snapshots``).
+        """
+        _opt_cols = [
+            "underlying", "symbol", "expiry", "strike", "option_type",
+            "last_price", "bid", "ask", "volume", "open_interest",
+            "iv", "delta", "gamma", "theta", "vega", "timestamp",
+        ]
+
+        # ── 1) Try daily option snapshot first (preferred) ──
         logger.debug(
             "signal_compute.load_option_rows_started",
             log_event="db_read",
             stage="before_query",
             symbol=symbol,
             trading_date=str(td),
-            source="option_5min_snapshots",
-        )
-        async with get_timescale_session() as session:
-            intraday_result = await session.execute(
-                text(
-                    "SELECT underlying, symbol, expiry, strike, option_type, "
-                    "last_price, bid, ask, volume, open_interest, iv, "
-                    "delta, gamma, theta, vega, timestamp "
-                    "FROM option_5min_snapshots "
-                    "WHERE underlying = :symbol AND timestamp::date = :date"
-                ),
-                {"symbol": symbol, "date": td},
-            )
-            intraday_rows = intraday_result.fetchall()
-
-        if intraday_rows:
-            logger.debug(
-                "signal_compute.load_option_rows_intraday",
-                log_event="db_read",
-                stage="query_result",
-                symbol=symbol,
-                rows=len(intraday_rows),
-                source="option_5min_snapshots",
-            )
-            return pd.DataFrame(
-                intraday_rows,
-                columns=[
-                    "underlying", "symbol", "expiry", "strike", "option_type",
-                    "last_price", "bid", "ask", "volume", "open_interest",
-                    "iv", "delta", "gamma", "theta", "vega", "timestamp",
-                ],
-            )
-
-        logger.debug(
-            "signal_compute.load_option_rows_fallback",
-            log_event="db_read",
-            stage="fallback",
-            symbol=symbol,
             source="option_daily",
         )
         async with get_timescale_session() as session:
@@ -211,24 +210,57 @@ async def _compute_daily_signals_async(trading_date_str: str | None = None, *, s
             )
             daily_rows = daily_result.fetchall()
 
-        if not daily_rows:
+        if daily_rows:
+            logger.debug(
+                "signal_compute.load_option_rows_daily",
+                log_event="db_read",
+                stage="query_result",
+                symbol=symbol,
+                rows=len(daily_rows),
+                source="option_daily",
+            )
+            return pd.DataFrame(daily_rows, columns=_opt_cols)
+
+        # ── 2) Fallback: intraday 5-min option snapshots ──
+        logger.debug(
+            "signal_compute.load_option_rows_fallback_intraday",
+            log_event="db_read",
+            stage="fallback",
+            symbol=symbol,
+            source="option_5min_snapshots",
+        )
+        async with get_timescale_session() as session:
+            intraday_result = await session.execute(
+                text(
+                    "SELECT underlying, symbol, expiry, strike, option_type, "
+                    "last_price, bid, ask, volume, open_interest, iv, "
+                    "delta, gamma, theta, vega, timestamp "
+                    "FROM option_5min_snapshots "
+                    "WHERE underlying = :symbol AND timestamp::date = :date"
+                ),
+                {"symbol": symbol, "date": td},
+            )
+            intraday_rows = intraday_result.fetchall()
+
+        if not intraday_rows:
             logger.debug(
                 "signal_compute.load_option_rows_empty",
                 log_event="db_read",
                 stage="query_result",
                 symbol=symbol,
-                source="option_daily",
+                source="option_5min_snapshots",
             )
             return pd.DataFrame()
 
-        return pd.DataFrame(
-            daily_rows,
-            columns=[
-                "underlying", "symbol", "expiry", "strike", "option_type",
-                "last_price", "bid", "ask", "volume", "open_interest",
-                "iv", "delta", "gamma", "theta", "vega", "timestamp",
-            ],
+        logger.debug(
+            "signal_compute.load_option_rows_intraday",
+            log_event="db_read",
+            stage="query_result",
+            symbol=symbol,
+            rows=len(intraday_rows),
+            source="option_5min_snapshots",
         )
+        return pd.DataFrame(intraday_rows, columns=_opt_cols)
 
     sem = asyncio.Semaphore(4)  # max 4 concurrent DB sessions
 
@@ -257,6 +289,7 @@ async def _compute_daily_signals_async(trading_date_str: str | None = None, *, s
 
                 if bars_df.empty:
                     logger.warning("signal_compute.no_bars", symbol=symbol, date=str(td))
+                    symbols_no_data.append(symbol)
                     return
 
                 # All price/volume/indicator data comes from daily bars.
@@ -334,6 +367,8 @@ async def _compute_daily_signals_async(trading_date_str: str | None = None, *, s
                     option_indicators=option_indicators,
                     stock_indicators=stock_indicators,
                     cross_asset_indicators=cross_asset,
+                    stock_bar_count=len(bars_df),
+                    option_row_count=len(option_df),
                 )
 
                 # 5) 写入 DB
@@ -398,6 +433,19 @@ async def _compute_daily_signals_async(trading_date_str: str | None = None, *, s
                 logger.error("signal_compute.failed", symbol=symbol, error=str(e))
 
     await asyncio.gather(*[_process_symbol(s) for s in target_symbols])
+
+    # If ALL symbols had no data, surface a clear error
+    if result["symbols_computed"] == 0 and not result["errors"]:
+        no_data_msg = f"No stock data found for trading_date={td}. Symbols checked: {', '.join(target_symbols)}"
+        result["errors"].append(no_data_msg)
+        logger.error(
+            "signal_compute.no_data_all_symbols",
+            trading_date=str(td),
+            symbols=target_symbols,
+        )
+    elif symbols_no_data:
+        # Partial: some symbols had no data — record them for visibility
+        result["symbols_no_data"] = symbols_no_data
 
     logger.debug(
         "signal_compute.summary",

@@ -9,12 +9,14 @@ Heavy lifting is delegated to:
 from __future__ import annotations
 
 from time import perf_counter
+from typing import Any
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.interval import IntervalTrigger
 from redis.asyncio import Redis
 
 from shared.config import get_settings
+from shared.data_quality import DataQualityConfig, apply_quality_gate
 from shared.utils import get_logger, now_utc
 
 from services.trade_service.app.broker import create_broker
@@ -36,6 +38,67 @@ def _get_broker() -> BrokerInterface:
     if _broker is None:
         _broker = create_broker()
     return _broker
+
+
+def _apply_quality_gate_to_plan(
+    plan: dict[str, Any],
+    runtime_state: ExecutionRuntimeState,
+    symbol: str,
+) -> dict[str, Any] | None:
+    """Apply data quality gate to a symbol plan.
+
+    Returns the (possibly modified) plan, or ``None`` if the plan should
+    be skipped due to very low data quality.
+
+    Thresholds are loaded from ``config.yaml → data_quality`` section:
+    - score < skip_threshold   → skip entirely
+    - score < reduce_threshold → reduce position by reduce_factor
+    """
+    # ── 从 blueprint JSON 中提取该标的的质量评分 ──
+    bp_json = getattr(runtime_state, "loaded_blueprint_json", None)
+    if not bp_json:
+        return plan
+
+    symbol_plans = bp_json.get("symbol_plans", []) if isinstance(bp_json, dict) else []
+    quality_score = 1.0
+    quality_warnings: list[str] = []
+    for sp in symbol_plans:
+        if sp.get("underlying", "").upper() == symbol.upper():
+            quality_score = sp.get("data_quality_score", 1.0)
+            quality_warnings = sp.get("data_quality_warnings", [])
+            break
+
+    # ── 使用可配置的门控逻辑 ──
+    settings = get_settings()
+    dq_cfg = DataQualityConfig.from_settings(settings)
+    original_size = plan.get("max_position_size", 1)
+    should_skip, adjusted_size = apply_quality_gate(
+        quality_score, original_size, cfg=dq_cfg,
+    )
+
+    if should_skip:
+        logger.error(
+            "execution.plan_skipped_very_low_data_quality",
+            symbol=symbol,
+            data_quality_score=quality_score,
+            skip_threshold=dq_cfg.skip_threshold,
+            warnings=quality_warnings,
+        )
+        return None
+
+    if adjusted_size != original_size:
+        plan["max_position_size"] = adjusted_size
+        logger.warning(
+            "execution.position_reduced_low_data_quality",
+            symbol=symbol,
+            data_quality_score=quality_score,
+            reduce_threshold=dq_cfg.reduce_threshold,
+            original_size=original_size,
+            reduced_size=adjusted_size,
+            warnings=quality_warnings,
+        )
+
+    return plan
 
 
 async def _evaluation_tick(runtime_state: ExecutionRuntimeState) -> None:
@@ -88,6 +151,9 @@ async def _evaluation_tick(runtime_state: ExecutionRuntimeState) -> None:
             }
 
             plan = {"symbol": symbol, "entry_conditions": [], "exit_conditions": []}
+            plan = _apply_quality_gate_to_plan(plan, runtime_state, symbol)
+            if plan is None:
+                continue  # skip due to very low data quality
             engine.evaluate_symbol_plan(plan, market_ctx)
             symbols_evaluated += 1
 

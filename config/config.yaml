@@ -98,6 +98,19 @@ risk:
     position_loss_limit: 500.0
     cooldown_seconds: 60
 
+data_quality:
+  # ── 评分权重（三项之和 = 1.0）──
+  weight_stock: 0.5              # 股票数据覆盖率占比
+  weight_option: 0.3             # 期权数据覆盖率占比
+  weight_degradation: 0.2        # 无降级指标奖励
+  # ── 满分参考行数 ──
+  stock_full_bars: 260           # ≈ 1 年交易日
+  option_full_rows: 200
+  # ── 执行门控阈值 ──
+  skip_threshold: 0.3            # score < 此值 → 完全跳过执行
+  reduce_threshold: 0.7          # score < 此值 → 仓位缩减
+  reduce_factor: 0.5             # 缩减比例（0.5 = 减半）
+
 schedule:
   blueprint_load_time: "09:20"       # 每日 9:20 加载当天的策略蓝图（盘前准备）
   market_open: "09:30"               # 9:30 市场开盘，开始执行策略

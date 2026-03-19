@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from datetime import date
 from typing import Literal
 
@@ -29,7 +30,7 @@ async def blueprint_status(
         result = await session.execute(
             text(
                 """
-                SELECT id, trading_date, status, updated_at
+                SELECT id, trading_date, status, updated_at, blueprint_json
                 FROM llm_trading_blueprint
                 WHERE trading_date = :trading_date
                 ORDER BY generated_at DESC
@@ -43,7 +44,7 @@ async def blueprint_status(
     if not row:
         raise HTTPException(status_code=404, detail="blueprint_not_found")
 
-    return {
+    response = {
         "id": row["id"],
         "trading_date": str(row["trading_date"]),
         "db_status": row["status"],
@@ -61,6 +62,31 @@ async def blueprint_status(
         },
     }
 
+    # Add data quality summary if blueprint data is available
+    blueprint_data = row["blueprint_json"]
+    if blueprint_data:
+        bp = blueprint_data
+        if isinstance(bp, str):
+            try:
+                bp = json.loads(bp)
+            except Exception:
+                bp = {}
+
+        quality_info = {
+            "min_score": bp.get("min_data_quality_score", 1.0),
+            "warnings": bp.get("data_quality_summary", []),
+            "per_symbol": {},
+        }
+        for sp in bp.get("symbol_plans", []):
+            sym = sp.get("underlying", "unknown")
+            quality_info["per_symbol"][sym] = {
+                "score": sp.get("data_quality_score", 1.0),
+                "warnings": sp.get("data_quality_warnings", []),
+            }
+        response["data_quality"] = quality_info
+
+    return response
+
 
 @router.post("/blueprint/load")
 async def load_blueprint(
@@ -72,6 +98,7 @@ async def load_blueprint(
 
     runtime_state.loaded_blueprint_id = str(blueprint["id"])
     runtime_state.loaded_trading_date = trading_date
+    runtime_state.loaded_blueprint_json = blueprint.get("blueprint_json")
     runtime_state.status = "active"
     runtime_state.loaded_at = now_utc()
     runtime_state.manual_override_reason = None

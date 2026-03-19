@@ -73,6 +73,42 @@ curl -X POST http://localhost:8002/api/v1/signals/compute \
 curl http://localhost:8002/api/v1/signals/compute/<task_id>
 ```
 
+> **Error handling:** 如果指定日期所有标的都无数据（如非交易日或数据尚未入库），任务结果会返回错误信息：
+>
+> ```json
+> {
+>   "date": "2026-03-15",
+>   "symbols_computed": 0,
+>   "errors": ["No stock data found for trading_date=2026-03-15. Symbols checked: AAPL, MSFT, ..."]
+> }
+> ```
+>
+> 如果部分标的有数据、部分无数据，结果会额外包含 `symbols_no_data` 字段列出无数据的标的。
+
+### About `bar_type` in signal responses
+
+信号查询 API 返回的每条记录包含 `bar_type` 字段，取值及含义：
+
+| bar_type | 含义 |
+|---|---|
+| `daily` | 信号基于 **日线数据** (`stock_daily`) 计算 —— 优先数据源 |
+| `intraday_1min` | 该标的无日线数据，系统自动从 **1 分钟分笔数据** (`stock_1min_bars`) 聚合成日 OHLCV 后计算信号 |
+
+不同标的 `bar_type` 不同是正常现象——取决于数据源为该标的提供了哪种粒度的数据。
+
+#### 数据加载优先级
+
+**Stock（股票行情）：**
+1. 优先查询 `stock_daily`（日线），最多 260 天
+2. 若无日线数据，fallback 到 `stock_1min_bars`（1 分钟），按天聚合为 OHLCV（要求每天 ≥30 条）
+
+**Options（期权链）：**
+1. 优先查询 `option_daily`（日快照）
+2. 若无日快照，fallback 到 `option_5min_snapshots`（5 分钟盘中快照）
+
+> **注意：** 无论 `bar_type` 值如何，所有技术指标（均线、布林带等）均基于日级别 OHLCV 计算；
+> `bar_type` 标记的是数据**来源**，供下游策略判断数据粒度与质量。
+
 ## Manual start (without Docker)
 From repo root:
 

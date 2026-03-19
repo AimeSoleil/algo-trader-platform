@@ -40,6 +40,10 @@ class OptionIndicators(BaseModel):
 
     confidence_scores: dict[str, float] = Field(default_factory=dict)
     extreme_flags: list[str] = Field(default_factory=list)
+    degraded_indicators: list[str] = Field(
+        default_factory=list,
+        description="因数据不足而降级/使用默认值的指标",
+    )
 
 
 class StockIndicators(BaseModel):
@@ -91,6 +95,10 @@ class StockIndicators(BaseModel):
 
     confidence_scores: dict[str, float] = Field(default_factory=dict)
     extreme_flags: list[str] = Field(default_factory=list)
+    degraded_indicators: list[str] = Field(
+        default_factory=list,
+        description="因数据不足而降级/使用默认值的指标",
+    )
 
 
 class CrossAssetIndicators(BaseModel):
@@ -102,6 +110,23 @@ class CrossAssetIndicators(BaseModel):
     earnings_proximity_days: int = -1  # Days until next earnings (-1 = unknown)
     index_correlation_20d: float = 0.0  # 20-day rolling correlation to SPY
     confidence_scores: dict[str, float] = Field(default_factory=dict)
+
+
+class DataQuality(BaseModel):
+    """数据质量标注 — 标记信号计算所依赖的数据是否充足。
+
+    complete=True 表示所有指标均基于完整数据计算；
+    complete=False 表示部分指标可能降级或使用默认值。
+    """
+    complete: bool = True
+    score: float = Field(1.0, ge=0.0, le=1.0, description="综合质量评分 0-1")
+    warnings: list[str] = Field(default_factory=list, description="质量问题描述")
+    stock_bar_count: int = Field(0, description="股票 OHLCV 行数")
+    option_row_count: int = Field(0, description="期权链行数")
+    degraded_indicators: list[str] = Field(
+        default_factory=list,
+        description="因数据不足而降级/使用默认值的指标名",
+    )
 
 
 class SignalFeatures(BaseModel):
@@ -123,3 +148,6 @@ class SignalFeatures(BaseModel):
     
     # 市场状态分类（基于 config 中的 IV 阈值）
     volatility_regime: str = "normal"  # "high" / "normal" / "low"
+
+    # 数据质量标注
+    data_quality: DataQuality = Field(default_factory=DataQuality)

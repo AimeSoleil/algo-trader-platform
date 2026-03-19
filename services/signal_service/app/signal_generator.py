@@ -7,8 +7,13 @@ from __future__ import annotations
 
 from datetime import date
 
-from shared.models.signal import CrossAssetIndicators, SignalFeatures, OptionIndicators, StockIndicators
+from shared.models.signal import CrossAssetIndicators, DataQuality, SignalFeatures, OptionIndicators, StockIndicators
 from shared.config import get_settings
+from shared.data_quality import (
+    DataQualityConfig,
+    build_quality_warnings,
+    compute_quality_score,
+)
 from shared.utils import get_logger, now_utc, today_trading
 
 logger = get_logger("signal_generator")
@@ -24,8 +29,10 @@ def generate_signal(
     cross_asset_indicators: CrossAssetIndicators,
     bar_type: str = "unknown",
     trading_date: date | None = None,
+    stock_bar_count: int = 0,
+    option_row_count: int = 0,
 ) -> SignalFeatures:
-    """组装 SignalFeatures，仅做 volatility_regime 分类。"""
+    """组装 SignalFeatures，做 volatility_regime 分类和数据质量标注。"""
     settings = get_settings()
 
     iv_pct = option_indicators.iv_percentile
@@ -37,6 +44,29 @@ def generate_signal(
         vol_regime = "low"
     else:
         vol_regime = "normal"
+
+    # ── Build data quality annotation ──
+    # 合并股票 + 期权降级指标列表
+    all_degraded = (
+        stock_indicators.degraded_indicators
+        + option_indicators.degraded_indicators
+    )
+    # 使用集中化的质量评估模块（权重可通过 config.yaml 调节）
+    dq_cfg = DataQualityConfig.from_settings(settings)
+    warnings = build_quality_warnings(stock_bar_count, option_row_count)
+    is_complete = not all_degraded and not warnings
+    quality_score = compute_quality_score(
+        stock_bar_count, option_row_count, all_degraded, cfg=dq_cfg,
+    )
+
+    data_quality = DataQuality(
+        complete=is_complete,
+        score=quality_score,
+        warnings=warnings,
+        stock_bar_count=stock_bar_count,
+        option_row_count=option_row_count,
+        degraded_indicators=all_degraded,
+    )
 
     return SignalFeatures(
         symbol=symbol,
@@ -50,4 +80,5 @@ def generate_signal(
         stock_indicators=stock_indicators,
         cross_asset_indicators=cross_asset_indicators,
         volatility_regime=vol_regime,
+        data_quality=data_quality,
     )

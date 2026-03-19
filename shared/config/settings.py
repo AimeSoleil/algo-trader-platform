@@ -95,6 +95,21 @@ class RiskSettings(BaseSettings):
     stop_loss: StopLossSettings = Field(default_factory=StopLossSettings)
 
 
+class DataQualitySettings(BaseSettings):
+    """数据质量评分权重 & 执行门控阈值 — 对应 config.yaml 中 data_quality 段"""
+    # 评分权重（三项之和应 = 1.0）
+    weight_stock: float = 0.5          # 股票覆盖率权重
+    weight_option: float = 0.3         # 期权覆盖率权重
+    weight_degradation: float = 0.2    # 无降级指标奖励权重
+    # 评分参考值（满分对应行数）
+    stock_full_bars: int = 260         # ≈ 1 年交易日
+    option_full_rows: int = 200
+    # 执行门控
+    skip_threshold: float = 0.3        # < 此值 → 跳过执行
+    reduce_threshold: float = 0.7      # < 此值 → 缩减仓位
+    reduce_factor: float = 0.5         # 缩减比例（0.5 = 减半）
+
+
 class MarketHoursSettings(BaseSettings):
     start: str = "09:30"
     end: str = "16:00"
@@ -173,6 +188,7 @@ class Settings(BaseSettings):
     llm: LLMSettings = Field(default_factory=LLMSettings)
     trading: TradingSettings = Field(default_factory=TradingSettings)
     risk: RiskSettings = Field(default_factory=RiskSettings)
+    data_quality: DataQualitySettings = Field(default_factory=DataQualitySettings)
     data_service: DataServiceSettings = Field(default_factory=DataServiceSettings)
     option_strategy: OptionStrategySettings = Field(default_factory=OptionStrategySettings)
     schedule: ScheduleSettings = Field(default_factory=ScheduleSettings)

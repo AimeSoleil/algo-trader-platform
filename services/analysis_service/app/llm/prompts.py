@@ -39,6 +39,12 @@ If open positions are present, you MUST: \
 (c) document how existing exposure influenced your decision in the reasoning field. \
 Do NOT ignore existing positions — every new plan must be justified relative to current exposure. \
 If no positions are provided or the portfolio is flat, focus on fresh entry opportunities.
+8. **Data quality awareness**: If a symbol's data includes a "data_quality" section with \
+`complete: false`, you MUST: \
+(a) note which indicators are degraded in the reasoning field; \
+(b) reduce confidence proportionally — score < 0.5 should cap confidence at 0.5; \
+(c) prefer conservative strategies (smaller position sizes, wider stops) for low-quality data symbols; \
+(d) never rely on degraded indicators for entry/exit conditions.
 """
 
 # ---------------------------------------------------------------------------
@@ -221,6 +227,14 @@ def _serialize_one_signal(sf: SignalFeatures) -> str:
         },
         "cross_asset": cross_asset,
     }
+
+    if not sf.data_quality.complete:
+        data["data_quality"] = {
+            "complete": False,
+            "score": round(sf.data_quality.score, 4),
+            "warnings": sf.data_quality.warnings,
+            "degraded_indicators": sf.data_quality.degraded_indicators,
+        }
 
     compact = json.dumps(data, separators=(',', ':'), ensure_ascii=False)
     return f"### {sf.symbol}\n{compact}"

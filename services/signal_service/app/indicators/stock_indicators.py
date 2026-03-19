@@ -49,10 +49,12 @@ def _sanitize_stock_indicators(ind: StockIndicators) -> StockIndicators:
 
 
 def compute_stock_indicators(bars_df: pd.DataFrame) -> StockIndicators:
-    """从日线 DataFrame 计算完整股票技术指标集。
+    """从日级 OHLCV DataFrame 计算完整股票技术指标集。
 
     输入要求:
-        bars_df — 按时间升序的 daily OHLCV，最多 260 行（约 1 年）。
+        bars_df — 按时间升序的日级 OHLCV，最多 260 行（约 1 年）。
+                  数据来源优先 ``stock_daily``（日线），无日线时由
+                  ``stock_1min_bars`` 聚合而来（见 tasks._load_stock_bars）。
         最少 30 行才能计算，否则返回默认值。
 
     指标说明:
@@ -84,7 +86,12 @@ def compute_stock_indicators(bars_df: pd.DataFrame) -> StockIndicators:
     """
     if bars_df.empty or len(bars_df) < 30:
         logger.warning("stock_indicators.insufficient_data", rows=len(bars_df))
-        return StockIndicators()
+        n = len(bars_df) if not bars_df.empty else 0
+        ind = StockIndicators()
+        ind.extreme_flags.append("insufficient_stock_data")
+        ind.confidence_scores["data_coverage"] = round(n / 260, 4)
+        ind.degraded_indicators = ["all"]
+        return ind
 
     close = bars_df["close"]
     high = bars_df["high"]
@@ -109,7 +116,8 @@ def compute_stock_indicators(bars_df: pd.DataFrame) -> StockIndicators:
     bollinger_width = round((bb_upper - bb_lower) / bb_mid, 6) if abs(bb_mid) > 1e-9 else 0.0
 
     ret = close.pct_change().dropna()
-    # Always daily bars now (intraday is handled separately in tasks.py)
+    # Input is always daily-level OHLCV (either from stock_daily or
+    # aggregated from stock_1min_bars), so annualise with √252.
     hv_20d = round(float(ret.tail(20).std() * np.sqrt(252)), 6) if len(ret) >= 2 else 0.0
     garch_forecast = _garch_like_forecast(close)
 
@@ -155,6 +163,23 @@ def compute_stock_indicators(bars_df: pd.DataFrame) -> StockIndicators:
     if bollinger_width < 0.03:
         extreme_flags.append("volatility_squeeze")
 
+    # Data coverage quality signals
+    n = len(bars_df)
+    degraded: list[str] = []
+    if n < 50:
+        degraded.append("ema_50")
+    if n < 200:
+        degraded.append("sma_200")
+    if n < 52:
+        degraded.extend(["ichimoku_tenkan", "ichimoku_kijun", "ichimoku_span_a", "ichimoku_span_b"])
+    if n < 35:
+        degraded.extend(["macd", "macd_signal", "macd_histogram"])
+    if degraded:
+        extreme_flags.append("partial_stock_data")
+        confidence_scores["data_coverage"] = round(min(1.0, n / 260), 4)
+    else:
+        confidence_scores["data_coverage"] = round(min(1.0, n / 260), 4)
+
     result = StockIndicators(
         rsi_14=rsi,
         macd=macd_val,
@@ -192,5 +217,6 @@ def compute_stock_indicators(bars_df: pd.DataFrame) -> StockIndicators:
         trend_strength=round(trend_strength, 4),
         confidence_scores=confidence_scores,
         extreme_flags=extreme_flags,
+        degraded_indicators=degraded,
     )
     return _sanitize_stock_indicators(result)

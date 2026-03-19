@@ -19,9 +19,34 @@ logger = get_logger("option_indicators")
 
 
 async def get_historical_iv(symbol: str, lookback_days: int = 30) -> list[float]:
-    """从 TimescaleDB 获取历史 IV 数据"""
+    """从 TimescaleDB 获取历史 IV 数据。
+
+    优先使用 ``option_daily`` 日快照；若无数据则 fallback 到
+    ``option_5min_snapshots`` 盘中快照。
+    """
     start_date = today_trading() - timedelta(days=lookback_days)
 
+    # ── 1) Try daily option snapshots first (preferred) ──
+    async with get_timescale_session() as session:
+        result = await session.execute(
+            text(
+                "SELECT AVG(iv) as avg_iv "
+                "FROM option_daily "
+                "WHERE underlying = :symbol "
+                "AND snapshot_date >= :start_date "
+                "AND iv > 0 AND iv < 5 "
+                "GROUP BY snapshot_date "
+                "ORDER BY snapshot_date"
+            ),
+            {"symbol": symbol, "start_date": start_date},
+        )
+        daily_rows = [float(row[0]) for row in result.fetchall() if row[0]]
+
+    if daily_rows:
+        return daily_rows
+
+    # ── 2) Fallback: intraday 5-min snapshots ──
+    logger.debug("get_historical_iv.fallback_intraday", symbol=symbol)
     async with get_timescale_session() as session:
         result = await session.execute(
             text(
@@ -188,7 +213,11 @@ async def compute_option_indicators(symbol: str, option_data: pd.DataFrame, unde
     └──────────────────────────────┴───────────────────────────────────────────────────────┘
     """
     if option_data.empty:
-        return OptionIndicators()
+        ind = OptionIndicators()
+        ind.extreme_flags.append("no_option_data")
+        ind.degraded_indicators = ["all"]
+        ind.confidence_scores = {"iv_regime": 0.0, "chain_liquidity": 0.0, "greeks_stability": 0.0}
+        return ind
 
     # Fetch historical IV once
     if historical_iv is None:
@@ -356,6 +385,7 @@ async def compute_option_indicators(symbol: str, option_data: pd.DataFrame, unde
     }
 
     extreme_flags: list[str] = []
+    degraded: list[str] = []
     if iv_rank > 90:
         extreme_flags.append("extreme_high_iv")
     if iv_rank < 10:
@@ -364,6 +394,22 @@ async def compute_option_indicators(symbol: str, option_data: pd.DataFrame, unde
         extreme_flags.append("extreme_volume_imbalance")
     if bid_ask_spread_ratio > 0.2:
         extreme_flags.append("poor_liquidity")
+
+    # Data sufficiency flags for option indicators
+    n_rows = len(option_data)
+    n_expiries = option_data["expiry"].nunique() if "expiry" in option_data.columns else 0
+    n_hist_iv = len(historical_iv) if historical_iv else 0
+    if n_hist_iv < 10:
+        degraded.extend(["iv_rank", "iv_percentile", "historical_iv_30d"])
+    if n_expiries < 2:
+        degraded.extend(["term_structure_slope", "calendar_spread_theta_capture"])
+    if n_rows < 20:
+        degraded.extend(["vol_surface_fit_error", "iv_skew"])
+    if degraded:
+        extreme_flags.append("partial_option_data")
+        confidence_scores["data_coverage"] = round(min(1.0, n_rows / 200), 4)
+    else:
+        confidence_scores["data_coverage"] = round(min(1.0, n_rows / 200), 4)
 
     result = OptionIndicators(
         iv_rank=iv_rank,
@@ -400,5 +446,6 @@ async def compute_option_indicators(symbol: str, option_data: pd.DataFrame, unde
         box_spread_arbitrage=round(box_spread_arbitrage, 6),
         confidence_scores=confidence_scores,
         extreme_flags=extreme_flags,
+        degraded_indicators=degraded,
     )
     return _sanitize_option_indicators(result)

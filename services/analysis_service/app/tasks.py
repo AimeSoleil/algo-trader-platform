@@ -10,7 +10,7 @@ from sqlalchemy import text
 from shared.celery_app import celery_app
 from shared.config import get_settings
 from shared.db.session import get_postgres_session
-from shared.models.signal import SignalFeatures
+from shared.models.signal import DataQuality, SignalFeatures\nfrom shared.models.blueprint import LLMTradingBlueprint
 from shared.utils import get_logger, resolve_trading_date_arg, today_trading
 
 logger = get_logger("analysis_tasks")
@@ -138,6 +138,49 @@ async def _run_blueprint_pipeline(
     return blueprint
 
 
+def _annotate_blueprint_quality(
+    blueprint: "LLMTradingBlueprint",
+    signal_features: list["SignalFeatures"],
+) -> None:
+    """Post-process: inject signal data quality into each SymbolPlan.
+
+    Mutates *blueprint* in place — fills data_quality_score,
+    data_quality_warnings, signal_data_quality on each plan and sets
+    the blueprint-level min_data_quality_score / data_quality_summary.
+    """
+    # Build lookup: symbol → DataQuality
+    quality_map: dict[str, "DataQuality"] = {}
+    for sf in signal_features:
+        quality_map[sf.symbol.upper()] = sf.data_quality
+
+    quality_scores: list[float] = []
+    global_warnings: list[str] = []
+
+    for plan in blueprint.symbol_plans:
+        sym = plan.underlying.upper()
+        dq = quality_map.get(sym)
+        if dq is None:
+            # No signal at all for this symbol — worst quality
+            plan.data_quality_score = 0.0
+            plan.data_quality_warnings = [f"No signal data found for {sym}"]
+            quality_scores.append(0.0)
+            global_warnings.append(f"{sym}: no signal data")
+            continue
+
+        plan.signal_data_quality = dq
+        plan.data_quality_score = dq.score
+        plan.data_quality_warnings = list(dq.warnings)  # copy
+
+        if not dq.complete:
+            global_warnings.append(
+                f"{sym}: score={dq.score:.2f}, issues={', '.join(dq.warnings[:3])}"
+            )
+        quality_scores.append(dq.score)
+
+    blueprint.min_data_quality_score = min(quality_scores) if quality_scores else 1.0
+    blueprint.data_quality_summary = global_warnings
+
+
 # ── Daily blueprint task ──────────────────────────────────────
 
 
@@ -200,6 +243,8 @@ async def _generate_blueprint_async(trading_date_str: str | None = None) -> dict
 
     # 2-4) Common pipeline
     blueprint = await _run_blueprint_pipeline(signal_features, td)
+
+    _annotate_blueprint_quality(blueprint, signal_features)
 
     # 5) Write to DB (UPSERT)
     async with get_postgres_session() as session:
@@ -368,6 +413,8 @@ async def _manual_analyze_async(task, symbol: str, trading_date_str: str | None 
         task.update_state(state="PROGRESS", meta={"step": step, "symbol": symbol})
 
     blueprint = await _run_blueprint_pipeline(signal_features, td, progress_cb=_progress)
+
+    _annotate_blueprint_quality(blueprint, signal_features)
 
     # 5) Write to DB with status='manual'
     import uuid as _uuid
