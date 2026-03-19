@@ -11,6 +11,7 @@ dependencies = [
     "asyncpg",
     "redis[hiredis]",
     "celery[redis]",
+    "flower",
     "grpcio",
     "grpcio-tools",
     "protobuf",

@@ -30,6 +30,7 @@ class SchedulerState:
     settings: Settings
     cache: MarketHoursCache
     intraday_enabled: bool
+    outside_market_logged: bool = False
 
 
 # ── 公共查询接口 ───────────────────────────────────────────
@@ -52,8 +53,14 @@ def get_data_service_config() -> dict:
 async def _capture_intraday(state: SchedulerState) -> None:
     """盘中定时任务：每 5 分钟采集期权链快照 → L1 + L2 缓存"""
     if not is_market_open():
-        logger.info("scheduler.intraday_skipped", reason="outside_market_hours")
+        if not state.outside_market_logged:
+            logger.info("scheduler.intraday_skipped", reason="outside_market_hours")
+            state.outside_market_logged = True
         return
+
+    if state.outside_market_logged:
+        logger.info("scheduler.intraday_resumed", reason="market_open")
+        state.outside_market_logged = False
 
     symbols = state.settings.watchlist
     intraday_cfg = state.settings.data_service.intraday

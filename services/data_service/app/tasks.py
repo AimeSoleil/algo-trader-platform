@@ -376,7 +376,7 @@ async def _batch_flush_to_db_async(trading_date_str: str | None = None) -> dict:
 
 @celery_app.task(name="data_service.tasks.run_post_market_pipeline")
 def run_post_market_pipeline(trading_date: str | None = None) -> str:
-    """盘后流水线入口（16:30 由 Celery Beat 触发）
+    """盘后流水线入口（由 Celery Beat 触发）
 
     Chain: capture → flush → backfill → signals → blueprint
     """

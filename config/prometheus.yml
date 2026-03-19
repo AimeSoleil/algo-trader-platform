@@ -22,3 +22,8 @@ scrape_configs:
   - job_name: trade_service
     static_configs:
       - targets: ["algo_trade_service:8004"]
+
+  - job_name: flower
+    static_configs:
+      - targets: ["algo_flower:5555"]
+    metrics_path: /metrics

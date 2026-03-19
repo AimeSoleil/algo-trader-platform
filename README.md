@@ -30,8 +30,12 @@ uv run python -m scripts.init_db
 # 5) 初始化 watchlist
 uv run python -m scripts.seed_watchlist
 
-# 6) 启动 Celery workers + beat（可选）
-./scripts/run_workers.sh
+# 6) 启动 Celery workers + beat（本地开发）
+./scripts/run_workers.sh              # 基础模式
+./scripts/run_workers.sh --with-flower  # 含 Flower 监控面板
+
+# 6b) 或使用 Docker 部署 workers（生产推荐）
+docker compose --profile worker up -d
 ```
 
 ### 开发模式：服务按需逐个启动
@@ -45,6 +49,12 @@ docker compose up -d data_service
 
 # 启动全部应用服务（data/signal/analysis/trade/gateway）
 docker compose --profile app up -d
+
+# 启动 Celery workers + beat + Flower（进程监控、自动重启、健康检查）
+docker compose --profile worker up -d
+
+# 启动全栈（应用 + Workers）
+docker compose --profile app --profile worker up -d
 
 # 查看所有容器状态
 docker compose ps
@@ -126,7 +136,13 @@ curl "http://localhost:8000/trade/api/v1/blueprint/status?trading_date=2026-03-1
 - Grafana 默认运行在 `http://localhost:3000`，默认账号密码均为 `admin`
 - 当前 MVP 先提供通用 HTTP 指标（请求数、延迟、响应大小等）；后续可在各服务内补充业务指标
 
-常用检查方式：
+### Celery Worker 监控
+
+- **Flower 仪表盘**: `http://localhost:5555`（需要 `FLOWER_USER`/`FLOWER_PASSWORD` 认证）
+- 查看 Worker 在线状态、任务执行历史、队列深度
+- Flower 内建 Prometheus `/metrics` 端点，已接入 Prometheus 采集
+
+### 常用检查方式：
 
 ```bash
 # 查看 Prometheus targets
