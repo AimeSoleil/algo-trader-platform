@@ -23,6 +23,7 @@ cache/
 
 # Logs
 logs/
+nohup.out
 
 # IDE
 .vscode/
