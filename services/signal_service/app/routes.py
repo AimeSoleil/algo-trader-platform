@@ -13,6 +13,9 @@ from shared.utils import today_trading
 router = APIRouter(tags=["signal"])
 
 
+# ── Request / Response models ──────────────────────────────
+
+
 class SignalComputeRequest(BaseModel):
     """Manual signal generation trigger request."""
     trading_date: date | None = Field(None, description="Target date (ISO format). Defaults to today.")
@@ -28,25 +31,70 @@ class SignalComputeResponse(BaseModel):
     message: str = ""
 
 
-@router.get("/signals/batch")
-async def get_batch_signal_features(
-    trading_date: str | None = Query(None, description="Filter by trading_date (YYYY-MM-DD)"),
-    symbols: list[str] | None = Query(None, description="Filter by symbols"),
+# ── Signal query (unified) ────────────────────────────────
+
+
+@router.get("/signals")
+async def query_signals(
+    symbols: list[str] | None = Query(None, description="Filter by symbols (repeatable)"),
+    start_date: date | None = Query(None, description="Start trading date (YYYY-MM-DD). Defaults to today."),
+    end_date: date | None = Query(None, description="End trading date (YYYY-MM-DD). Defaults to start_date."),
+    bypass_cache: bool = Query(False, description="Skip Redis cache and read directly from DB"),
+    volatility_regime: str | None = Query(None, description="Filter: high / normal / low"),
+    trend: str | None = Query(None, description="Filter stock trend: bullish / bearish / neutral"),
+    sort_by: str | None = Query(None, description="Sort field name inside features (e.g. close_price, daily_return)"),
+    sort_order: str = Query("asc", description="Sort order: asc / desc"),
+    limit: int = Query(500, ge=1, le=2000, description="Max results per page"),
+    offset: int = Query(0, ge=0, description="Pagination offset"),
 ):
-    """查询当日所有标的的信号特征（Analysis Service 调用），支持按 symbols 过滤"""
-    from services.signal_service.app.queries import query_batch_signal_features
-    return await query_batch_signal_features(trading_date, symbols=symbols)
+    """统一信号查询 — 支持批量标的、日期范围、缓存控制、波动率/趋势过滤和分页。
+
+    **示例**:
+    - ``GET /signals`` — 查询今日全部标的
+    - ``GET /signals?symbols=AAPL&symbols=MSFT`` — 今日指定标的
+    - ``GET /signals?start_date=2026-03-10&end_date=2026-03-14`` — 日期范围
+    - ``GET /signals?symbols=AAPL&bypass_cache=true`` — 跳过缓存
+    - ``GET /signals?volatility_regime=high&trend=bullish`` — 条件过滤
+    - ``GET /signals?sort_by=daily_return&sort_order=desc&limit=20`` — 排序分页
+    """
+    from services.signal_service.app.queries import query_signals as _query
+
+    return await _query(
+        symbols=symbols,
+        start_date=start_date,
+        end_date=end_date,
+        bypass_cache=bypass_cache,
+        volatility_regime=volatility_regime,
+        trend=trend,
+        sort_by=sort_by,
+        sort_order=sort_order,
+        limit=limit,
+        offset=offset,
+    )
+
+
+# ── Backward-compatible single-symbol alias ────────────────
 
 
 @router.get("/signals/{symbol}")
 async def get_signal_features(
     symbol: str,
-    trading_date: str | None = Query(None, description="Target trading_date (YYYY-MM-DD)"),
-    by_pass_cache: bool = False,
+    trading_date: date | None = Query(None, description="Trading date (YYYY-MM-DD). Defaults to today."),
+    bypass_cache: bool = Query(False, alias="by_pass_cache", description="Skip Redis cache"),
 ):
-    """查询某标的的信号特征"""
-    from services.signal_service.app.queries import query_signal_features
-    return await query_signal_features(symbol, trading_date, by_pass_cache=by_pass_cache)
+    """查询单个标的的信号特征（向后兼容快捷入口，内部代理到 /signals）。"""
+    from services.signal_service.app.queries import query_signals as _query
+
+    result = await _query(
+        symbols=[symbol],
+        start_date=trading_date,
+        end_date=trading_date,
+        bypass_cache=bypass_cache,
+    )
+    data = result.get("data", [])
+    if not data:
+        return {"error": f"No signals for {symbol} on {trading_date or today_trading()}", "_from_cache": False}
+    return data[0]
 
 
 @router.post("/signals/compute", status_code=202, response_model=SignalComputeResponse)

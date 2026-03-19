@@ -24,8 +24,8 @@
 示例（通过 Gateway 代理访问）：
 
 ```bash
-# Signal batch query
-curl "http://localhost:8000/signal/api/v1/signals/batch?trading_date=2026-03-12&symbols=AAPL"
+# Signal query (unified — supports batch, date range, filters)
+curl "http://localhost:8000/signal/api/v1/signals?symbols=AAPL&start_date=2026-03-12&end_date=2026-03-12"
 
 # Trade portfolio performance
 curl "http://localhost:8000/trade/api/v1/portfolio/performance?trading_date=2026-03-12"

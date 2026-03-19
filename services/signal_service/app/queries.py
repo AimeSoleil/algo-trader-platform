@@ -41,83 +41,183 @@ async def delete_signal_cache(symbol: str, target_date: date) -> None:
     await redis.delete(key)
 
 
-async def query_signal_features(
-    symbol: str,
-    date_str: str | None = None,
-    by_pass_cache: bool = False,
-) -> dict:
-    """从 Redis / DB 查询单个标的的信号特征"""
-    target_date = date.fromisoformat(date_str) if date_str else today_trading()
-    key = _cache_key(symbol, target_date)
-
-    # L1: Redis
-    if not by_pass_cache:
-        try:
-            redis = await _get_redis()
-            cached = await redis.get(key)
-            if cached:
-                data = json.loads(cached)
-                return {**data, "_from_cache": True}
-        except Exception:
-            logger.debug("signal_query.redis_miss", symbol=symbol)
-
-    # L2: Postgres
-    async with get_postgres_session() as session:
-        result = await session.execute(
-            text(
-                "SELECT features_json FROM signal_features "
-                "WHERE symbol = :symbol AND date = :date"
-            ),
-            {"symbol": symbol.upper(), "date": target_date},
-        )
-        row = result.fetchone()
-
-    if not row:
-        return {"error": f"No signals for {symbol} on {target_date}", "_from_cache": False}
-
-    data = row[0] if isinstance(row[0], dict) else json.loads(row[0])
-
-    # Populate cache
-    try:
-        redis = await _get_redis()
-        await redis.set(key, json.dumps(data, default=str), ex=_CACHE_TTL)
-    except Exception:
-        pass
-
-    return {**data, "_from_cache": False}
+# ── Unified query ──────────────────────────────────────────
 
 
-async def query_batch_signal_features(
-    date_str: str | None = None,
+async def query_signals(
+    *,
     symbols: list[str] | None = None,
-) -> list[dict]:
-    """查询当日所有标的的信号特征（支持批量），可按 symbols 过滤"""
-    target_date = date.fromisoformat(date_str) if date_str else today_trading()
+    start_date: date | None = None,
+    end_date: date | None = None,
+    bypass_cache: bool = False,
+    volatility_regime: str | None = None,
+    trend: str | None = None,
+    sort_by: str | None = None,
+    sort_order: str = "asc",
+    limit: int = 500,
+    offset: int = 0,
+) -> dict:
+    """Unified signal query — supports single/batch, date ranges, and filters.
 
-    conditions = ["date = :date"]
-    params: dict = {"date": target_date}
+    Returns ``{"data": [...], "total": N, "limit": N, "offset": N, "filters_applied": {...}}``.
+    """
+    # Default date range to today if nothing specified
+    if start_date is None and end_date is None:
+        start_date = end_date = today_trading()
+    elif start_date is None:
+        start_date = end_date
+    elif end_date is None:
+        end_date = start_date
 
+    # Normalise symbols
+    upper_symbols: list[str] | None = None
     if symbols:
-        upper_symbols = [s.strip().upper() for s in symbols if s.strip()]
-        if upper_symbols:
-            conditions.append("symbol = ANY(:symbols)")
-            params["symbols"] = upper_symbols
+        upper_symbols = list(dict.fromkeys(s.strip().upper() for s in symbols if s.strip()))
+
+    # ── Fast path: single symbol + single date → try cache first ──
+    single_mode = (
+        upper_symbols is not None
+        and len(upper_symbols) == 1
+        and start_date == end_date
+    )
+    if single_mode and not bypass_cache:
+        cached = await _try_cache(upper_symbols[0], start_date)  # type: ignore[arg-type]
+        if cached is not None:
+            # Apply in-memory filters on the single cached result
+            items = _apply_json_filters([cached], volatility_regime=volatility_regime, trend=trend)
+            return _paginated(items, total=len(items), limit=limit, offset=offset,
+                              filters=_describe_filters(upper_symbols, start_date, end_date,
+                                                        bypass_cache, volatility_regime, trend))
+
+    # ── DB query ──
+    conditions = ["date >= :start_date", "date <= :end_date"]
+    params: dict = {"start_date": start_date, "end_date": end_date}
+
+    if upper_symbols:
+        conditions.append("symbol = ANY(:symbols)")
+        params["symbols"] = upper_symbols
 
     where = " AND ".join(conditions)
 
+    # Collect total count
+    count_sql = f"SELECT COUNT(*) FROM signal_features WHERE {where}"
+    data_sql = (
+        f"SELECT symbol, date, features_json FROM signal_features "
+        f"WHERE {where} ORDER BY date, symbol"
+    )
+
     async with get_postgres_session() as session:
-        result = await session.execute(
-            text(
-                f"SELECT symbol, features_json FROM signal_features "
-                f"WHERE {where} ORDER BY symbol"
-            ),
-            params,
-        )
+        total_row = await session.execute(text(count_sql), params)
+        total = total_row.scalar() or 0
+
+        result = await session.execute(text(data_sql), params)
         rows = result.fetchall()
 
-    features: list[dict] = []
+    # Parse features_json
+    items: list[dict] = []
     for row in rows:
-        data = row[1] if isinstance(row[1], dict) else json.loads(row[1])
-        features.append(data)
+        data = row[2] if isinstance(row[2], dict) else json.loads(row[2])
+        items.append(data)
 
-    return features
+    # Apply JSON-level filters
+    items = _apply_json_filters(items, volatility_regime=volatility_regime, trend=trend)
+
+    # Sort
+    if sort_by and items:
+        reverse = sort_order.lower() == "desc"
+        items.sort(key=lambda x: x.get(sort_by, ""), reverse=reverse)
+
+    filtered_total = len(items)
+
+    # Populate cache for single-date results (background, best-effort)
+    if start_date == end_date and not bypass_cache:
+        for item in items:
+            sym = item.get("symbol")
+            if sym:
+                try:
+                    await _set_cache(sym, start_date, item)
+                except Exception:
+                    pass
+
+    return _paginated(items, total=filtered_total, limit=limit, offset=offset,
+                      filters=_describe_filters(upper_symbols, start_date, end_date,
+                                                bypass_cache, volatility_regime, trend))
+
+
+# ── Cache helpers ──────────────────────────────────────────
+
+
+async def _try_cache(symbol: str, d: date) -> dict | None:
+    key = _cache_key(symbol, d)
+    try:
+        redis = await _get_redis()
+        cached = await redis.get(key)
+        if cached:
+            data = json.loads(cached)
+            data["_from_cache"] = True
+            return data
+    except Exception:
+        logger.debug("signal_query.redis_miss", symbol=symbol)
+    return None
+
+
+async def _set_cache(symbol: str, d: date, data: dict) -> None:
+    key = _cache_key(symbol, d)
+    redis = await _get_redis()
+    await redis.set(key, json.dumps(data, default=str), ex=_CACHE_TTL)
+
+
+# ── Filtering helpers ──────────────────────────────────────
+
+
+def _apply_json_filters(
+    items: list[dict],
+    *,
+    volatility_regime: str | None = None,
+    trend: str | None = None,
+) -> list[dict]:
+    """Filter items by values inside the JSON payload."""
+    filtered = items
+    if volatility_regime:
+        filtered = [i for i in filtered if i.get("volatility_regime") == volatility_regime]
+    if trend:
+        filtered = [
+            i for i in filtered
+            if i.get("stock_indicators", {}).get("trend") == trend
+        ]
+    return filtered
+
+
+def _describe_filters(
+    symbols: list[str] | None,
+    start_date: date,
+    end_date: date,
+    bypass_cache: bool,
+    volatility_regime: str | None,
+    trend: str | None,
+) -> dict:
+    f: dict = {
+        "start_date": str(start_date),
+        "end_date": str(end_date),
+    }
+    if symbols:
+        f["symbols"] = symbols
+    if bypass_cache:
+        f["bypass_cache"] = True
+    if volatility_regime:
+        f["volatility_regime"] = volatility_regime
+    if trend:
+        f["trend"] = trend
+    return f
+
+
+def _paginated(items: list[dict], *, total: int, limit: int, offset: int, filters: dict) -> dict:
+    page = items[offset: offset + limit]
+    return {
+        "data": page,
+        "total": total,
+        "limit": limit,
+        "offset": offset,
+        "count": len(page),
+        "filters_applied": filters,
+    }

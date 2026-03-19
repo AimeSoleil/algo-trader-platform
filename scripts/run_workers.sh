@@ -397,8 +397,12 @@ WRAPPER_PIDS[beat]=$!
 
 # ── Flower (optional) ─────────────────────────────────────
 if [[ "$ENABLE_FLOWER" == "1" ]]; then
+  # Delay Flower start so workers have time to register with the broker
+  log main "等待 5s 让 workers 注册到 broker..."
+  sleep 5
   run_with_restart flower \
-    $CELERY_CMD flower --port="$FLOWER_PORT" &
+    $CELERY_CMD flower --port="$FLOWER_PORT" \
+    --inspect_timeout=10000 &
   WRAPPER_PIDS[flower]=$!
   log main "Flower 已启动: http://localhost:${FLOWER_PORT}"
 fi

@@ -110,7 +110,7 @@ curl -X POST http://localhost:8003/api/v1/analyze \
 curl http://localhost:8003/api/v1/analyze/<task_id>
 
 # 4) 通过 Gateway 查询（日期参数统一使用 trading_date）
-curl "http://localhost:8000/signal/api/v1/signals/batch?trading_date=2026-03-12&symbols=AAPL&symbols=MSFT"
+curl "http://localhost:8000/signal/api/v1/signals?symbols=AAPL&symbols=MSFT&start_date=2026-03-12&end_date=2026-03-12"
 curl "http://localhost:8000/trade/api/v1/portfolio/performance?trading_date=2026-03-12"
 curl "http://localhost:8000/trade/api/v1/blueprint/status?trading_date=2026-03-12"
 ```
