@@ -49,6 +49,7 @@
 | 场景 | 行为 |
 |------|------|
 | `snapshot_date` 在未来 | `422`，建议改为今日 |
+| `snapshot_date` == 上一交易日 + 盘前 | 正常执行（live chain 仍反映昨日收盘） |
 | `snapshot_date` 在过去 + 无 historical provider | `422`，提示配置 `options_historical` |
 | `snapshot_date` 在过去 + 有 historical provider | 正常执行（调用 historical provider） |
 | `snapshot_date == today` + 盘前 | `422`，建议改为上一交易日 |

@@ -563,8 +563,9 @@ async def trigger_options_collection(req: OptionsCollectRequest):
 
     Date validation rules (for ``snapshot_date``):
     - Future dates → 422
-    - Past dates without historical provider → 422
-    - Past dates with historical provider → proceed normally
+    - Previous trading day + pre-market → proceed (live chain still reflects yesterday)
+    - Other past dates without historical provider → 422
+    - Other past dates with historical provider → proceed normally
     - Today + pre-market → 422, suggest previous trading day
     - Today + market open → 422, suggest run after market close
     - Today + post-market → proceed normally (live chain)
@@ -599,7 +600,25 @@ async def trigger_options_collection(req: OptionsCollectRequest):
             },
         )
 
-    # ── Past date check ──
+    # ── Past date: previous trading day + pre-market → live chain still valid ──
+    prev_day = previous_trading_day(today)
+    if effective_date < today and effective_date == prev_day and before_market_open():
+        task = celery_app.send_task(
+            "data_service.tasks.collect_options",
+            args=[symbols],
+            kwargs={"snapshot_date": effective_date.isoformat()},
+            queue="data",
+        )
+        return OptionsCollectResponse(
+            task_id=task.id,
+            status="queued",
+            message=(
+                f"Options collection queued for {len(symbols)} symbol(s), "
+                f"snapshot_date={effective_date} (pre-market, live chain reflects yesterday)"
+            ),
+        )
+
+    # ── Other past dates ──
     if effective_date < today:
         if historical_provider == "none":
             raise HTTPException(
@@ -636,7 +655,6 @@ async def trigger_options_collection(req: OptionsCollectRequest):
 
     # ── Today: market-hours check ──
     if before_market_open():
-        prev_day = previous_trading_day(today)
         raise HTTPException(
             status_code=422,
             detail={
@@ -645,7 +663,7 @@ async def trigger_options_collection(req: OptionsCollectRequest):
                     f"Option chain for today is not yet available."
                 ),
                 "suggested_request_body": _build_options_collect_suggested_body(
-                    req, snapshot_date=prev_day,
+                    req, snapshot_date=previous_trading_day(today),
                 ),
             },
         )
