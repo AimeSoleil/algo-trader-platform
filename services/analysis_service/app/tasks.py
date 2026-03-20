@@ -10,7 +10,8 @@ from sqlalchemy import text
 from shared.celery_app import celery_app
 from shared.config import get_settings
 from shared.db.session import get_postgres_session
-from shared.models.signal import DataQuality, SignalFeatures\nfrom shared.models.blueprint import LLMTradingBlueprint
+from shared.models.signal import DataQuality, SignalFeatures
+from shared.models.blueprint import LLMTradingBlueprint
 from shared.utils import get_logger, resolve_trading_date_arg, today_trading
 
 logger = get_logger("analysis_tasks")
