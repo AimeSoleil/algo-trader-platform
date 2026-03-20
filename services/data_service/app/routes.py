@@ -17,7 +17,14 @@ from services.data_service.app.scheduler import (
 from shared.celery_app import celery_app
 from shared.config import get_settings
 from shared.db.session import get_timescale_session
-from shared.utils import previous_trading_day, today_trading
+from shared.utils import (
+    after_market_close,
+    before_market_open,
+    is_market_open,
+    now_market,
+    previous_trading_day,
+    today_trading,
+)
 
 router = APIRouter(tags=["data"])
 
@@ -101,34 +108,6 @@ class CollectResponse(BaseModel):
     message: str = ""
 
 
-def _normalize_manual_end_date(end_date: date) -> tuple[date, str | None]:
-    """Normalize end_date for pre-market manual collection.
-
-    Rule:
-    - if end_date == today_trading() and current market time is before market open,
-      shift end_date to previous trading day and emit a warning message.
-    Uses trading.timezone for all time comparisons.
-    """
-    from shared.utils import before_market_open, now_market as _now_market
-
-    today = today_trading()
-    if end_date != today:
-        return end_date, None
-
-    if before_market_open():
-        now_mkt = _now_market()
-        settings = get_settings()
-        normalized = previous_trading_day(today)
-        warning = (
-            f"end_date {end_date} adjusted to {normalized}: current market time "
-            f"{now_mkt.strftime('%H:%M')} is before market open "
-            f"{settings.data_service.market_hours.start}"
-        )
-        return normalized, warning
-
-    return end_date, None
-
-
 def _build_collect_suggested_body(
     req: CollectRequest,
     *,
@@ -141,6 +120,18 @@ def _build_collect_suggested_body(
         "start_date": start_date.isoformat(),
         "end_date": end_date.isoformat(),
         "data_types": req.data_types,
+    }
+
+
+def _build_options_collect_suggested_body(
+    req: "OptionsCollectRequest",
+    *,
+    snapshot_date: date,
+) -> dict:
+    """Build a copy-pasteable suggested request body for options collect API."""
+    return {
+        "symbols": req.symbols,
+        "snapshot_date": snapshot_date.isoformat(),
     }
 
 
@@ -417,14 +408,24 @@ async def list_option_dates(symbol: str):
 
 @router.post("/collect/stock", status_code=202, response_model=CollectResponse)
 async def trigger_collection(req: CollectRequest):
-    """Trigger manual data collection for specific symbols and date range."""
-    normalized_end_date, normalization_warning = _normalize_manual_end_date(req.end_date)
+    """Trigger manual stock data collection for specific symbols and date range.
 
+    Date validation rules (for ``end_date``):
+    - Future dates → 422
+    - Today + pre-market → 422, suggest previous trading day
+    - Today + market open → 422, suggest run after market close
+    - Today + post-market → proceed normally
+    - Past dates → proceed normally
+    """
     if not req.symbols:
         raise HTTPException(status_code=422, detail="symbols list must not be empty")
 
     today = today_trading()
+    settings = get_settings()
+    mkt_start = settings.data_service.market_hours.start
+    mkt_end = settings.data_service.market_hours.end
 
+    # ── Future check ──
     if req.end_date > today:
         suggested_end = today
         suggested_start = min(req.start_date, suggested_end)
@@ -433,28 +434,43 @@ async def trigger_collection(req: CollectRequest):
             detail={
                 "error": "end_date cannot be in the future",
                 "suggested_request_body": _build_collect_suggested_body(
-                    req,
-                    start_date=suggested_start,
-                    end_date=suggested_end,
+                    req, start_date=suggested_start, end_date=suggested_end,
                 ),
             },
         )
 
-    if normalization_warning is not None:
-        suggested_end = normalized_end_date
-        suggested_start = min(req.start_date, suggested_end)
-        raise HTTPException(
-            status_code=422,
-            detail={
-                "error": normalization_warning,
-                "suggested_request_body": _build_collect_suggested_body(
-                    req,
-                    start_date=suggested_start,
-                    end_date=suggested_end,
-                ),
-            },
-        )
+    # ── Today market-hours check ──
+    if req.end_date == today:
+        if before_market_open():
+            prev_day = previous_trading_day(today)
+            raise HTTPException(
+                status_code=422,
+                detail={
+                    "error": (
+                        f"Market has not opened yet ({now_market().strftime('%H:%M')} < {mkt_start}). "
+                        f"Today's stock data is not yet available."
+                    ),
+                    "suggested_request_body": _build_collect_suggested_body(
+                        req,
+                        start_date=min(req.start_date, prev_day),
+                        end_date=prev_day,
+                    ),
+                },
+            )
+        elif is_market_open():
+            raise HTTPException(
+                status_code=422,
+                detail={
+                    "error": (
+                        f"Market is currently open ({now_market().strftime('%H:%M')}, closes {mkt_end}). "
+                        f"Today's stock data is only complete after market close. "
+                        f"Suggestion: run collection after {mkt_end}."
+                    ),
+                },
+            )
+        # else: after_market_close → proceed normally
 
+    # ── Date order check ──
     if req.start_date > req.end_date:
         suggested_start = min(req.start_date, req.end_date)
         suggested_end = max(req.start_date, req.end_date)
@@ -463,13 +479,12 @@ async def trigger_collection(req: CollectRequest):
             detail={
                 "error": "start_date must be <= end_date",
                 "suggested_request_body": _build_collect_suggested_body(
-                    req,
-                    start_date=suggested_start,
-                    end_date=suggested_end,
+                    req, start_date=suggested_start, end_date=suggested_end,
                 ),
             },
         )
 
+    # ── Data types validation ──
     valid_types = {"bars_1m", "bars_daily"}
     invalid = set(req.data_types) - valid_types
     if invalid:
@@ -526,13 +541,12 @@ async def get_collection_status(task_id: str):
 class OptionsCollectRequest(BaseModel):
     """Manual options data collection request."""
     symbols: list[str] = Field(..., min_length=1, description="Ticker symbols to collect options for")
-    historical_date: date | None = Field(
+    snapshot_date: date | None = Field(
         None,
-        description="Target date for historical options. Requires a provider that supports "
-                    "historical data (see data_service.providers.options_historical config). "
-                    "If omitted, collects today's live option chain. "
-                    "Special case: before market open, historical_date=previous trading day "
-                    "can fallback to yfinance live snapshot.",
+        description="Target snapshot date for options data (aligned with stock trading_date). "
+                    "If omitted, defaults to today. "
+                    "Past dates require a historical provider (options_historical config). "
+                    "Today's date is only allowed after market close.",
     )
 
 
@@ -547,11 +561,14 @@ class OptionsCollectResponse(BaseModel):
 async def trigger_options_collection(req: OptionsCollectRequest):
     """Collect option chain data for specified symbols.
 
-    - Without ``historical_date``: fetches today's live option chain via the
-      configured options provider (e.g. yfinance).
-        - With ``historical_date``: uses the ``options_historical`` provider.
-            Special case: before market open, previous trading day can fallback to
-            yfinance live snapshot.
+    Date validation rules (for ``snapshot_date``):
+    - Future dates → 422
+    - Past dates without historical provider → 422
+    - Past dates with historical provider → proceed normally
+    - Today + pre-market → 422, suggest previous trading day
+    - Today + market open → 422, suggest run after market close
+    - Today + post-market → proceed normally (live chain)
+    - None → treated as today, same rules apply
     """
     if not req.symbols:
         raise HTTPException(status_code=422, detail="symbols list must not be empty")
@@ -562,52 +579,99 @@ async def trigger_options_collection(req: OptionsCollectRequest):
 
     settings = get_settings()
     historical_provider = settings.data_service.providers.options_historical.strip().lower()
+    options_provider = settings.data_service.providers.options.strip().lower()
+    mkt_start = settings.data_service.market_hours.start
+    mkt_end = settings.data_service.market_hours.end
+    today = today_trading()
 
-    if req.historical_date is not None:
-        today = today_trading()
-        if req.historical_date > today:
-            raise HTTPException(status_code=422, detail="historical_date cannot be in the future")
+    # Default snapshot_date to today if not provided
+    effective_date = req.snapshot_date if req.snapshot_date is not None else today
 
-        from shared.utils import before_market_open
+    # ── Future check ──
+    if effective_date > today:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "error": "snapshot_date cannot be in the future",
+                "suggested_request_body": _build_options_collect_suggested_body(
+                    req, snapshot_date=today,
+                ),
+            },
+        )
 
-        prev_day = previous_trading_day(today)
-        use_premarket_yf_fallback = before_market_open() and req.historical_date in {today, prev_day}
-
-        if historical_provider == "none" and not use_premarket_yf_fallback:
+    # ── Past date check ──
+    if effective_date < today:
+        if historical_provider == "none":
             raise HTTPException(
                 status_code=422,
-                detail="Historical options data not available: options_historical provider "
-                       "is set to 'none'. Configure a supported provider in "
-                       "data_service.providers.options_historical to enable this feature.",
+                detail={
+                    "error": (
+                        f"snapshot_date {effective_date} is in the past. "
+                        f"Provider '{options_provider}' only supports live data. "
+                        f"Configure data_service.providers.options_historical to enable "
+                        f"historical options collection."
+                    ),
+                    "suggested_request_body": _build_options_collect_suggested_body(
+                        req, snapshot_date=today,
+                    ),
+                },
             )
 
+        # Historical provider available → dispatch to it
         task = celery_app.send_task(
             "data_service.tasks.collect_options",
             args=[symbols],
-            kwargs={"historical_date": req.historical_date.isoformat()},
+            kwargs={"snapshot_date": effective_date.isoformat()},
             queue="data",
         )
-
         return OptionsCollectResponse(
             task_id=task.id,
             status="queued",
-            message=f"Historical options collection queued for {len(symbols)} symbol(s), date={req.historical_date}",
-            historical_provider=(
-                "yfinance_live_premarket_fallback"
-                if use_premarket_yf_fallback and historical_provider == "none"
-                else historical_provider
+            message=(
+                f"Historical options collection queued for {len(symbols)} symbol(s), "
+                f"snapshot_date={effective_date}"
             ),
+            historical_provider=historical_provider,
         )
 
-    # Live collection (today's option chain)
+    # ── Today: market-hours check ──
+    if before_market_open():
+        prev_day = previous_trading_day(today)
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "error": (
+                    f"Market has not opened yet ({now_market().strftime('%H:%M')} < {mkt_start}). "
+                    f"Option chain for today is not yet available."
+                ),
+                "suggested_request_body": _build_options_collect_suggested_body(
+                    req, snapshot_date=prev_day,
+                ),
+            },
+        )
+
+    if is_market_open():
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "error": (
+                    f"Market is currently open ({now_market().strftime('%H:%M')}, closes {mkt_end}). "
+                    f"Option chain data is only reliable after market close. "
+                    f"Suggestion: run collection after {mkt_end}."
+                ),
+            },
+        )
+
+    # ── Post-market → proceed with live collection ──
     task = celery_app.send_task(
         "data_service.tasks.collect_options",
         args=[symbols],
+        kwargs={"snapshot_date": today.isoformat()},
         queue="data",
     )
 
     return OptionsCollectResponse(
         task_id=task.id,
         status="queued",
-        message=f"Options collection queued for {len(symbols)} symbol(s) (today's live chain)",
+        message=f"Options collection queued for {len(symbols)} symbol(s), snapshot_date={today}",
     )

@@ -28,32 +28,6 @@ from shared.utils import (
 logger = get_logger("data_tasks")
 
 
-def _normalize_manual_end_date(end_date: date) -> tuple[date, str | None]:
-    """Task-level fallback normalization for pre-market manual collection.
-
-    Keeps behavior consistent when task is invoked directly (bypassing REST route).
-    Uses trading.timezone for all time comparisons.
-    """
-    from shared.utils import before_market_open, now_market as _now_market
-
-    today = today_trading()
-    if end_date != today:
-        return end_date, None
-
-    if before_market_open():
-        now_mkt = _now_market()
-        settings = get_settings()
-        normalized = previous_trading_day(today)
-        warning = (
-            f"manual_collect: end_date {end_date} adjusted to {normalized}; "
-            f"current market time {now_mkt.strftime('%H:%M')} is before open "
-            f"{settings.data_service.market_hours.start}"
-        )
-        return normalized, warning
-
-    return end_date, None
-
-
 # ── Step 1: 盘后数据采集 ──────────────────────────────────
 
 
@@ -485,9 +459,6 @@ async def _manual_collect_async(
     sd = date.fromisoformat(start_date_str)
     ed = date.fromisoformat(end_date_str)
 
-    normalized_end_date, normalization_warning = _normalize_manual_end_date(ed)
-    ed = normalized_end_date
-
     today = today_trading()
     started = perf_counter()
     logger.debug(
@@ -512,9 +483,6 @@ async def _manual_collect_async(
         "warnings": [],
         "errors": [],
     }
-
-    if normalization_warning:
-        result["warnings"].append(normalization_warning)
 
     if sd > ed:
         result["status"] = "completed_with_errors"
@@ -730,12 +698,12 @@ async def _manual_collect_async(
 def collect_options(
     self,
     symbols: list[str],
-    historical_date: str | None = None,
+    snapshot_date: str | None = None,
 ) -> dict:
     """Collect option chain data for given symbols.
 
-    - If ``historical_date`` is None → fetch today's live chain.
-    - If ``historical_date`` is provided → use the options_historical provider.
+    - If ``snapshot_date`` is None → fetch today's live chain.
+    - If ``snapshot_date`` is provided → use the options_historical provider.
     """
     logger.debug(
         "collect_options.start",
@@ -743,12 +711,12 @@ def collect_options(
         stage="entry",
         task_id=getattr(self.request, "id", None),
         symbols=len(symbols),
-        historical_date=historical_date,
+        snapshot_date=snapshot_date,
         retry=getattr(self.request, "retries", 0),
     )
     try:
         return asyncio.run(
-            _collect_options_async(self, symbols, historical_date)
+            _collect_options_async(self, symbols, snapshot_date)
         )
     except Exception as exc:
         logger.error("collect_options.failed", error=str(exc))
@@ -758,7 +726,7 @@ def collect_options(
 async def _collect_options_async(
     task,
     symbols: list[str],
-    historical_date_str: str | None = None,
+    snapshot_date_str: str | None = None,
 ) -> dict:
     from services.data_service.app.converters import contracts_to_rows
     from services.data_service.app.fetchers.option_fetcher import fetch_option_chain
@@ -771,7 +739,7 @@ async def _collect_options_async(
     result: dict = {
         "status": "completed",
         "symbols": symbols,
-        "mode": "historical" if historical_date_str else "live",
+        "mode": "historical" if snapshot_date_str else "live",
         "options_rows": 0,
         "warnings": [],
         "errors": [],
@@ -779,26 +747,19 @@ async def _collect_options_async(
 
     total_steps = len(symbols)
 
-    if historical_date_str is not None:
+    if snapshot_date_str is not None:
         # ── Historical mode ──
-        requested_date = date.fromisoformat(historical_date_str)
-        target_date = requested_date
+        requested_date = date.fromisoformat(snapshot_date_str)
         today = today_trading()
         from shared.utils import before_market_open
 
         is_premarket = before_market_open()
         prev_day = previous_trading_day(today)
 
-        if is_premarket and requested_date == today:
-            target_date = prev_day
-            result["warnings"].append(
-                f"historical_date {requested_date} normalized to {target_date}: pre-market fallback"
-            )
+        use_premarket_yf_fallback = is_premarket and requested_date in {today, prev_day}
 
-        use_premarket_yf_fallback = is_premarket and target_date in {today, prev_day}
-
-        result["historical_date"] = historical_date_str
-        result["effective_historical_date"] = target_date.isoformat()
+        result["snapshot_date"] = snapshot_date_str
+        result["effective_snapshot_date"] = requested_date.isoformat()
         result["historical_provider"] = historical_provider
         if use_premarket_yf_fallback and historical_provider == "none":
             result["historical_provider"] = "yfinance_live_premarket_fallback"
@@ -826,25 +787,25 @@ async def _collect_options_async(
                     logger.debug(
                         "collect_options.fetch_live_fallback_start",
                         symbol=symbol,
-                        target_date=str(target_date),
+                        target_date=str(requested_date),
                     )
                     snapshot = await fetch_option_chain(symbol)
                     if snapshot:
                         option_rows = contracts_to_rows(snapshot, include_snapshot_date=True)
                         for row in option_rows:
-                            row["snapshot_date"] = target_date
+                            row["snapshot_date"] = requested_date
                         written = await write_swing_options(option_rows)
                         result["options_rows"] += written
                         logger.info(
                             "collect_options.historical_fallback_written",
                             symbol=symbol,
-                            date=str(target_date),
+                            date=str(requested_date),
                             rows=written,
                             provider="yfinance",
                         )
                     else:
                         result["warnings"].append(
-                            f"{symbol}: no option chain returned for pre-market fallback ({target_date})"
+                            f"{symbol}: no option chain returned for pre-market fallback ({requested_date})"
                         )
                 except Exception as e:
                     result["errors"].append(f"{symbol}/historical_fallback: {e}")
@@ -869,27 +830,31 @@ async def _collect_options_async(
                 },
             )
             try:
-                snapshot = await _fetch_historical_options_mock(symbol, target_date, historical_provider)
+                snapshot = await _fetch_historical_options_mock(symbol, requested_date, historical_provider)
                 if snapshot:
                     option_rows = contracts_to_rows(snapshot, include_snapshot_date=True)
+                    for row in option_rows:
+                        row["snapshot_date"] = requested_date
                     written = await write_swing_options(option_rows)
                     result["options_rows"] += written
                     logger.info(
                         "collect_options.historical_written",
                         symbol=symbol,
-                        date=str(target_date),
+                        date=str(requested_date),
                         rows=written,
                         provider=historical_provider,
                     )
                 else:
                     result["warnings"].append(
-                        f"{symbol}: historical options mock returned no data for {target_date}"
+                        f"{symbol}: historical options mock returned no data for {requested_date}"
                     )
             except Exception as e:
                 result["errors"].append(f"{symbol}/historical: {e}")
                 logger.error("collect_options.historical_error", symbol=symbol, error=str(e))
     else:
         # ── Live mode (today's option chain) ──
+        live_snapshot_date = today_trading()
+        result["snapshot_date"] = live_snapshot_date.isoformat()
         for idx, symbol in enumerate(symbols, 1):
             task.update_state(
                 state="PROGRESS",
@@ -905,6 +870,8 @@ async def _collect_options_async(
                 snapshot = await fetch_option_chain(symbol)
                 if snapshot:
                     option_rows = contracts_to_rows(snapshot, include_snapshot_date=True)
+                    for row in option_rows:
+                        row["snapshot_date"] = live_snapshot_date
                     written = await write_swing_options(option_rows)
                     result["options_rows"] += written
                     logger.info("collect_options.live_written", symbol=symbol, rows=written)

@@ -127,6 +127,20 @@ def before_market_open() -> bool:
     return now.time() < open_t
 
 
+def after_market_close() -> bool:
+    """判断当前时刻是否晚于今日收盘时间（按 trading.timezone）。
+
+    周末视为"盘后"（返回 True）。
+    """
+    from shared.config import get_settings
+
+    now = now_market()
+    if now.weekday() >= 5:
+        return True
+    close_t = parse_hhmm(get_settings().data_service.market_hours.end)
+    return now.time() > close_t
+
+
 def resolve_trading_date_arg(trading_date: Any, prev_result: Any = None) -> str | None:
     """解析任务入口 trading_date 参数，兼容 Celery chain 上游结果注入。
 

@@ -1,6 +1,7 @@
 """通用工具模块"""
 from shared.utils.logging import setup_logging, setup_celery_logging, get_logger
 from shared.utils.time import (
+    after_market_close,
     before_market_open,
     ensure_utc,
     is_market_open,
@@ -18,6 +19,7 @@ __all__ = [
     "setup_logging",
     "setup_celery_logging",
     "get_logger",
+    "after_market_close",
     "before_market_open",
     "ensure_utc",
     "is_market_open",

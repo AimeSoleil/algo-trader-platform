@@ -32,27 +32,43 @@
 - `GET /data/{symbol}/options/dates` — 已有快照日期列表
 
 ### Manual Collection
-- `POST /api/v1/collect` — 触发手动采集（异步 Celery task）
-- `POST /api/v1/collect/options` — 触发期权链采集（支持 `historical_date`）
+- `POST /api/v1/collect/stock` — 触发手动股票数据采集（异步 Celery task）
+- `POST /api/v1/collect/options` — 触发期权链采集（支持 `snapshot_date`）
 - `GET /api/v1/collect/{task_id}` — 查询采集任务状态
 
-Manual Collection 日期规则：
-- `start_date` 必须 `<= end_date`。
-- `end_date` 不能晚于 `today_trading()`（按交易时区计算）。
-- 若 `end_date == today_trading()` 且当前时间早于开盘（`data_service.market_hours.start`），接口会返回 `422`（不再静默归一化）。
-- 所有日期相关 `422` 错误会在 `detail.suggested_request_body` 中返回可直接重试的建议请求体。
+#### Stock Collection 日期规则 (`end_date`)
+| 场景 | 行为 |
+|------|------|
+| `end_date` 在未来 | `422`，建议改为今日 |
+| `end_date == today` + 盘前 | `422`，建议改为上一交易日 |
+| `end_date == today` + 盘中 | `422`，提示盘后再执行 |
+| `end_date == today` + 盘后 | 正常执行 |
+| `end_date` 在过去 | 正常执行 |
+
+#### Options Collection 日期规则 (`snapshot_date`)
+| 场景 | 行为 |
+|------|------|
+| `snapshot_date` 在未来 | `422`，建议改为今日 |
+| `snapshot_date` 在过去 + 无 historical provider | `422`，提示配置 `options_historical` |
+| `snapshot_date` 在过去 + 有 historical provider | 正常执行（调用 historical provider） |
+| `snapshot_date == today` + 盘前 | `422`，建议改为上一交易日 |
+| `snapshot_date == today` + 盘中 | `422`，提示盘后再执行 |
+| `snapshot_date == today` + 盘后 | 正常执行（live chain） |
+| `snapshot_date` 未指定 | 等同于 today，适用同样规则 |
+
+所有日期相关 `422` 错误会在 `detail.suggested_request_body` 中返回可直接重试的建议请求体。
 
 ## Data Providers (FetcherProtocol)
 配置位于 `config/config.yaml` → `data_service.providers`:
 ```yaml
 providers:
   stock: "yfinance"
-  options: "yfinance"
-  options_historical: "none"   # yfinance 不支持通用历史期权链 API
+  options: "yfinance"                # live option chain provider
+  options_historical: "none"         # historical options (none = not available)
 ```
-说明：当 `options="yfinance"` 且当前时间早于开盘时，`/collect/options`
-允许 `historical_date=previous_trading_day(today_trading())`，并使用盘前 live snapshot
-作为上一交易日回填（落库 `snapshot_date` 会写为请求的 `historical_date`）。
+- `options`: 盘后 live 期权链采集使用的 provider（如 yfinance）
+- `options_historical`: 历史期权数据 provider。设为 `"none"` 时，`snapshot_date` 为过去日期的请求会被拒绝
+- 当配置了支持历史数据的 provider（如 orats、thetadata）时，过去日期的期权采集可正常执行
 
 新增数据源只需：
 1. 实现 `StockFetcherProtocol` / `OptionFetcherProtocol`
