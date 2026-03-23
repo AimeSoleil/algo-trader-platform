@@ -71,7 +71,14 @@ def create_celery_app() -> Celery:
         # Replaces the default file-based beat scheduler so that
         # multiple celery-beat replicas can co-exist safely (only
         # one holds the Redis lock at a time).
-        beat_scheduler="redbeat.RedBeatScheduler",
+        #
+        # In Redis Cluster mode we use a thin subclass that injects a
+        # cluster-aware client; see shared/redbeat_cluster.py.
+        beat_scheduler=(
+            "shared.redbeat_cluster.ClusterRedBeatScheduler"
+            if settings.redis.cluster_enabled
+            else "redbeat.RedBeatScheduler"
+        ),
         redbeat_redis_url=redbeat_url,
         redbeat_key_prefix="redbeat:",          # namespace RedBeat keys (cluster-safe)
         redbeat_lock_timeout=30,  # seconds before a dead beat loses the lock

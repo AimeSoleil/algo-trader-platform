@@ -125,8 +125,10 @@ services:
     build:
       context: .
       dockerfile: services/celery_worker/Dockerfile
-    # RedBeat allows multiple beat instances — only one holds the lock.
-    command: beat -S redbeat.RedBeatScheduler --loglevel=INFO --pidfile=/tmp/celerybeat.pid
+    # Scheduler class is selected in shared/celery_app.py based on Redis mode:
+    # - standalone: redbeat.RedBeatScheduler
+    # - cluster:    shared.redbeat_cluster.ClusterRedBeatScheduler
+    command: beat --loglevel=INFO --pidfile=/tmp/celerybeat.pid
     env_file:
       - .env
     environment:
