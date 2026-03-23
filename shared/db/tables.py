@@ -145,6 +145,31 @@ class OptionDailySnapshot(TimescaleBase):
     )
 
 
+class OptionIVDaily(TimescaleBase):
+    """Daily aggregated IV summary per underlying (derived from intraday 5-min snapshots).
+
+    NOT a hypertable — small table (~symbols × trading_days).
+    Populated by ``aggregate_option_daily`` Celery task after ``batch_flush_to_db``.
+    """
+
+    __tablename__ = "option_iv_daily"
+
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    underlying = Column(String(20), nullable=False)
+    trading_date = Column(Date, nullable=False)
+    avg_iv = Column(Float, nullable=True)
+    atm_iv = Column(Float, nullable=True)
+    call_iv = Column(Float, nullable=True)
+    put_iv = Column(Float, nullable=True)
+    sample_size = Column(Integer, nullable=False, default=0)
+    underlying_price = Column(Float, nullable=True)
+
+    __table_args__ = (
+        UniqueConstraint("underlying", "trading_date", name="uq_option_iv_daily"),
+        Index("idx_option_iv_daily_date", "underlying", "trading_date"),
+    )
+
+
 # ── PostgreSQL business tables ─────────────────────────────
 
 

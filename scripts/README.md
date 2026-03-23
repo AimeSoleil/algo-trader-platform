@@ -113,3 +113,14 @@ docker compose restart celery-signal
 - **Production**: Use `docker compose --profile worker up -d` — automatic restart, healthchecks, log aggregation.
 - Stop local workers with `Ctrl+C` (graceful two-phase shutdown).
 - Recommended: configure `logrotate` for `logs/celery-*.log` in long-running local setups.
+
+## 5) Get one specific option contract quote (OCC symbol)
+
+```bash
+uv run python -m scripts.get_option_contract META260323C00607500
+```
+
+- Input format: `UNDERLYING + YYMMDD + C/P + strike*1000(8 digits)`
+- Example parse: `META260323C00607500` = `META` + `2026-03-23` + `CALL` + `607.5`
+- Data source: `yfinance` live option chain (not historical chain replay)
+- Output includes both `quote` (normalized) and `raw_quote` (raw yfinance row JSON)

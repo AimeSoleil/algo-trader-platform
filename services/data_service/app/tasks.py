@@ -1,8 +1,9 @@
 """Data Service — Celery 盘后批量任务
 
 Pipeline 顺序:
-  1. capture_post_market_data  — 采集 1m bars / daily bar / option chain → 直接写 DB
+  1. capture_post_market_data  — 采集 1m bars / daily bar → 直接写 DB
   2. batch_flush_to_db         — 将盘中 option Parquet 缓存批量入库（仅 intraday 模式）
+  2b. aggregate_option_daily   — 盘中快照聚合 → option_daily + option_iv_daily
   3. detect_and_backfill_gaps  — 缺口检测与回填  (Backfill Service)
   4. compute_daily_signals     — 信号计算          (Signal Service)
   5. generate_daily_blueprint  — 生成交易蓝图      (Analysis Service)
@@ -54,12 +55,9 @@ def capture_post_market_data(self, trading_date: str | None = None) -> dict:
 
 
 async def _capture_post_market_async(trading_date_str: str | None = None) -> dict:
-    from services.data_service.app.converters import contracts_to_rows
-    from services.data_service.app.fetchers.option_fetcher import fetch_option_chain
     from services.data_service.app.fetchers.stock_fetcher import fetch_stock_bars
     from services.data_service.app.storage import (
         write_intraday_stock,
-        write_swing_options,
         write_swing_stock,
     )
 
@@ -80,7 +78,6 @@ async def _capture_post_market_async(trading_date_str: str | None = None) -> dic
         "date": str(td),
         "stock_1min_rows": 0,
         "stock_daily_rows": 0,
-        "option_daily_rows": 0,
         "errors": [],
     }
 
@@ -190,40 +187,8 @@ async def _capture_post_market_async(trading_date_str: str | None = None) -> dic
                     rows=written,
                 )
 
-            # ── (c) 期权链快照 → option_daily ──
-            logger.debug(
-                "capture_post_market.fetch_option_chain_started",
-                log_event="external_call",
-                stage="before_fetch",
-                symbol=symbol,
-                provider="yfinance",
-            )
-            snapshot = await fetch_option_chain(symbol)
-            if snapshot:
-                option_rows = contracts_to_rows(snapshot, include_snapshot_date=True)
-                logger.debug(
-                    "capture_post_market.write_option_daily_started",
-                    log_event="db_write",
-                    stage="before_write",
-                    symbol=symbol,
-                    rows=len(option_rows),
-                )
-                written = await write_swing_options(option_rows)
-                result["option_daily_rows"] += written
-                logger.debug(
-                    "capture_post_market.write_option_daily_finished",
-                    log_event="db_write",
-                    stage="after_write",
-                    symbol=symbol,
-                    rows=written,
-                )
-            else:
-                logger.debug(
-                    "capture_post_market.option_chain_empty",
-                    log_event="external_call",
-                    stage="after_fetch",
-                    symbol=symbol,
-                )
+            # ── (c) option_daily 已改由盘中快照聚合回填（aggregate_option_daily 任务）──
+            # 盘后 yfinance 期权链 bid=ask=0 且 IV 不可靠，不再直接采集
 
         except Exception as e:
             error_msg = f"{symbol}: {str(e)}"
@@ -237,7 +202,6 @@ async def _capture_post_market_async(trading_date_str: str | None = None) -> dic
         trading_date=str(td),
         stock_1min_rows=result["stock_1min_rows"],
         stock_daily_rows=result["stock_daily_rows"],
-        option_daily_rows=result["option_daily_rows"],
         errors=len(result["errors"]),
         duration_ms=round((perf_counter() - started) * 1000, 2),
     )
@@ -348,6 +312,104 @@ async def _batch_flush_to_db_async(trading_date_str: str | None = None) -> dict:
     return result
 
 
+# ── Step 2b: 盘中快照聚合 → option_daily + option_iv_daily ──
+
+
+@celery_app.task(
+    name="data_service.tasks.aggregate_option_daily",
+    bind=True,
+    max_retries=3,
+)
+def aggregate_option_daily(self, trading_date: str | None = None, prev_result=None) -> dict:
+    """Aggregate intraday 5-min snapshots into option_daily + option_iv_daily.
+
+    Must run AFTER batch_flush_to_db (snapshots need to be in DB first).
+    Falls back to yfinance live fetch if no 5-min snapshots exist (cold start).
+    """
+    resolved_trading_date = resolve_trading_date_arg(trading_date, prev_result)
+    logger.debug(
+        "aggregate_option_daily.start",
+        log_event="task_start",
+        stage="entry",
+        task_id=getattr(self.request, "id", None),
+        trading_date=trading_date,
+        resolved_trading_date=resolved_trading_date,
+        retry=getattr(self.request, "retries", 0),
+    )
+    try:
+        return asyncio.run(_aggregate_option_daily_async(resolved_trading_date))
+    except Exception as exc:
+        logger.error("aggregate_option_daily.failed", error=str(exc))
+        raise self.retry(exc=exc, countdown=60) from exc
+
+
+async def _aggregate_option_daily_async(trading_date_str: str | None = None) -> dict:
+    from services.data_service.app.storage import (
+        aggregate_daily_from_snapshots,
+        aggregate_iv_daily,
+    )
+
+    td = date.fromisoformat(trading_date_str) if trading_date_str else today_trading()
+    started = perf_counter()
+
+    result = {
+        "date": str(td),
+        "daily_rows": 0,
+        "daily_symbols": 0,
+        "iv_underlyings": 0,
+        "fallback_used": False,
+    }
+
+    # ── 1) Aggregate last intraday snapshot → option_daily ──
+    daily_result = await aggregate_daily_from_snapshots(td)
+    result["daily_rows"] = daily_result["rows_upserted"]
+    result["daily_symbols"] = daily_result["symbols_covered"]
+
+    # ── 2) If no intraday data, fallback to yfinance live fetch ──
+    if result["daily_rows"] == 0:
+        logger.warning(
+            "aggregate_option_daily.no_intraday_data",
+            trading_date=str(td),
+            reason="no 5-min snapshots found; falling back to yfinance live fetch",
+        )
+        from services.data_service.app.converters import contracts_to_rows
+        from services.data_service.app.fetchers.option_fetcher import fetch_option_chain
+        from services.data_service.app.storage import write_swing_options
+
+        settings = get_settings()
+        for symbol in settings.watchlist:
+            try:
+                snapshot = await fetch_option_chain(symbol)
+                if snapshot:
+                    option_rows = contracts_to_rows(snapshot, include_snapshot_date=True)
+                    for row in option_rows:
+                        row["snapshot_date"] = td
+                    written = await write_swing_options(option_rows)
+                    result["daily_rows"] += written
+            except Exception as e:
+                logger.error(
+                    "aggregate_option_daily.fallback_error",
+                    symbol=symbol,
+                    error=str(e),
+                )
+        result["fallback_used"] = True
+
+    # ── 3) Aggregate IV summary → option_iv_daily ──
+    iv_result = await aggregate_iv_daily(td)
+    result["iv_underlyings"] = iv_result["underlyings_written"]
+
+    logger.info(
+        "aggregate_option_daily.done",
+        trading_date=str(td),
+        daily_rows=result["daily_rows"],
+        daily_symbols=result["daily_symbols"],
+        iv_underlyings=result["iv_underlyings"],
+        fallback_used=result["fallback_used"],
+        duration_ms=round((perf_counter() - started) * 1000, 2),
+    )
+    return result
+
+
 # ── Pipeline 入口 ──────────────────────────────────────────
 
 
@@ -368,6 +430,7 @@ def run_post_market_pipeline(trading_date: str | None = None) -> str:
     pipeline = celery_chain(
         capture_post_market_data.si(td),
         batch_flush_to_db.si(td),
+        aggregate_option_daily.si(td),
         celery_app.signature(
             "backfill_service.tasks.detect_and_backfill_gaps",
             args=[td],

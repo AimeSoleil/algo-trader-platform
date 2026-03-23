@@ -90,6 +90,36 @@ uv run uvicorn services.data_service.app.main:app --host 0.0.0.0 --port 8001 --r
 uv run celery -A shared.celery_app.celery_app worker -Q data -l info
 ```
 
+## 盘后管线 (Post-Market Pipeline)
+
+```
+capture_post_market_data   — 采集 1m bars / daily bar → DB
+  → batch_flush_to_db      — 盘中 Parquet 缓存 → option_5min_snapshots
+  → aggregate_option_daily  — 盘中快照聚合 → option_daily + option_iv_daily
+  → detect_and_backfill_gaps → compute_daily_signals → generate_daily_blueprint
+```
+
+### 为什么需要 option_iv_daily
+
+盘后从 yfinance 采集的期权链数据 **bid=ask=0、IV 不可靠**（Yahoo Finance 在非交易时段清空报价），
+因此 `option_daily` 已改由盘中 5 分钟快照的最后一条回填。
+
+`option_iv_daily` 是在此基础上按标的聚合的 **每日 IV 汇总表**，用于 IV Rank / IV Percentile 计算：
+
+| 查询源 | 扫描行数 (10 标的 × 252 天) | 需要运行时聚合 |
+|--------|---------------------------|--------------|
+| `option_5min_snapshots` | **~39,000,000** (200 合约 × 78 条/天) | ATM 过滤 + AVG + GROUP BY |
+| `option_daily` | **~500,000** (200 合约/标的) | ATM 过滤 + AVG + GROUP BY |
+| **`option_iv_daily`** | **2,520** | **直接读，无聚合** |
+
+字段：
+- `avg_iv` — 全链平均 IV
+- `atm_iv` — ATM 合约 IV（strike 在标的价 ±5% 内），**IV Rank 的核心输入**
+- `call_iv` / `put_iv` — 分 call/put 的平均 IV，用于偏差分析
+- `sample_size` — 参与聚合的合约数（数据质量校验）
+
+写入成本：每天 ~10 行（= watchlist 标的数），存储开销可忽略。
+
 ## Notes
 - Requires TimescaleDB + Postgres + Redis + RabbitMQ running.
 - 首次运行前执行 `uv run python -m scripts.init_db` 初始化表结构。

@@ -21,12 +21,33 @@ logger = get_logger("option_indicators")
 async def get_historical_iv(symbol: str, lookback_days: int = 30) -> list[float]:
     """从 TimescaleDB 获取历史 IV 数据。
 
-    优先使用 ``option_daily`` 日快照；若无数据则 fallback 到
-    ``option_5min_snapshots`` 盘中快照。
+    查询优先级：
+    1. ``option_iv_daily`` — 预聚合的每日 IV 汇总（最可靠）
+    2. ``option_daily``    — 每日期权快照的 IV 均值
+    3. ``option_5min_snapshots`` — 盘中快照兜底
     """
     start_date = today_trading() - timedelta(days=lookback_days)
 
-    # ── 1) Try daily option snapshots first (preferred) ──
+    # ── 1) Prefer pre-aggregated IV daily summary ──
+    async with get_timescale_session() as session:
+        result = await session.execute(
+            text(
+                "SELECT avg_iv "
+                "FROM option_iv_daily "
+                "WHERE underlying = :symbol "
+                "AND trading_date >= :start_date "
+                "AND avg_iv > 0 AND avg_iv < 5 "
+                "ORDER BY trading_date"
+            ),
+            {"symbol": symbol, "start_date": start_date},
+        )
+        iv_daily_rows = [float(row[0]) for row in result.fetchall() if row[0]]
+
+    if iv_daily_rows:
+        return iv_daily_rows
+
+    # ── 2) Fallback: option_daily per-contract snapshots ──
+    logger.debug("get_historical_iv.fallback_option_daily", symbol=symbol)
     async with get_timescale_session() as session:
         result = await session.execute(
             text(
@@ -45,7 +66,7 @@ async def get_historical_iv(symbol: str, lookback_days: int = 30) -> list[float]
     if daily_rows:
         return daily_rows
 
-    # ── 2) Fallback: intraday 5-min snapshots ──
+    # ── 3) Fallback: intraday 5-min snapshots ──
     logger.debug("get_historical_iv.fallback_intraday", symbol=symbol)
     async with get_timescale_session() as session:
         result = await session.execute(

@@ -33,6 +33,7 @@ TIMESCALE_TABLES = [
     "option_5min_snapshots",
     "stock_daily",
     "option_daily",
+    "option_iv_daily",
 ]
 
 BUSINESS_TABLES = [
@@ -255,7 +256,7 @@ async def truncate_all_tables() -> None:
     async with t_engine.begin() as conn:
         await conn.execute(text(
             "TRUNCATE TABLE "
-            "stock_1min_bars, option_5min_snapshots, stock_daily, option_daily "
+            "stock_1min_bars, option_5min_snapshots, stock_daily, option_daily, option_iv_daily "
             "RESTART IDENTITY"
         ))
 
@@ -278,6 +279,7 @@ async def drop_all_tables() -> None:
         await conn.execute(text("DROP TABLE IF EXISTS option_5min_snapshots CASCADE"))
         await conn.execute(text("DROP TABLE IF EXISTS stock_1min_bars CASCADE"))
         await conn.execute(text("DROP TABLE IF EXISTS option_daily CASCADE"))
+        await conn.execute(text("DROP TABLE IF EXISTS option_iv_daily CASCADE"))
         await conn.execute(text("DROP TABLE IF EXISTS stock_daily CASCADE"))
 
     p_engine = get_postgres_engine()

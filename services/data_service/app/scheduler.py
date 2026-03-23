@@ -69,7 +69,7 @@ async def _capture_intraday(state: SchedulerState) -> None:
     for symbol in symbols:
         snapshot = await fetch_option_chain(symbol)
         if snapshot:
-            rows = contracts_to_rows(snapshot, top_expiries=intraday_cfg.max_option_expiries)
+            rows = contracts_to_rows(snapshot, top_expiries=None)  # capture ALL expiries for aggregation
             state.cache.update_option_chain(symbol, rows)
             captured += 1
 
