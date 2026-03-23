@@ -1,0 +1,115 @@
+# ═══════════════════════════════════════════════════════════
+# Application Services — FastAPI microservices
+# ═══════════════════════════════════════════════════════════
+#
+# Usage (always combined with base):
+#   docker compose -f docker-compose.yml -f docker-compose.app.yml up -d
+#
+# Scale horizontally (container_name intentionally omitted):
+#   docker compose -f docker-compose.yml -f docker-compose.app.yml up -d \
+#     --scale data_service=2 --scale trade_service=2
+
+services:
+
+  data_service:
+    build:
+      context: .
+      dockerfile: services/data_service/Dockerfile
+    env_file:
+      - .env
+    environment:
+      CACHE_DIR: /tmp/algo_trader_cache
+      PYTHONPATH: /app
+    ports:
+      - "8001"
+    depends_on:
+      timescaledb:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+      redis-cluster-init:
+        condition: service_completed_successfully
+      rabbitmq:
+        condition: service_healthy
+    networks:
+      - algo_trader_net
+
+  signal_service:
+    build:
+      context: .
+      dockerfile: services/signal_service/Dockerfile
+    env_file:
+      - .env
+    environment:
+      PYTHONPATH: /app
+    ports:
+      - "8002"
+    depends_on:
+      timescaledb:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+      redis-cluster-init:
+        condition: service_completed_successfully
+      rabbitmq:
+        condition: service_healthy
+    networks:
+      - algo_trader_net
+
+  analysis_service:
+    build:
+      context: .
+      dockerfile: services/analysis_service/Dockerfile
+    env_file:
+      - .env
+    environment:
+      PYTHONPATH: /app
+    ports:
+      - "8003"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis-cluster-init:
+        condition: service_completed_successfully
+      rabbitmq:
+        condition: service_healthy
+    networks:
+      - algo_trader_net
+
+  trade_service:
+    build:
+      context: .
+      dockerfile: services/trade_service/Dockerfile
+    env_file:
+      - .env
+    environment:
+      PYTHONPATH: /app
+    ports:
+      - "8004"
+    depends_on:
+      data_service:
+        condition: service_started
+      postgres:
+        condition: service_healthy
+      redis-cluster-init:
+        condition: service_completed_successfully
+    networks:
+      - algo_trader_net
+
+  gateway:
+    build:
+      context: .
+      dockerfile: services/gateway_service/Dockerfile
+    container_name: algo_gateway  # single entry point — no scaling
+    env_file:
+      - .env
+    environment:
+      PYTHONPATH: /app
+    ports:
+      - "8000:8000"
+    networks:
+      - algo_trader_net
+
+networks:
+  algo_trader_net:
+    external: true

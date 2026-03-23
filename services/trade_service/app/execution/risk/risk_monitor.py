@@ -9,10 +9,10 @@ from __future__ import annotations
 from time import perf_counter
 from typing import Any
 
-from redis.asyncio import Redis
+from shared.redis_pool import RedisClient
 
 from shared.config import get_settings
-from shared.utils import get_logger, now_utc
+from shared.utils import get_logger, now_utc, today_trading
 
 from services.trade_service.app.audit import log_event
 from services.trade_service.app.broker.base import BrokerInterface
@@ -21,7 +21,9 @@ from services.trade_service.app.execution.risk.risk_engine import (
     evaluate_portfolio_stop_loss,
     evaluate_position_stop_loss,
     in_cooldown,
+    in_cooldown_redis,
     mark_cooldown,
+    mark_cooldown_redis,
     should_run_risk_check,
 )
 from services.trade_service.app.helpers import safe_float, safe_int
@@ -41,6 +43,8 @@ async def _send_stoploss_market_order(
     symbol: str,
     side: str,
     qty: int,
+    *,
+    idempotency_key: str | None = None,
 ) -> tuple[bool, dict[str, Any]]:
     order_side = "sell" if side == "long" else "buy"
     payload = {
@@ -51,7 +55,7 @@ async def _send_stoploss_market_order(
         "reason": "stop_loss",
     }
     try:
-        result = await broker.place_order(payload)
+        result = await broker.place_order(payload, idempotency_key=idempotency_key)
     except Exception as exc:
         return False, {"error": str(exc), "order": payload}
 
@@ -62,7 +66,7 @@ async def _send_stoploss_market_order(
 
 async def run_stop_loss_checks(
     runtime_state: ExecutionRuntimeState,
-    redis_client: Redis,
+    redis_client: RedisClient,
     broker: BrokerInterface,
 ) -> None:
     settings = get_settings()
@@ -105,7 +109,8 @@ async def run_stop_loss_checks(
                 symbol = str(position.get("symbol") or "").upper().strip()
                 if not symbol:
                     continue
-                if in_cooldown(symbol, runtime_state.stoploss_cooldowns, now):
+                # Prefer Redis cooldown (distributed); fall back to in-memory
+                if await in_cooldown_redis(symbol) or in_cooldown(symbol, runtime_state.stoploss_cooldowns, now):
                     continue
                 targets.append((position, "portfolio_stop_loss"))
         else:
@@ -113,7 +118,7 @@ async def run_stop_loss_checks(
                 symbol = str(position.get("symbol") or "").upper().strip()
                 if not symbol:
                     continue
-                if in_cooldown(symbol, runtime_state.stoploss_cooldowns, now):
+                if await in_cooldown_redis(symbol) or in_cooldown(symbol, runtime_state.stoploss_cooldowns, now):
                     continue
                 if evaluate_position_stop_loss(
                     unrealized_pnl=safe_float(position.get("unrealized_pnl"), 0.0),
@@ -148,11 +153,17 @@ async def run_stop_loss_checks(
             if not symbol or qty <= 0:
                 continue
 
+            # Build idempotency key: stoploss:{symbol}:{date}:{direction}
+            trading_date = today_trading().isoformat()
+            order_direction = "sell" if side != "short" else "buy"
+            idem_key = f"stoploss:{symbol}:{trading_date}:{order_direction}"
+
             accepted, result = await _send_stoploss_market_order(
                 broker=broker,
                 symbol=symbol,
                 side="short" if side == "short" else "long",
                 qty=qty,
+                idempotency_key=idem_key,
             )
 
             event_payload = {
@@ -167,6 +178,8 @@ async def run_stop_loss_checks(
 
             if accepted:
                 triggered_count += 1
+                # Mark cooldown in both Redis (distributed) and in-memory (local)
+                await mark_cooldown_redis(symbol, stop_loss.cooldown_seconds)
                 mark_cooldown(
                     symbol=symbol,
                     cooldowns=runtime_state.stoploss_cooldowns,

@@ -14,7 +14,15 @@ class BrokerInterface(ABC):
         """Gracefully disconnect from the broker. Default: no-op."""
 
     @abstractmethod
-    async def place_order(self, order: dict[str, Any]) -> dict[str, Any]:
+    async def place_order(
+        self,
+        order: dict[str, Any],
+        *,
+        idempotency_key: str | None = None,
+    ) -> dict[str, Any]:
+        """Submit an order.  If *idempotency_key* is provided the broker
+        implementation should ensure that the same key is never executed
+        twice (returning the previous result instead)."""
         raise NotImplementedError
 
     @abstractmethod

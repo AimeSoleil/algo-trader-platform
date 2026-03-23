@@ -31,6 +31,8 @@ async def lifespan(app: FastAPI):
     )
     logger.info("signal_service.starting")
     yield
+    from shared.redis_pool import close_redis_pool
+    await close_redis_pool()
     logger.info("signal_service.stopped")
 
 
@@ -64,6 +66,15 @@ async def health_check():
         deps["postgres"] = "ok"
     except Exception as exc:
         deps["postgres"] = f"error: {exc}"
+
+    # Redis
+    try:
+        from shared.redis_pool import get_redis
+        r = get_redis()
+        await r.ping()
+        deps["redis"] = "ok"
+    except Exception as exc:
+        deps["redis"] = f"error: {exc}"
 
     status = "ok" if all(v == "ok" for v in deps.values()) else "degraded"
     return {"status": status, "service": "signal_service", "dependencies": deps}

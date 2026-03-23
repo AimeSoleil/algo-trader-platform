@@ -80,8 +80,16 @@ class FutuBroker(BrokerInterface):
             self._connected = False
             logger.info("broker_futu.disconnected")
 
-    async def place_order(self, order: dict[str, Any]) -> dict[str, Any]:
+    async def place_order(
+        self,
+        order: dict[str, Any],
+        *,
+        idempotency_key: str | None = None,
+    ) -> dict[str, Any]:
         """Place an order via Futu.
+
+        When *idempotency_key* is provided, implementations should use it
+        as the client order ID to prevent duplicate submissions.
 
         SDK mapping::
 

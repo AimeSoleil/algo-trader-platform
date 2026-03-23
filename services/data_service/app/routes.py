@@ -6,7 +6,7 @@ from typing import Literal
 
 from celery.result import AsyncResult
 from fastapi import APIRouter, HTTPException, Query
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 from sqlalchemy import text
 
 from services.data_service.app.scheduler import (
@@ -18,7 +18,6 @@ from shared.celery_app import celery_app
 from shared.config import get_settings
 from shared.db.session import get_timescale_session
 from shared.utils import (
-    after_market_close,
     before_market_open,
     is_market_open,
     now_market,
@@ -120,18 +119,6 @@ def _build_collect_suggested_body(
         "start_date": start_date.isoformat(),
         "end_date": end_date.isoformat(),
         "data_types": req.data_types,
-    }
-
-
-def _build_options_collect_suggested_body(
-    req: "OptionsCollectRequest",
-    *,
-    snapshot_date: date,
-) -> dict:
-    """Build a copy-pasteable suggested request body for options collect API."""
-    return {
-        "symbols": req.symbols,
-        "snapshot_date": snapshot_date.isoformat(),
     }
 
 
@@ -533,163 +520,3 @@ async def get_collection_status(task_id: str):
         response["error"] = str(result.result)
 
     return response
-
-
-# ── Options collection endpoints ───────────────────────────
-
-
-class OptionsCollectRequest(BaseModel):
-    """Manual options data collection request."""
-    symbols: list[str] = Field(..., min_length=1, description="Ticker symbols to collect options for")
-    snapshot_date: date | None = Field(
-        None,
-        description="Target snapshot date for options data (aligned with stock trading_date). "
-                    "If omitted, defaults to today. "
-                    "Past dates require a historical provider (options_historical config). "
-                    "Today's date is only allowed after market close.",
-    )
-
-
-class OptionsCollectResponse(BaseModel):
-    task_id: str
-    status: str = "queued"
-    message: str = ""
-    historical_provider: str | None = None
-
-
-@router.post("/collect/options", status_code=202, response_model=OptionsCollectResponse)
-async def trigger_options_collection(req: OptionsCollectRequest):
-    """Collect option chain data for specified symbols.
-
-    Date validation rules (for ``snapshot_date``):
-    - Future dates → 422
-    - Previous trading day + pre-market → proceed (live chain still reflects yesterday)
-    - Other past dates without historical provider → 422
-    - Other past dates with historical provider → proceed normally
-    - Today + pre-market → 422, suggest previous trading day
-    - Today + market open → 422, suggest run after market close
-    - Today + post-market → proceed normally (live chain)
-    - None → treated as today, same rules apply
-    """
-    if not req.symbols:
-        raise HTTPException(status_code=422, detail="symbols list must not be empty")
-
-    symbols = [s.strip().upper() for s in req.symbols if s.strip()]
-    if not symbols:
-        raise HTTPException(status_code=422, detail="symbols list must not be empty")
-
-    settings = get_settings()
-    historical_provider = settings.data_service.providers.options_historical.strip().lower()
-    options_provider = settings.data_service.providers.options.strip().lower()
-    mkt_start = settings.data_service.market_hours.start
-    mkt_end = settings.data_service.market_hours.end
-    today = today_trading()
-
-    # Default snapshot_date to today if not provided
-    effective_date = req.snapshot_date if req.snapshot_date is not None else today
-
-    # ── Future check ──
-    if effective_date > today:
-        raise HTTPException(
-            status_code=422,
-            detail={
-                "error": "snapshot_date cannot be in the future",
-                "suggested_request_body": _build_options_collect_suggested_body(
-                    req, snapshot_date=today,
-                ),
-            },
-        )
-
-    # ── Past date: previous trading day + pre-market → live chain still valid ──
-    prev_day = previous_trading_day(today)
-    if effective_date < today and effective_date == prev_day and before_market_open():
-        task = celery_app.send_task(
-            "data_service.tasks.collect_options",
-            args=[symbols],
-            kwargs={"snapshot_date": effective_date.isoformat()},
-            queue="data",
-        )
-        return OptionsCollectResponse(
-            task_id=task.id,
-            status="queued",
-            message=(
-                f"Options collection queued for {len(symbols)} symbol(s), "
-                f"snapshot_date={effective_date} (pre-market, live chain reflects yesterday)"
-            ),
-        )
-
-    # ── Other past dates ──
-    if effective_date < today:
-        if historical_provider == "none":
-            raise HTTPException(
-                status_code=422,
-                detail={
-                    "error": (
-                        f"snapshot_date {effective_date} is in the past. "
-                        f"Provider '{options_provider}' only supports live data. "
-                        f"Configure data_service.providers.options_historical to enable "
-                        f"historical options collection."
-                    ),
-                    "suggested_request_body": _build_options_collect_suggested_body(
-                        req, snapshot_date=today,
-                    ),
-                },
-            )
-
-        # Historical provider available → dispatch to it
-        task = celery_app.send_task(
-            "data_service.tasks.collect_options",
-            args=[symbols],
-            kwargs={"snapshot_date": effective_date.isoformat()},
-            queue="data",
-        )
-        return OptionsCollectResponse(
-            task_id=task.id,
-            status="queued",
-            message=(
-                f"Historical options collection queued for {len(symbols)} symbol(s), "
-                f"snapshot_date={effective_date}"
-            ),
-            historical_provider=historical_provider,
-        )
-
-    # ── Today: market-hours check ──
-    if before_market_open():
-        raise HTTPException(
-            status_code=422,
-            detail={
-                "error": (
-                    f"Market has not opened yet ({now_market().strftime('%H:%M')} < {mkt_start}). "
-                    f"Option chain for today is not yet available."
-                ),
-                "suggested_request_body": _build_options_collect_suggested_body(
-                    req, snapshot_date=previous_trading_day(today),
-                ),
-            },
-        )
-
-    if is_market_open():
-        raise HTTPException(
-            status_code=422,
-            detail={
-                "error": (
-                    f"Market is currently open ({now_market().strftime('%H:%M')}, closes {mkt_end}). "
-                    f"Option chain data is only reliable after market close. "
-                    f"Suggestion: run collection after {mkt_end}."
-                ),
-            },
-        )
-
-    # ── Post-market → proceed with live collection ──
-    task = celery_app.send_task(
-        "data_service.tasks.collect_options",
-        args=[symbols],
-        kwargs={"snapshot_date": today.isoformat()},
-        queue="data",
-    )
-
-    return OptionsCollectResponse(
-        task_id=task.id,
-        status="queued",
-        message=f"Options collection queued for {len(symbols)} symbol(s), snapshot_date={today}",
-    )

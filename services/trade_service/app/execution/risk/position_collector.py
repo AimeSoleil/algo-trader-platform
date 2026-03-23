@@ -8,7 +8,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Any
 
-from redis.asyncio import Redis
+from shared.redis_pool import RedisClient
 
 from shared.utils import get_logger
 
@@ -75,7 +75,7 @@ async def positions_from_broker(broker: BrokerInterface) -> list[dict[str, Any]]
     return normalised
 
 
-async def positions_from_trade_portfolio(redis_client: Redis) -> list[dict[str, Any]]:
+async def positions_from_trade_portfolio(redis_client: RedisClient) -> list[dict[str, Any]]:
     portfolio = await get_positions()
     rows = portfolio.get("positions", []) if isinstance(portfolio, Mapping) else []
 
@@ -119,7 +119,7 @@ async def positions_from_trade_portfolio(redis_client: Redis) -> list[dict[str, 
 
 
 async def collect_risk_positions(
-    redis_client: Redis,
+    redis_client: RedisClient,
     broker: BrokerInterface,
 ) -> tuple[list[dict[str, Any]], str]:
     broker_positions = await positions_from_broker(broker)

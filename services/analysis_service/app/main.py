@@ -29,6 +29,8 @@ async def lifespan(app: FastAPI):
     )
     logger.info("analysis_service.starting")
     yield
+    from shared.redis_pool import close_redis_pool
+    await close_redis_pool()
     logger.info("analysis_service.stopped")
 
 
@@ -61,12 +63,9 @@ async def health_check():
 
     # Redis
     try:
-        from redis.asyncio import Redis
-        from shared.config import get_settings
-        settings = get_settings()
-        r = Redis.from_url(settings.redis.url)
+        from shared.redis_pool import get_redis
+        r = get_redis()
         await r.ping()
-        await r.aclose()
         checks["redis"] = "ok"
     except Exception as e:
         checks["redis"] = f"error: {e}"

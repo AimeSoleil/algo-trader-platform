@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from redis.asyncio import Redis
+from shared.redis_pool import RedisClient
 
 
 def safe_float(value: Any, default: float = 0.0) -> float:
@@ -26,7 +26,7 @@ def safe_int(value: Any, default: int = 0) -> int:
         return default
 
 
-async def load_redis_price(redis_client: Redis, symbol: str) -> float | None:
+async def load_redis_price(redis_client: RedisClient, symbol: str) -> float | None:
     """Fetch latest quote price from Redis ``market:quote:{symbol}``."""
     quote = await redis_client.hgetall(f"market:quote:{symbol}")
     if not quote:

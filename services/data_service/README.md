@@ -33,7 +33,6 @@
 
 ### Manual Collection
 - `POST /api/v1/collect/stock` — 触发手动股票数据采集（异步 Celery task）
-- `POST /api/v1/collect/options` — 触发期权链采集（支持 `snapshot_date`）
 - `GET /api/v1/collect/{task_id}` — 查询采集任务状态
 
 #### Stock Collection 日期规则 (`end_date`)
@@ -45,18 +44,6 @@
 | `end_date == today` + 盘后 | 正常执行 |
 | `end_date` 在过去 | 正常执行 |
 
-#### Options Collection 日期规则 (`snapshot_date`)
-| 场景 | 行为 |
-|------|------|
-| `snapshot_date` 在未来 | `422`，建议改为今日 |
-| `snapshot_date` == 上一交易日 + 盘前 | 正常执行（live chain 仍反映昨日收盘） |
-| `snapshot_date` 在过去 + 无 historical provider | `422`，提示配置 `options_historical` |
-| `snapshot_date` 在过去 + 有 historical provider | 正常执行（调用 historical provider） |
-| `snapshot_date == today` + 盘前 | `422`，建议改为上一交易日 |
-| `snapshot_date == today` + 盘中 | `422`，提示盘后再执行 |
-| `snapshot_date == today` + 盘后 | 正常执行（live chain） |
-| `snapshot_date` 未指定 | 等同于 today，适用同样规则 |
-
 所有日期相关 `422` 错误会在 `detail.suggested_request_body` 中返回可直接重试的建议请求体。
 
 ## Data Providers (FetcherProtocol)
@@ -64,12 +51,9 @@
 ```yaml
 providers:
   stock: "yfinance"
-  options: "yfinance"                # live option chain provider
-  options_historical: "none"         # historical options (none = not available)
+  options: "yfinance"                # intraday option chain provider (盘中 5min 采集)
 ```
-- `options`: 盘后 live 期权链采集使用的 provider（如 yfinance）
-- `options_historical`: 历史期权数据 provider。设为 `"none"` 时，`snapshot_date` 为过去日期的请求会被拒绝
-- 当配置了支持历史数据的 provider（如 orats、thetadata）时，过去日期的期权采集可正常执行
+- `options`: 盘中 5 分钟期权链采集使用的 provider（如 yfinance）。`option_daily` 不再盘后直接采集，改由 `aggregate_option_daily` 从盘中快照聚合
 
 新增数据源只需：
 1. 实现 `StockFetcherProtocol` / `OptionFetcherProtocol`
@@ -93,16 +77,20 @@ uv run celery -A shared.celery_app.celery_app worker -Q data -l info
 ## 盘后管线 (Post-Market Pipeline)
 
 ```
-capture_post_market_data   — 采集 1m bars / daily bar → DB
+capture_post_market_data   — 仅采集 1m bars / daily bar → DB（不含期权）
   → batch_flush_to_db      — 盘中 Parquet 缓存 → option_5min_snapshots
-  → aggregate_option_daily  — 盘中快照聚合 → option_daily + option_iv_daily
+  → aggregate_option_daily  — 仅从 option_5min_snapshots 聚合 → option_daily + option_iv_daily
   → detect_and_backfill_gaps → compute_daily_signals → generate_daily_blueprint
 ```
 
+> **注意**：`capture_post_market_data` 不再采集期权数据。盘后 yfinance 期权链 bid=ask=0、IV 不可靠
+> （Yahoo Finance 在非交易时段清空报价）。`aggregate_option_daily` 也不会 fallback 到 yfinance —
+> 如果当天没有盘中 5 分钟快照（intraday 未启用或非交易日），该天的 `option_daily` 和 `option_iv_daily`
+> 为空，这是预期行为。
+
 ### 为什么需要 option_iv_daily
 
-盘后从 yfinance 采集的期权链数据 **bid=ask=0、IV 不可靠**（Yahoo Finance 在非交易时段清空报价），
-因此 `option_daily` 已改由盘中 5 分钟快照的最后一条回填。
+`option_daily` 已改由盘中 5 分钟快照的最后一条回填（而非盘后 yfinance 采集）。
 
 `option_iv_daily` 是在此基础上按标的聚合的 **每日 IV 汇总表**，用于 IV Rank / IV Percentile 计算：
 

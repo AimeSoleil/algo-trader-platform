@@ -10,6 +10,7 @@ from services.data_service.app.routes import router
 from services.data_service.app.scheduler import start_data_scheduler, stop_scheduler
 from shared.config import get_settings
 from shared.metrics import setup_metrics
+from shared.redis_pool import close_redis_pool, get_redis
 from shared.utils import get_logger, setup_logging
 
 logger = get_logger("data_service")
@@ -41,9 +42,13 @@ async def lifespan(app: FastAPI):
 
     start_data_scheduler(cache, settings)
 
+    # Eagerly initialise the shared Redis pool (used by distributed locks)
+    get_redis()
+
     yield
 
     stop_scheduler()
+    await close_redis_pool()
     logger.info("data_service.stopped")
 
 

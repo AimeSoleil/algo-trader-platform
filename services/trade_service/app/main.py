@@ -8,6 +8,7 @@ from fastapi.responses import RedirectResponse
 
 from shared.config import get_settings
 from shared.metrics import setup_metrics
+from shared.redis_pool import close_redis_pool, get_redis
 from shared.utils import get_logger, setup_logging
 
 from services.trade_service.app.execution.routes import router as execution_router
@@ -38,12 +39,17 @@ async def lifespan(app: FastAPI):
     logger.info("trade_service.starting", execution_interval=settings.trading.execution_interval)
 
     await _startup_broker()
+
+    # Eagerly initialise the shared Redis pool (used by distributed locks & tick)
+    get_redis()
+
     start_execution_scheduler(runtime_state)
 
     yield
 
     stop_execution_scheduler()
     await _shutdown_broker()
+    await close_redis_pool()
     logger.info("trade_service.stopped")
 
 

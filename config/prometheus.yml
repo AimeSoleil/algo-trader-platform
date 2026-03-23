@@ -7,21 +7,32 @@ scrape_configs:
     static_configs:
       - targets: ["algo_gateway:8000"]
 
+  # Service names match docker-compose service names (Docker DNS).
+  # When scaled to N replicas, Docker DNS round-robins across instances.
+  # For per-instance scraping with scaling, consider dns_sd_configs.
   - job_name: data_service
-    static_configs:
-      - targets: ["algo_data_service:8001"]
+    dns_sd_configs:
+      - names: ["data_service"]
+        type: A
+        port: 8001
 
   - job_name: signal_service
-    static_configs:
-      - targets: ["algo_signal_service:8002"]
+    dns_sd_configs:
+      - names: ["signal_service"]
+        type: A
+        port: 8002
 
   - job_name: analysis_service
-    static_configs:
-      - targets: ["algo_analysis_service:8003"]
+    dns_sd_configs:
+      - names: ["analysis_service"]
+        type: A
+        port: 8003
 
   - job_name: trade_service
-    static_configs:
-      - targets: ["algo_trade_service:8004"]
+    dns_sd_configs:
+      - names: ["trade_service"]
+        type: A
+        port: 8004
 
   - job_name: flower
     static_configs:

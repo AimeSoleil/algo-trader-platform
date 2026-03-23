@@ -1,0 +1,183 @@
+# ═══════════════════════════════════════════════════════════
+# Celery Workers — background task processing
+# ═══════════════════════════════════════════════════════════
+#
+# Usage (always combined with base):
+#   docker compose -f docker-compose.yml -f docker-compose.worker.yml up -d
+#
+# Scale workers per queue:
+#   docker compose -f docker-compose.yml -f docker-compose.worker.yml up -d \
+#     --scale celery-data=2 --scale celery-signal=2
+
+services:
+
+  celery-data:
+    build:
+      context: .
+      dockerfile: services/celery_worker/Dockerfile
+    command: worker -Q data -n data@%h --loglevel=INFO
+    env_file:
+      - .env
+    environment:
+      PYTHONPATH: /app
+    restart: unless-stopped
+    depends_on:
+      timescaledb:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+      redis-cluster-init:
+        condition: service_completed_successfully
+      rabbitmq:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "celery", "-A", "shared.celery_app.celery_app", "inspect", "ping", "-d", "celery@data", "--timeout=5"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    networks:
+      - algo_trader_net
+
+  celery-backfill:
+    build:
+      context: .
+      dockerfile: services/celery_worker/Dockerfile
+    command: worker -Q backfill -n backfill@%h --loglevel=INFO
+    env_file:
+      - .env
+    environment:
+      PYTHONPATH: /app
+    restart: unless-stopped
+    depends_on:
+      timescaledb:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+      redis-cluster-init:
+        condition: service_completed_successfully
+      rabbitmq:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "celery", "-A", "shared.celery_app.celery_app", "inspect", "ping", "-d", "celery@backfill", "--timeout=5"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    networks:
+      - algo_trader_net
+
+  celery-signal:
+    build:
+      context: .
+      dockerfile: services/celery_worker/Dockerfile
+    command: worker -Q signal -n signal@%h --loglevel=INFO
+    env_file:
+      - .env
+    environment:
+      PYTHONPATH: /app
+    restart: unless-stopped
+    depends_on:
+      timescaledb:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+      redis-cluster-init:
+        condition: service_completed_successfully
+      rabbitmq:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "celery", "-A", "shared.celery_app.celery_app", "inspect", "ping", "-d", "celery@signal", "--timeout=5"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    networks:
+      - algo_trader_net
+
+  celery-analysis:
+    build:
+      context: .
+      dockerfile: services/celery_worker/Dockerfile
+    command: worker -Q analysis -n analysis@%h --loglevel=INFO
+    env_file:
+      - .env
+    environment:
+      PYTHONPATH: /app
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis-cluster-init:
+        condition: service_completed_successfully
+      rabbitmq:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "celery", "-A", "shared.celery_app.celery_app", "inspect", "ping", "-d", "celery@analysis", "--timeout=5"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    networks:
+      - algo_trader_net
+
+  celery-beat:
+    build:
+      context: .
+      dockerfile: services/celery_worker/Dockerfile
+    # RedBeat allows multiple beat instances — only one holds the lock.
+    command: beat -S redbeat.RedBeatScheduler --loglevel=INFO --pidfile=/tmp/celerybeat.pid
+    env_file:
+      - .env
+    environment:
+      PYTHONPATH: /app
+    restart: unless-stopped
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+      redis-cluster-init:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD-SHELL", "test -f /tmp/celerybeat.pid && kill -0 $(cat /tmp/celerybeat.pid)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    networks:
+      - algo_trader_net
+
+  flower:
+    build:
+      context: .
+      dockerfile: services/celery_worker/Dockerfile
+    container_name: algo_flower
+    entrypoint: ["celery", "-A", "shared.celery_app.celery_app"]
+    command:
+      - flower
+      - --port=5555
+      - --basic-auth=${FLOWER_USER:-admin}:${FLOWER_PASSWORD:-changeme}
+      - --broker_api=http://${RABBITMQ_USER:-trader}:${RABBITMQ_PASS:-trader_dev}@rabbitmq:15672/api/
+      - --persistent=true
+      - --db=/tmp/flower.db
+    env_file:
+      - .env
+    environment:
+      PYTHONPATH: /app
+    ports:
+      - "5555:5555"
+    restart: unless-stopped
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:5555/healthcheck || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    networks:
+      - algo_trader_net
+
+networks:
+  algo_trader_net:
+    external: true

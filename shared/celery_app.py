@@ -22,15 +22,23 @@ def _on_celery_setup_logger(**kwargs):
 def create_celery_app() -> Celery:
     settings = get_settings()
 
-    # Celery result backend: Redis DB 1
-    # Strip trailing db number from base URL (e.g. redis://host:6379/0 → redis://host:6379)
-    # then append /1 so results go to a separate DB.
-    redis_base = settings.redis.url.rsplit("/", 1)[0]
+    # ── Redis URL construction ──────────────────────────────
+    # Cluster mode: all DBs merge to 0; isolation via key prefix.
+    # Standalone:   DB 1 for results, DB 2 for RedBeat.
+    if settings.redis.cluster_enabled and settings.redis.cluster_nodes:
+        _first = settings.redis.cluster_nodes[0]
+        redis_base = f"redis://{_first['host']}:{_first['port']}"
+        backend_url = f"{redis_base}/0"
+        redbeat_url = f"{redis_base}/0"
+    else:
+        redis_base = settings.redis.url.rsplit("/", 1)[0]
+        backend_url = f"{redis_base}/1"
+        redbeat_url = f"{redis_base}/2"
 
     app = Celery(
         "algo_trader",
         broker=settings.rabbitmq.url,
-        backend=f"{redis_base}/1",
+        backend=backend_url,
         include=[
             "services.data_service.app.tasks",
             "services.backfill_service.app.tasks",
@@ -50,6 +58,8 @@ def create_celery_app() -> Celery:
         task_track_started=True,
         task_acks_late=True,
         worker_prefetch_multiplier=1,
+        # Key prefix for result backend (isolates Celery keys in cluster mode)
+        result_backend_transport_options={"global_keyprefix": "celery:result:"},
         # Task routes — each service handles its own tasks
         task_routes={
             "data_service.tasks.*": {"queue": "data"},
@@ -57,6 +67,14 @@ def create_celery_app() -> Celery:
             "signal_service.tasks.*": {"queue": "signal"},
             "analysis_service.tasks.*": {"queue": "analysis"},
         },
+        # ── RedBeat — distributed Beat scheduler ──────────────
+        # Replaces the default file-based beat scheduler so that
+        # multiple celery-beat replicas can co-exist safely (only
+        # one holds the Redis lock at a time).
+        beat_scheduler="redbeat.RedBeatScheduler",
+        redbeat_redis_url=redbeat_url,
+        redbeat_key_prefix="redbeat:",          # namespace RedBeat keys (cluster-safe)
+        redbeat_lock_timeout=30,  # seconds before a dead beat loses the lock
     )
 
     # ── 盘后流水线调度 (Celery Beat) ──────────────────────────

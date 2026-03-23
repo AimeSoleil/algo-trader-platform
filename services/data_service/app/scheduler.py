@@ -17,6 +17,7 @@ from services.data_service.app.converters import contracts_to_rows
 from services.data_service.app.fetchers.option_fetcher import fetch_option_chain
 from services.data_service.app.storage import apply_intraday_retention
 from shared.config.settings import Settings
+from shared.distributed_lock import distributed_once
 from shared.utils import get_logger, is_market_open
 
 logger = get_logger("scheduler")
@@ -50,8 +51,13 @@ def get_data_service_config() -> dict:
 
 # ── 盘中期权链采集 ─────────────────────────────────────────
 
+@distributed_once("data:intraday_capture", ttl=240, service="data_service")
 async def _capture_intraday(state: SchedulerState) -> None:
-    """盘中定时任务：每 5 分钟采集期权链快照 → L1 + L2 缓存"""
+    """盘中定时任务：每 5 分钟采集期权链快照 → L1 + L2 缓存
+
+    Wrapped with ``@distributed_once`` so that when multiple data_service
+    replicas are running, only one instance executes the capture per tick.
+    """
     if not is_market_open():
         if not state.outside_market_logged:
             logger.info("scheduler.intraday_skipped", reason="outside_market_hours")

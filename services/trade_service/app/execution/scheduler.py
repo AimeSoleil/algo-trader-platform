@@ -13,10 +13,11 @@ from typing import Any
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.interval import IntervalTrigger
-from redis.asyncio import Redis
 
 from shared.config import get_settings
 from shared.data_quality import DataQualityConfig, apply_quality_gate
+from shared.distributed_lock import distributed_once
+from shared.redis_pool import get_redis
 from shared.utils import get_logger, now_utc
 
 from services.trade_service.app.broker import create_broker
@@ -101,7 +102,13 @@ def _apply_quality_gate_to_plan(
     return plan
 
 
+@distributed_once("trade:execution_tick", ttl=270, service="trade_service")
 async def _evaluation_tick(runtime_state: ExecutionRuntimeState) -> None:
+    """Main execution tick — protected by distributed lock.
+
+    When multiple trade_service replicas run, only the instance that
+    acquires the Redis lock will execute the tick; others skip silently.
+    """
     tick_started = perf_counter()
     settings = get_settings()
     broker = _get_broker()
@@ -119,7 +126,7 @@ async def _evaluation_tick(runtime_state: ExecutionRuntimeState) -> None:
         logger.info("execution.tick_skipped", reason="paused")
         return
 
-    redis_client = Redis.from_url(settings.redis.url, decode_responses=True)
+    redis_client = get_redis()
     engine = BlueprintRuleEngine()
     quotes_found = 0
     symbols_evaluated = 0
@@ -179,8 +186,6 @@ async def _evaluation_tick(runtime_state: ExecutionRuntimeState) -> None:
             duration_ms=round((perf_counter() - tick_started) * 1000, 2),
         )
         raise
-    finally:
-        await redis_client.aclose()
 
 
 async def _startup_broker() -> None:
@@ -218,6 +223,8 @@ def start_execution_scheduler(runtime_state: ExecutionRuntimeState) -> None:
         id="execution_tick",
         name="blueprint_execution_tick",
         replace_existing=True,
+        coalesce=True,
+        max_instances=1,
     )
     _scheduler.start()
     logger.info("execution.scheduler_started", interval=settings.trading.execution_interval)

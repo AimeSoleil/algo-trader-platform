@@ -1,5 +1,18 @@
+# ═══════════════════════════════════════════════════════════
+# Infrastructure — databases, message brokers, observability
+# ═══════════════════════════════════════════════════════════
+#
+# Usage:
+#   Infra only:      docker compose up -d
+#   + App services:  docker compose -f docker-compose.yml -f docker-compose.app.yml up -d
+#   + Workers:       docker compose -f docker-compose.yml -f docker-compose.app.yml -f docker-compose.worker.yml up -d
+#
+# Or set in .env:
+#   COMPOSE_FILE=docker-compose.yml:docker-compose.app.yml:docker-compose.worker.yml
+
 services:
-  #===================== Infrastructure Services
+
+  # ── Databases ──────────────────────────────────────────────
 
   timescaledb:
     image: timescale/timescaledb:latest-pg16
@@ -41,22 +54,89 @@ services:
       retries: 5
       start_period: 30s
 
-  redis:
+  # ── Redis Cluster (3 masters, 0 replicas) ──────────────────
+
+  redis-node-1:
     image: redis:7-alpine
-    container_name: algo_redis
+    container_name: algo_redis_1
     ports:
-      - "6379:6379"
+      - "6380:6380"
+      - "16380:16380"
     volumes:
-      - redis_data:/data
+      - redis_data_1:/data
       - ./config/redis.conf:/usr/local/etc/redis/redis.conf:ro
-    command: ["redis-server", "/usr/local/etc/redis/redis.conf"]
+    command: ["redis-server", "/usr/local/etc/redis/redis.conf", "--port", "6380"]
     networks:
       - algo_trader_net
     healthcheck:
-      test: ["CMD-SHELL", "redis-cli ping && redis-cli INFO replication | grep -q role:master"]
+      test: ["CMD", "redis-cli", "-p", "6380", "ping"]
       interval: 10s
       timeout: 5s
       retries: 5
+
+  redis-node-2:
+    image: redis:7-alpine
+    container_name: algo_redis_2
+    ports:
+      - "6381:6381"
+      - "16381:16381"
+    volumes:
+      - redis_data_2:/data
+      - ./config/redis.conf:/usr/local/etc/redis/redis.conf:ro
+    command: ["redis-server", "/usr/local/etc/redis/redis.conf", "--port", "6381"]
+    networks:
+      - algo_trader_net
+    healthcheck:
+      test: ["CMD", "redis-cli", "-p", "6381", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis-node-3:
+    image: redis:7-alpine
+    container_name: algo_redis_3
+    ports:
+      - "6382:6382"
+      - "16382:16382"
+    volumes:
+      - redis_data_3:/data
+      - ./config/redis.conf:/usr/local/etc/redis/redis.conf:ro
+    command: ["redis-server", "/usr/local/etc/redis/redis.conf", "--port", "6382"]
+    networks:
+      - algo_trader_net
+    healthcheck:
+      test: ["CMD", "redis-cli", "-p", "6382", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis-cluster-init:
+    image: redis:7-alpine
+    container_name: algo_redis_init
+    depends_on:
+      redis-node-1:
+        condition: service_healthy
+      redis-node-2:
+        condition: service_healthy
+      redis-node-3:
+        condition: service_healthy
+    entrypoint: []
+    command: >
+      sh -c "
+        echo 'Waiting for nodes...'; sleep 2;
+        echo 'yes' | redis-cli --cluster create
+          redis-node-1:6380
+          redis-node-2:6381
+          redis-node-3:6382
+          --cluster-replicas 0 &&
+        echo 'Cluster created ✓';
+        redis-cli -h redis-node-1 -p 6380 cluster info
+      "
+    networks:
+      - algo_trader_net
+    restart: "no"
+
+  # ── Message Broker ─────────────────────────────────────────
 
   rabbitmq:
     image: rabbitmq:3-management-alpine
@@ -78,6 +158,8 @@ services:
       retries: 5
       start_period: 30s
 
+  # ── Object Storage ─────────────────────────────────────────
+
   minio:
     image: minio/minio:latest
     container_name: algo_minio
@@ -92,7 +174,9 @@ services:
       - minio_data:/data
     networks:
       - algo_trader_net
-  
+
+  # ── Observability ──────────────────────────────────────────
+
   prometheus:
     image: prom/prometheus:latest
     container_name: algo_prometheus
@@ -121,291 +205,6 @@ services:
       - prometheus
     networks:
       - algo_trader_net
-  
-  # Application Services
-
-  data_service:
-    profiles: ["app"]
-    build:
-      context: .
-      dockerfile: services/data_service/Dockerfile
-    container_name: algo_data_service
-    env_file:
-      - .env
-    environment:
-      CACHE_DIR: /tmp/algo_trader_cache
-      PYTHONPATH: /app
-    ports:
-      - "8001:8001"
-    depends_on:
-      timescaledb:
-        condition: service_healthy
-      postgres:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
-      rabbitmq:
-        condition: service_healthy
-    networks:
-      - algo_trader_net
-
-  signal_service:
-    profiles: ["app"]
-    build:
-      context: .
-      dockerfile: services/signal_service/Dockerfile
-    container_name: algo_signal_service
-    env_file:
-      - .env
-    environment:
-      PYTHONPATH: /app
-    ports:
-      - "8002:8002"
-    depends_on:
-      timescaledb:
-        condition: service_healthy
-      postgres:
-        condition: service_healthy
-      rabbitmq:
-        condition: service_healthy
-    networks:
-      - algo_trader_net
-
-  analysis_service:
-    profiles: ["app"]
-    build:
-      context: .
-      dockerfile: services/analysis_service/Dockerfile
-    container_name: algo_analysis_service
-    env_file:
-      - .env
-    environment:
-      PYTHONPATH: /app
-    ports:
-      - "8003:8003"
-    depends_on:
-      postgres:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
-      rabbitmq:
-        condition: service_healthy
-    networks:
-      - algo_trader_net
-
-  trade_service:
-    profiles: ["app"]
-    build:
-      context: .
-      dockerfile: services/trade_service/Dockerfile
-    container_name: algo_trade_service
-    env_file:
-      - .env
-    environment:
-      PYTHONPATH: /app
-    ports:
-      - "8004:8004"
-    depends_on:
-      data_service:
-        condition: service_started
-      postgres:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
-    networks:
-      - algo_trader_net
-
-  gateway:
-    profiles: ["app"]
-    build:
-      context: .
-      dockerfile: services/gateway_service/Dockerfile
-    container_name: algo_gateway
-    env_file:
-      - .env
-    environment:
-      PYTHONPATH: /app
-    ports:
-      - "8000:8000"
-    networks:
-      - algo_trader_net
-
-  # =================== Celery Workers (profile: worker) ===================
-
-  celery-data:
-    profiles: ["worker"]
-    build:
-      context: .
-      dockerfile: services/celery_worker/Dockerfile
-    container_name: algo_celery_data
-    command: worker -Q data -n data@%h --loglevel=INFO
-    env_file:
-      - .env
-    environment:
-      PYTHONPATH: /app
-    restart: unless-stopped
-    depends_on:
-      timescaledb:
-        condition: service_healthy
-      postgres:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
-      rabbitmq:
-        condition: service_healthy
-    healthcheck:
-      test: ["CMD", "celery", "-A", "shared.celery_app.celery_app", "inspect", "ping", "-d", "celery@data", "--timeout=5"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 60s
-    networks:
-      - algo_trader_net
-
-  celery-backfill:
-    profiles: ["worker"]
-    build:
-      context: .
-      dockerfile: services/celery_worker/Dockerfile
-    container_name: algo_celery_backfill
-    command: worker -Q backfill -n backfill@%h --loglevel=INFO
-    env_file:
-      - .env
-    environment:
-      PYTHONPATH: /app
-    restart: unless-stopped
-    depends_on:
-      timescaledb:
-        condition: service_healthy
-      postgres:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
-      rabbitmq:
-        condition: service_healthy
-    healthcheck:
-      test: ["CMD", "celery", "-A", "shared.celery_app.celery_app", "inspect", "ping", "-d", "celery@backfill", "--timeout=5"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 60s
-    networks:
-      - algo_trader_net
-
-  celery-signal:
-    profiles: ["worker"]
-    build:
-      context: .
-      dockerfile: services/celery_worker/Dockerfile
-    container_name: algo_celery_signal
-    command: worker -Q signal -n signal@%h --loglevel=INFO
-    env_file:
-      - .env
-    environment:
-      PYTHONPATH: /app
-    restart: unless-stopped
-    depends_on:
-      timescaledb:
-        condition: service_healthy
-      postgres:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
-      rabbitmq:
-        condition: service_healthy
-    healthcheck:
-      test: ["CMD", "celery", "-A", "shared.celery_app.celery_app", "inspect", "ping", "-d", "celery@signal", "--timeout=5"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 60s
-    networks:
-      - algo_trader_net
-
-  celery-analysis:
-    profiles: ["worker"]
-    build:
-      context: .
-      dockerfile: services/celery_worker/Dockerfile
-    container_name: algo_celery_analysis
-    command: worker -Q analysis -n analysis@%h --loglevel=INFO
-    env_file:
-      - .env
-    environment:
-      PYTHONPATH: /app
-    restart: unless-stopped
-    depends_on:
-      postgres:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
-      rabbitmq:
-        condition: service_healthy
-    healthcheck:
-      test: ["CMD", "celery", "-A", "shared.celery_app.celery_app", "inspect", "ping", "-d", "celery@analysis", "--timeout=5"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 60s
-    networks:
-      - algo_trader_net
-
-  celery-beat:
-    profiles: ["worker"]
-    build:
-      context: .
-      dockerfile: services/celery_worker/Dockerfile
-    container_name: algo_celery_beat
-    command: beat --loglevel=INFO --pidfile=/tmp/celerybeat.pid
-    env_file:
-      - .env
-    environment:
-      PYTHONPATH: /app
-    restart: unless-stopped
-    depends_on:
-      rabbitmq:
-        condition: service_healthy
-    healthcheck:
-      test: ["CMD-SHELL", "test -f /tmp/celerybeat.pid && kill -0 $(cat /tmp/celerybeat.pid)"]
-      interval: 30s
-      timeout: 5s
-      retries: 3
-      start_period: 30s
-    networks:
-      - algo_trader_net
-
-  flower:
-    profiles: ["worker"]
-    build:
-      context: .
-      dockerfile: services/celery_worker/Dockerfile
-    container_name: algo_flower
-    entrypoint: ["celery", "-A", "shared.celery_app.celery_app"]
-    command:
-      - flower
-      - --port=5555
-      - --basic-auth=${FLOWER_USER:-admin}:${FLOWER_PASSWORD:-changeme}
-      - --broker_api=http://${RABBITMQ_USER:-trader}:${RABBITMQ_PASS:-trader_dev}@rabbitmq:15672/api/
-      - --persistent=true
-      - --db=/tmp/flower.db
-    env_file:
-      - .env
-    environment:
-      PYTHONPATH: /app
-    ports:
-      - "5555:5555"
-    restart: unless-stopped
-    depends_on:
-      rabbitmq:
-        condition: service_healthy
-    healthcheck:
-      test: ["CMD-SHELL", "curl -sf http://localhost:5555/healthcheck || exit 1"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 30s
-    networks:
-      - algo_trader_net
 
 networks:
   algo_trader_net:
@@ -414,7 +213,9 @@ networks:
 volumes:
   timescaledb_data:
   postgres_data:
-  redis_data:
+  redis_data_1:
+  redis_data_2:
+  redis_data_3:
   rabbitmq_data:
   minio_data:
   prometheus_data:

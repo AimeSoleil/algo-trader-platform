@@ -15,6 +15,13 @@ class DatabaseSettings(BaseSettings):
 
 class RedisSettings(BaseSettings):
     url: str = "redis://localhost:6379/0"
+    cluster_enabled: bool = False        # True → use RedisCluster instead of standalone
+    cluster_nodes: list[dict] = Field(   # seed nodes for cluster mode
+        default_factory=list,
+        description='e.g. [{"host": "redis-node-1", "port": 6380}]',
+    )
+    lock_ttl_default: int = 300          # default distributed lock TTL (seconds)
+    lock_retry_interval: float = 0.5     # retry interval when lock is contended
 
 class RabbitMQSettings(BaseSettings):
     url: str = "amqp://trader:trader_dev@localhost:5672//"
