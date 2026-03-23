@@ -15,6 +15,7 @@ Usage::
 """
 from __future__ import annotations
 
+import inspect
 from typing import Union
 
 from redis.asyncio import ConnectionPool, Redis
@@ -50,10 +51,18 @@ def get_redis() -> RedisClient:
             ClusterNode(host=n["host"], port=int(n["port"]))
             for n in settings.redis.cluster_nodes
         ]
+        cluster_kwargs: dict[str, object] = {
+            "startup_nodes": nodes,
+            "decode_responses": True,
+        }
+        cluster_init_params = inspect.signature(RedisCluster.__init__).parameters
+        if "skip_full_coverage_check" in cluster_init_params:
+            cluster_kwargs["skip_full_coverage_check"] = True
+        elif "require_full_coverage" in cluster_init_params:
+            cluster_kwargs["require_full_coverage"] = False
+
         _redis = RedisCluster(
-            startup_nodes=nodes,
-            decode_responses=True,
-            skip_full_coverage_check=True,
+            **cluster_kwargs,
         )
     else:
         _pool = ConnectionPool.from_url(
