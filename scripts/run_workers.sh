@@ -23,6 +23,7 @@
 #
 # Usage:
 #   ./scripts/run_workers.sh [--with-flower] [--workers data,signal]
+#   ./scripts/run_workers.sh --stop          # stop all workers, beat & flower
 #   ./scripts/run_workers.sh --list          # show available worker names
 #   ENABLE_FLOWER=1 ./scripts/run_workers.sh
 #   WORKERS=data,signal ./scripts/run_workers.sh
@@ -74,6 +75,41 @@ for arg in "$@"; do
   case "$arg" in
     --with-flower) ENABLE_FLOWER=1 ;;
     --workers=*)   WORKERS="${arg#--workers=}" ;;
+    --stop)
+      # ── Stop all managed processes ────────────────────────
+      echo "[run_workers] Stopping all Celery processes..."
+      stopped=0
+
+      # 1) Kill processes tracked by PID files
+      for pidfile in "${LOG_DIR}"/*.pid; do
+        [[ -f "$pidfile" ]] || continue
+        pid="$(cat "$pidfile" 2>/dev/null)" || continue
+        name="$(basename "$pidfile" .pid)"
+        if kill -0 "$pid" 2>/dev/null; then
+          echo "  SIGTERM → ${name} (pid=${pid})"
+          kill "$pid" 2>/dev/null || true
+          stopped=$((stopped + 1))
+        fi
+        rm -f "$pidfile"
+      done
+
+      # 2) Also ask Celery to shut down any workers it knows about
+      uv run celery -A shared.celery_app.celery_app control shutdown 2>/dev/null || true
+
+      # 3) Kill any lingering celery processes owned by this user
+      pkill -f "celery.*shared.celery_app" 2>/dev/null || true
+
+      # Brief grace period then force-kill survivors
+      sleep 2
+      pkill -9 -f "celery.*shared.celery_app" 2>/dev/null || true
+
+      if (( stopped > 0 )); then
+        echo "[run_workers] Sent SIGTERM to ${stopped} process(es). All stopped."
+      else
+        echo "[run_workers] No tracked processes found; sent shutdown to any lingering celery processes."
+      fi
+      exit 0
+      ;;
     --list|--help|-h)
       show_workers
       exit 0
