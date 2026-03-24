@@ -42,15 +42,14 @@ def _get_cluster_client() -> RedisCluster:
 
 
 def _ensure_cluster_redis(app) -> None:
-    """Ensure ``app.redbeat_conf._redis`` points to a cluster client.
+    """Ensure RedBeat uses a cluster-aware Redis client.
 
-    RedBeat may (re-)create its ``RedBeatConfig`` at various points
-    during init.  This helper idempotently injects the cluster client
-    right before any Redis I/O occurs.
+    RedBeat's ``get_redis(app)`` caches the client on ``app.redbeat_redis``.
+    We replace it with a ``RedisCluster`` instance so all subsequent
+    RedBeat operations go through the cluster client.
     """
-    conf = app.redbeat_conf          # may lazily create a RedBeatConfig
-    if not isinstance(conf._redis, RedisCluster):
-        conf._redis = _get_cluster_client()
+    if not isinstance(getattr(app, "redbeat_redis", None), RedisCluster):
+        app.redbeat_redis = _get_cluster_client()
         logger.info("RedBeat redis patched → RedisCluster")
 
 
