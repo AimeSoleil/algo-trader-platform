@@ -81,7 +81,7 @@ def create_celery_app() -> Celery:
         ),
         redbeat_redis_url=redbeat_url,
         redbeat_key_prefix="redbeat:",          # namespace RedBeat keys (cluster-safe)
-        redbeat_lock_timeout=30,  # seconds before a dead beat loses the lock
+        redbeat_lock_timeout=300,  # seconds before a dead beat loses the lock
     )
 
     # ── 盘后流水线调度 (Celery Beat) ──────────────────────────
