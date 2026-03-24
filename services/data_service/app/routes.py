@@ -465,6 +465,13 @@ async def trigger_collection(req: CollectRequest):
 
     symbols = [s.upper() for s in req.symbols]
 
+    # Expand "WATCHLIST" keyword → merge with configured watchlist symbols
+    if "WATCHLIST" in symbols:
+        settings_watchlist = settings.watchlist
+        symbols = list(dict.fromkeys(
+            s for s in (symbols + settings_watchlist) if s != "WATCHLIST"
+        ))
+
     task = celery_app.send_task(
         "data_service.tasks.manual_collect",
         args=[symbols, req.start_date.isoformat(), req.end_date.isoformat(), req.data_types],
