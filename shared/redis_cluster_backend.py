@@ -45,9 +45,32 @@ def _get_cluster_client() -> RedisCluster:
 
 
 class RedisClusterBackend(RedisBackend):
-    """Redis Cluster-aware Celery result backend."""
+    """Redis Cluster-aware Celery result backend.
+
+    Two adaptations on top of the standard ``RedisBackend``:
+
+    1. ``client`` returns a ``RedisCluster`` instance so keys are
+       routed to the correct shard.
+    2. ``_set`` avoids putting ``PUBLISH`` inside a cluster pipeline
+       (which redis-py blocks).  Instead it runs SET/SETEX first,
+       then publishes separately.
+    """
 
     @property
     def client(self):
         """Return a ``RedisCluster`` client instead of ``StrictRedis``."""
         return _get_cluster_client()
+
+    def _set(self, key, value):
+        """Store result and notify — cluster-safe (no pipelined PUBLISH)."""
+        cl = self.client
+        if self.expires:
+            cl.setex(key, self.expires, value)
+        else:
+            cl.set(key, value)
+        # Publish outside the pipeline so RedisCluster doesn't reject it.
+        try:
+            cl.publish(key, value)
+        except Exception:
+            # publish is best-effort notification; don't fail the result store
+            pass
