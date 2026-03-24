@@ -60,9 +60,12 @@ async def query_signals(
 
     Returns ``{"data": [...], "total": N, "limit": N, "offset": N, "filters_applied": {...}}``.
     """
-    # Default date range to today if nothing specified
+    # Default date range: use the latest available signal date (not "today")
+    # so that queries immediately after computation return data even if the
+    # signal was computed for the previous trading day.
     if start_date is None and end_date is None:
-        start_date = end_date = today_trading()
+        latest = await _latest_signal_date(symbols)
+        start_date = end_date = latest if latest else today_trading()
     elif start_date is None:
         start_date = end_date
     elif end_date is None:
@@ -164,6 +167,24 @@ async def _set_cache(symbol: str, d: date, data: dict) -> None:
     key = _cache_key(symbol, d)
     redis = _get_redis()
     await redis.set(key, json.dumps(data, default=str), ex=_CACHE_TTL)
+
+
+async def _latest_signal_date(symbols: list[str] | None) -> date | None:
+    """Return the most recent signal date, optionally scoped to *symbols*."""
+    try:
+        if symbols:
+            upper = [s.upper() for s in symbols]
+            sql = "SELECT MAX(date) FROM signal_features WHERE symbol = ANY(:symbols)"
+            params: dict = {"symbols": upper}
+        else:
+            sql = "SELECT MAX(date) FROM signal_features"
+            params = {}
+        async with get_postgres_session() as session:
+            row = await session.execute(text(sql), params)
+            return row.scalar()
+    except Exception:
+        logger.debug("signal_query.latest_date_failed")
+        return None
 
 
 # ── Filtering helpers ──────────────────────────────────────

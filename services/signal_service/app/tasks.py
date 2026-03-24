@@ -267,7 +267,7 @@ async def _write_signal(symbol: str, td: date, features) -> None:
                 "symbol": symbol,
                 "date": td,
                 "computed_at": features.computed_at,
-                "features_json": features.model_dump_json(),
+                "features_json": features.model_dump(mode="json"),
             },
         )
         logger.debug(

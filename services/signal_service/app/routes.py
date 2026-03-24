@@ -104,7 +104,12 @@ async def get_signal_features(
     )
     data = result.get("data", [])
     if not data:
-        return {"error": f"No signals for {symbol} on {trading_date or today_trading()}", "_from_cache": False}
+        queried_start = result.get("filters_applied", {}).get("start_date", str(trading_date or today_trading()))
+        return {
+            "error": f"No signals for {symbol} on {queried_start}",
+            "hint": "Use GET /signals?symbols={symbol} (no date) to auto-resolve the latest available date.",
+            "_from_cache": False,
+        }
     return data[0]
 
 

@@ -163,7 +163,7 @@ async def apply_intraday_retention(stock_days: int, option_days: int) -> None:
             )
         await session.commit()
 
-    logger.info("storage.retention_applied", stock_days=stock_days, option_days=option_days)
+    logger.info("storage.retention_applied", stock_1min_days=stock_days, option_5min_days=option_days)
 
 
 async def aggregate_daily_from_snapshots(trading_date: date) -> dict:
