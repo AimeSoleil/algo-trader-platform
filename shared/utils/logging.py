@@ -125,6 +125,11 @@ def setup_logging(service_name: str = "algo-trader") -> None:
         force=True,
     )
 
+    _setup_structlog(settings, log_level, log_tz)
+
+
+def _setup_structlog(settings, log_level: int, log_tz: ZoneInfo) -> None:
+    """Configure structlog processors and filtering level."""
     # Choose structlog renderer
     if settings.logging.format == "json":
         renderer = structlog.processors.JSONRenderer()
@@ -148,7 +153,7 @@ def setup_logging(service_name: str = "algo-trader") -> None:
     )
 
 
-def setup_celery_logging(**_kwargs) -> None:
+def setup_celery_logging(**kwargs) -> None:
     """Celery ``after_setup_logger`` signal handler.
 
     Celery workers have their own logging bootstrap that runs *before* any task
@@ -156,6 +161,10 @@ def setup_celery_logging(**_kwargs) -> None:
     the configured file handler into Celery's root logger so that:
       1. Console output uses the trading timezone.
       2. Worker logs are also written to the same rotating log file.
+
+    The effective log level is the **lower** (more verbose) of Celery's
+    ``--loglevel`` CLI flag and the ``logging.level`` in config.yaml, so
+    that ``--loglevel=DEBUG`` always works even if the config says INFO.
     """
     settings = get_settings()
     log_tz = ZoneInfo(settings.trading.timezone)
@@ -164,20 +173,29 @@ def setup_celery_logging(**_kwargs) -> None:
         tz=log_tz,
     )
 
+    # Celery passes its --loglevel as the ``loglevel`` kwarg (int).
+    # Honour whichever is more verbose (lower numeric value).
+    celery_level: int | None = kwargs.get("loglevel")
+    config_level = getattr(logging, settings.logging.level.upper(), logging.INFO)
+    effective_level = min(celery_level, config_level) if celery_level is not None else config_level
+
     root = logging.getLogger()
+    root.setLevel(effective_level)
 
     # Re-format existing handlers (console) with TZ-aware formatter
     for h in root.handlers:
         h.setFormatter(formatter)
+        h.setLevel(effective_level)
 
     # Add the file handler if not already present
     file_handler = _build_file_handler(settings)
     if file_handler:
         file_handler.setFormatter(formatter)
+        file_handler.setLevel(effective_level)
         root.addHandler(file_handler)
 
     # Also setup structlog for task code that uses get_logger()
-    setup_logging("celery-worker")
+    _setup_structlog(settings, effective_level, log_tz)
 
 
 def get_logger(name: str = __name__) -> structlog.BoundLogger:
