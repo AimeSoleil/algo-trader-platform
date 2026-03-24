@@ -127,18 +127,9 @@ class IntradayHotStorageRetention(BaseSettings):
     option_5min: int = 60
 
 
-class IntradayArchiveRetention(BaseSettings):
-    stock_1min: int = 365
-    option_5min: int = 180
-
-
 class DataServiceIntradaySettings(BaseSettings):
-    stock_capture_interval_seconds: int = 60
-    option_capture_interval_seconds: int = 300
     capture_every_minutes: int = 5
-    max_option_expiries: int = 3
     hot_storage_retention_days: IntradayHotStorageRetention = Field(default_factory=IntradayHotStorageRetention)
-    archive_retention_days: IntradayArchiveRetention = Field(default_factory=IntradayArchiveRetention)
 
 
 class DataProviderSettings(BaseSettings):

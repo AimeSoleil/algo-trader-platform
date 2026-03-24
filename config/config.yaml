@@ -56,13 +56,9 @@ data_service:
     end: "16:00"
   intraday:
     capture_every_minutes: 5
-    max_option_expiries: 3
     hot_storage_retention_days:
       stock_1min: 90                 # 盘后采集的 1m bars 保留天数
       option_5min: 60                # 盘中 option snapshots 保留天数
-    archive_retention_days:
-      stock_1min: 365
-      option_5min: 180
 
 option_strategy:
   lookback_days: 252                 # iv_percentile 滚动窗口（交易日）
