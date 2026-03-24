@@ -23,15 +23,13 @@ def create_celery_app() -> Celery:
     settings = get_settings()
 
     # ── Redis URL construction ──────────────────────────────
-    # Cluster mode: use redis+cluster:// scheme so Celery's result
-    # backend creates a RedisCluster client instead of StrictRedis.
+    # Cluster mode: use custom backend that wraps RedisCluster.
     # All DBs merge to 0; isolation via key prefix.
     # Standalone: DB 1 for results, DB 2 for RedBeat.
     if settings.redis.cluster_enabled and settings.redis.cluster_nodes:
         _first = settings.redis.cluster_nodes[0]
         redis_base = f"redis://{_first['host']}:{_first['port']}"
-        # redis+cluster:// tells celery.backends.redis to use RedisCluster
-        backend_url = f"redis+cluster://{_first['host']}:{_first['port']}/0"
+        backend_url = "shared.redis_cluster_backend.RedisClusterBackend"
         redbeat_url = f"{redis_base}/0"
     else:
         redis_base = settings.redis.url.rsplit("/", 1)[0]
