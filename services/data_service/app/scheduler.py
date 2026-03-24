@@ -1,4 +1,4 @@
-"""Data Service 调度器 — 盘中期权链采集（Intraday 可选）
+"""Data Service 调度器 — 盘中期权链采集
 
 盘后数据采集（1m bars / daily bar / option chain）已统一由
 Celery pipeline (capture_post_market_data) 处理，不再由 APScheduler 触发。
@@ -30,7 +30,6 @@ _state: SchedulerState | None = None
 class SchedulerState:
     settings: Settings
     cache: MarketHoursCache
-    intraday_enabled: bool
     outside_market_logged: bool = False
 
 
@@ -38,9 +37,7 @@ class SchedulerState:
 
 def get_current_mode() -> str:
     """返回当前运行模式描述"""
-    if _state is None:
-        return "standard"
-    return "standard+intraday" if _state.intraday_enabled else "standard"
+    return "standard+intraday"
 
 
 def get_data_service_config() -> dict:
@@ -89,40 +86,38 @@ async def _capture_intraday(state: SchedulerState) -> None:
 # ── 调度管理 ───────────────────────────────────────────────
 
 def _register_intraday_job() -> None:
-    """注册盘中期权链采集 job（仅在 intraday 启用时）"""
+    """注册盘中期权链采集 job"""
     if _scheduler is None or _state is None:
         return
 
     _scheduler.remove_all_jobs()
 
-    if _state.intraday_enabled:
-        interval = _state.settings.data_service.intraday.capture_every_minutes
-        _scheduler.add_job(
-            _capture_intraday,
-            trigger=IntervalTrigger(minutes=interval),
-            args=[_state],
-            id="intraday_capture",
-            name="intraday_option_chain_capture",
-            replace_existing=True,
-            coalesce=True,
-            max_instances=1,
-        )
-        logger.info("scheduler.intraday_job_registered", interval_min=interval)
+    interval = _state.settings.data_service.intraday.capture_every_minutes
+    _scheduler.add_job(
+        _capture_intraday,
+        trigger=IntervalTrigger(minutes=interval),
+        args=[_state],
+        id="intraday_capture",
+        name="intraday_option_chain_capture",
+        replace_existing=True,
+        coalesce=True,
+        max_instances=1,
+    )
+    logger.info("scheduler.intraday_job_registered", interval_min=interval)
 
 
 def start_data_scheduler(cache: MarketHoursCache, settings: Settings) -> None:
     """启动数据调度器
 
-    - 始终初始化 state（供 API 查询模式 / 配置）
-    - 始终设置 TimescaleDB retention policy
-    - 仅在 intraday_enabled=True 时启动 APScheduler
+    - 初始化 state（供 API 查询 / 配置）
+    - 设置 TimescaleDB retention policy
+    - 启动 APScheduler 盘中采集
     """
     global _scheduler, _state
 
     _state = SchedulerState(
         settings=settings,
         cache=cache,
-        intraday_enabled=settings.data_service.intraday_enabled,
     )
 
     # Retention policy 无论模式都应用
@@ -133,46 +128,12 @@ def start_data_scheduler(cache: MarketHoursCache, settings: Settings) -> None:
         )
     )
 
-    if settings.data_service.intraday_enabled:
-        _scheduler = AsyncIOScheduler(
-            timezone=settings.trading.timezone,
-        )
-        _register_intraday_job()
-        _scheduler.start()
-        logger.info("scheduler.started", mode=get_current_mode())
-    else:
-        logger.info(
-            "scheduler.skipped",
-            reason="intraday_disabled",
-            mode=get_current_mode(),
-        )
-
-
-def set_intraday_enabled(enabled: bool) -> bool:
-    """运行时启停 intraday 采集任务"""
-    global _scheduler
-
-    if _state is None:
-        raise RuntimeError("scheduler not initialized")
-
-    _state.intraday_enabled = enabled
-    _state.settings.data_service.intraday_enabled = enabled
-
-    if enabled and _scheduler is None:
-        _scheduler = AsyncIOScheduler(
-            timezone=_state.settings.trading.timezone,
-        )
-        _scheduler.start()
-
-    if _scheduler is not None:
-        _register_intraday_job()
-
-    if not enabled and _scheduler is not None:
-        _scheduler.shutdown(wait=False)
-        _scheduler = None
-
-    logger.info("scheduler.intraday_toggled", intraday_enabled=enabled)
-    return enabled
+    _scheduler = AsyncIOScheduler(
+        timezone=settings.trading.timezone,
+    )
+    _register_intraday_job()
+    _scheduler.start()
+    logger.info("scheduler.started", mode=get_current_mode())
 
 
 def stop_scheduler() -> None:

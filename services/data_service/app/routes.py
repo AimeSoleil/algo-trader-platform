@@ -12,7 +12,6 @@ from sqlalchemy import text
 from services.data_service.app.scheduler import (
     get_current_mode,
     get_data_service_config,
-    set_intraday_enabled,
 )
 from shared.celery_app import celery_app
 from shared.config import get_settings
@@ -89,10 +88,6 @@ class DatesResponse(BaseModel):
     total: int
 
 
-class ModeSwitchRequest(BaseModel):
-    intraday_enabled: bool
-
-
 class CollectRequest(BaseModel):
     """Manual stock data collection request."""
     symbols: list[str]
@@ -139,20 +134,6 @@ async def get_mode_config():
     return {
         "current_mode": get_current_mode(),
         "config": get_data_service_config(),
-    }
-
-
-@router.post("/data/config")
-async def update_mode_config(req: ModeSwitchRequest):
-    try:
-        enabled = set_intraday_enabled(req.intraday_enabled)
-    except RuntimeError as exc:
-        raise HTTPException(status_code=503, detail=str(exc)) from exc
-
-    return {
-        "status": "success",
-        "intraday_enabled": enabled,
-        "effective_mode": get_current_mode(),
     }
 
 

@@ -20,8 +20,7 @@ logger = get_logger("data_service")
 async def lifespan(app: FastAPI):
     """Startup / Shutdown
 
-    - 始终初始化 scheduler state（API 查询模式 / 配置 / retention policy）
-    - APScheduler 仅在 intraday_enabled=True 时实际启动
+    - 初始化 scheduler state + APScheduler 盘中采集
     - 盘后数据采集由 Celery pipeline 处理，不依赖 FastAPI 进程
     """
     setup_logging("data_service")
@@ -37,7 +36,6 @@ async def lifespan(app: FastAPI):
     logger.info(
         "data_service.starting",
         watchlist=settings.watchlist,
-        intraday_enabled=settings.data_service.intraday_enabled,
     )
 
     start_data_scheduler(cache, settings)
