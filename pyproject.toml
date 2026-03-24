@@ -21,6 +21,7 @@ dependencies = [
     "structlog",
     "python-dotenv",
     "pyyaml",
+    "celery-redbeat>=2.3.3",
 ]
 
 [dependency-groups]

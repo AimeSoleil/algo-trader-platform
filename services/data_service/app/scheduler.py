@@ -70,6 +70,9 @@ async def _capture_intraday(state: SchedulerState) -> None:
     captured = 0
 
     for symbol in symbols:
+        # Skip index symbols (e.g. ^VIX) — they have no tradeable option chain
+        if symbol.startswith("^"):
+            continue
         snapshot = await fetch_option_chain(symbol)
         if snapshot:
             rows = contracts_to_rows(snapshot, top_expiries=None)  # capture ALL expiries for aggregation

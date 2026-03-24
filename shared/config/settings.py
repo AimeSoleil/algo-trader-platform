@@ -194,6 +194,16 @@ class Settings(BaseSettings):
     # Watchlist — symbols to track
     watchlist: list[str] = Field(default_factory=lambda: ["AAPL", "MSFT", "NVDA", "TSLA", "SPY", "QQQ"])
 
+    # Cross-asset benchmarks for multi-factor signal model
+    cross_asset_benchmarks: list[str] = Field(
+        default_factory=lambda: ["SPY", "QQQ", "IWM", "TLT"],
+        description="ETF benchmarks used for beta / correlation computation",
+    )
+    environment_symbols: list[str] = Field(
+        default_factory=lambda: ["^VIX"],
+        description="Market regime indicators (e.g. VIX) — not traded, used as environment context",
+    )
+
     @classmethod
     def from_yaml(cls, yaml_path: str | Path | None = None) -> Settings:
         """从 config.yaml 加载，环境变量覆盖"""

@@ -1,21 +1,29 @@
-"""Signal Service — Celery 盘后批量计算任务"""
+"""Signal Service — Celery 盘后批量计算任务
+
+职责：纯编排层 — 加载数据、调用指标计算模块、写入 DB/缓存。
+所有计算逻辑已拆分至：
+  • data_loaders.py   — 市场数据加载（stock bars, option chain）
+  • cross_asset.py    — 跨资产指标（SPY beta, IV correlation 等）
+  • indicators/       — 股票 & 期权技术指标
+  • signal_generator.py — SignalFeatures 组装
+"""
 from __future__ import annotations
 
 import asyncio
 from datetime import date
 from time import perf_counter
 
-import pandas as pd
 from sqlalchemy import text
 
 from shared.celery_app import celery_app
 from shared.config import get_settings
-from shared.db.session import get_timescale_session, get_postgres_session
-from shared.models.signal import CrossAssetIndicators
+from shared.db.session import get_postgres_session
 from shared.utils import get_logger, resolve_trading_date_arg, today_trading
 
 logger = get_logger("signal_tasks")
 
+
+# ── Celery ↔ asyncio bridge ───────────────────────────────
 
 def _run_async(coro):
     """Run an async coroutine safely — works whether or not an event loop exists."""
@@ -24,20 +32,22 @@ def _run_async(coro):
     except RuntimeError:
         loop = None
     if loop and loop.is_running():
-        # Already inside a running loop (e.g. nested Celery / Jupyter)
         import concurrent.futures
         with concurrent.futures.ThreadPoolExecutor() as pool:
             return pool.submit(asyncio.run, coro).result()
     return asyncio.run(coro)
 
 
+# ── Public Celery task ─────────────────────────────────────
+
 @celery_app.task(name="signal_service.tasks.compute_daily_signals", bind=True, max_retries=2)
-def compute_daily_signals(self, trading_date: str | None = None, prev_result=None, symbols: list[str] | None = None) -> dict:
-    """
-    17:00 Celery 任务：批量计算当日所有标的的信号特征
-    prev_result: 上游任务 (backfill) 的结果
-    symbols: 可选，仅计算指定标的（默认使用完整 watchlist）
-    """
+def compute_daily_signals(
+    self,
+    trading_date: str | None = None,
+    prev_result=None,
+    symbols: list[str] | None = None,
+) -> dict:
+    """17:00 Celery 任务：批量计算当日所有标的的信号特征。"""
     resolved_trading_date = resolve_trading_date_arg(trading_date, prev_result)
     logger.debug(
         "signal_compute.start",
@@ -49,10 +59,24 @@ def compute_daily_signals(self, trading_date: str | None = None, prev_result=Non
         symbols=symbols,
         retry=getattr(self.request, "retries", 0),
     )
-    return _run_async(_compute_daily_signals_async(resolved_trading_date, symbols=symbols))
+    return _run_async(_compute_daily_signals(resolved_trading_date, symbols=symbols))
 
 
-async def _compute_daily_signals_async(trading_date_str: str | None = None, *, symbols: list[str] | None = None) -> dict:
+# ── Async orchestrator ─────────────────────────────────────
+
+async def _compute_daily_signals(
+    trading_date_str: str | None = None,
+    *,
+    symbols: list[str] | None = None,
+) -> dict:
+    # Lazy imports — avoids circular dependencies at module level
+    from services.signal_service.app.cross_asset import build_cross_asset_indicators
+    from services.signal_service.app.data_loaders import (
+        load_benchmark_returns,
+        load_option_rows,
+        load_stock_bars,
+        load_vix_bars,
+    )
     from services.signal_service.app.indicators.option_indicators import compute_option_indicators
     from services.signal_service.app.indicators.stock_indicators import compute_stock_indicators
     from services.signal_service.app.queries import delete_signal_cache, set_signal_cache
@@ -70,215 +94,43 @@ async def _compute_daily_signals_async(trading_date_str: str | None = None, *, s
         symbols=len(target_symbols),
         custom_symbols=symbols is not None,
     )
-    result = {"date": str(td), "symbols_computed": 0, "errors": []}
-    symbols_no_data: list[str] = []  # symbols with no stock bars on target date
 
-    async def _load_stock_bars(symbol: str) -> tuple[pd.DataFrame, str]:
-        """Return (bars_df, bar_type).
+    result: dict = {"date": str(td), "symbols_computed": 0, "errors": []}
+    symbols_no_data: list[str] = []
 
-        Priority: daily bars first (``stock_daily``).  If no daily data is
-        available, fall back to aggregating 1-min bars (``stock_1min_bars``)
-        into daily-like OHLCV rows.
+    # ── Pre-load benchmark returns & VIX (once) ─────────────
+    benchmark_returns = await load_benchmark_returns(
+        settings.cross_asset_benchmarks, td,
+    )
+    vix_bars = await load_vix_bars(td)
 
-        * bars_df   — up to 260 rows of OHLCV used for ALL technical indicators.
-        * bar_type  — 'daily' when sourced from stock_daily,
-                       'intraday_1min' when aggregated from 1-min bars.
-        """
-        MIN_INTRADAY_ROWS = 30
-
-        # ── 1) Try daily history first (preferred) ──
-        logger.debug(
-            "signal_compute.load_daily_bars_started",
-            log_event="db_read",
-            stage="before_query",
-            symbol=symbol,
+    loaded_benchmarks = [k for k, v in benchmark_returns.items() if not v.empty]
+    logger.debug(
+        "signal_compute.benchmarks_preloaded",
+        log_event="db_read",
+        stage="preload",
+        benchmarks_requested=settings.cross_asset_benchmarks,
+        benchmarks_loaded=loaded_benchmarks,
+        vix_bars=len(vix_bars),
+    )
+    if not loaded_benchmarks:
+        logger.warning(
+            "signal_compute.no_benchmark_data",
             trading_date=str(td),
-            source="stock_daily",
+            detail="All benchmark betas & correlations will default to 0.0",
         )
-        async with get_timescale_session() as session:
-            daily_result = await session.execute(
-                text(
-                    "SELECT trading_date, open, high, low, close, volume "
-                    "FROM stock_daily "
-                    "WHERE symbol = :symbol AND trading_date <= :date "
-                    "ORDER BY trading_date DESC LIMIT 260"
-                ),
-                {"symbol": symbol, "date": td},
-            )
-            daily_rows = daily_result.fetchall()
 
-        if daily_rows:
-            daily_df = pd.DataFrame(
-                daily_rows,
-                columns=["timestamp", "open", "high", "low", "close", "volume"],
-            )
-            daily_df = daily_df.sort_values("timestamp")
-            logger.debug(
-                "signal_compute.load_daily_bars_done",
-                log_event="db_read",
-                stage="query_result",
-                symbol=symbol,
-                rows=len(daily_df),
-                source="stock_daily",
-            )
-            return daily_df, "daily"
-
-        # ── 2) Fallback: aggregate 1-min bars into daily OHLCV ──
-        logger.debug(
-            "signal_compute.load_daily_bars_empty_fallback_intraday",
-            log_event="db_read",
-            stage="fallback",
-            symbol=symbol,
-            source="stock_1min_bars",
-        )
-        async with get_timescale_session() as session:
-            intraday_result = await session.execute(
-                text(
-                    "SELECT timestamp::date AS trading_date, "
-                    "       (array_agg(open ORDER BY timestamp))[1] AS open, "
-                    "       MAX(high) AS high, "
-                    "       MIN(low) AS low, "
-                    "       (array_agg(close ORDER BY timestamp DESC))[1] AS close, "
-                    "       SUM(volume) AS volume "
-                    "FROM stock_1min_bars "
-                    "WHERE symbol = :symbol AND timestamp::date <= :date "
-                    "GROUP BY timestamp::date "
-                    "HAVING COUNT(*) >= :min_rows "
-                    "ORDER BY trading_date DESC LIMIT 260"
-                ),
-                {"symbol": symbol, "date": td, "min_rows": MIN_INTRADAY_ROWS},
-            )
-            intraday_rows = intraday_result.fetchall()
-
-        if not intraday_rows:
-            logger.debug(
-                "signal_compute.load_stock_bars_empty",
-                log_event="db_read",
-                stage="query_result",
-                symbol=symbol,
-                source="stock_1min_bars",
-            )
-            return pd.DataFrame(), "daily"
-
-        intraday_df = pd.DataFrame(
-            intraday_rows,
-            columns=["timestamp", "open", "high", "low", "close", "volume"],
-        )
-        intraday_df = intraday_df.sort_values("timestamp")
-        logger.debug(
-            "signal_compute.load_stock_bars_done",
-            log_event="db_read",
-            stage="query_result",
-            symbol=symbol,
-            rows=len(intraday_df),
-            source="stock_1min_bars",
-            bar_type="intraday_1min",
-        )
-        return intraday_df, "intraday_1min"
-
-    async def _load_option_rows(symbol: str) -> pd.DataFrame:
-        """Load option chain rows for *symbol* on target date.
-
-        Priority: daily snapshot (``option_daily``) first.
-        Fallback : intraday 5-min snapshots (``option_5min_snapshots``).
-        """
-        _opt_cols = [
-            "underlying", "symbol", "expiry", "strike", "option_type",
-            "last_price", "bid", "ask", "volume", "open_interest",
-            "iv", "delta", "gamma", "theta", "vega", "timestamp",
-        ]
-
-        # ── 1) Try daily option snapshot first (preferred) ──
-        logger.debug(
-            "signal_compute.load_option_rows_started",
-            log_event="db_read",
-            stage="before_query",
-            symbol=symbol,
-            trading_date=str(td),
-            source="option_daily",
-        )
-        async with get_timescale_session() as session:
-            daily_result = await session.execute(
-                text(
-                    "SELECT underlying, symbol, expiry, strike, option_type, "
-                    "last_price, bid, ask, volume, open_interest, iv, "
-                    "delta, gamma, theta, vega, snapshot_date "
-                    "FROM option_daily "
-                    "WHERE underlying = :symbol AND snapshot_date = :date"
-                ),
-                {"symbol": symbol, "date": td},
-            )
-            daily_rows = daily_result.fetchall()
-
-        if daily_rows:
-            logger.debug(
-                "signal_compute.load_option_rows_daily",
-                log_event="db_read",
-                stage="query_result",
-                symbol=symbol,
-                rows=len(daily_rows),
-                source="option_daily",
-            )
-            return pd.DataFrame(daily_rows, columns=_opt_cols)
-
-        # ── 2) Fallback: intraday 5-min option snapshots ──
-        logger.debug(
-            "signal_compute.load_option_rows_fallback_intraday",
-            log_event="db_read",
-            stage="fallback",
-            symbol=symbol,
-            source="option_5min_snapshots",
-        )
-        async with get_timescale_session() as session:
-            intraday_result = await session.execute(
-                text(
-                    "SELECT underlying, symbol, expiry, strike, option_type, "
-                    "last_price, bid, ask, volume, open_interest, iv, "
-                    "delta, gamma, theta, vega, timestamp "
-                    "FROM option_5min_snapshots "
-                    "WHERE underlying = :symbol AND timestamp::date = :date"
-                ),
-                {"symbol": symbol, "date": td},
-            )
-            intraday_rows = intraday_result.fetchall()
-
-        if not intraday_rows:
-            logger.debug(
-                "signal_compute.load_option_rows_empty",
-                log_event="db_read",
-                stage="query_result",
-                symbol=symbol,
-                source="option_5min_snapshots",
-            )
-            return pd.DataFrame()
-
-        logger.debug(
-            "signal_compute.load_option_rows_intraday",
-            log_event="db_read",
-            stage="query_result",
-            symbol=symbol,
-            rows=len(intraday_rows),
-            source="option_5min_snapshots",
-        )
-        return pd.DataFrame(intraday_rows, columns=_opt_cols)
-
-    sem = asyncio.Semaphore(4)  # max 4 concurrent DB sessions
+    # ── Per-symbol processing ──────────────────────────────
+    sem = asyncio.Semaphore(4)
 
     async def _process_symbol(symbol: str) -> None:
         async with sem:
             try:
-                symbol_started = perf_counter()
+                t0 = perf_counter()
+                bars_df, bar_type = await load_stock_bars(symbol, td)
+                option_df = await load_option_rows(symbol, td)
                 logger.debug(
-                    "signal_compute.symbol_started",
-                    log_event="symbol_start",
-                    stage="compute",
-                    symbol=symbol,
-                    trading_date=str(td),
-                )
-                bars_df, bar_type = await _load_stock_bars(symbol)
-                option_df = await _load_option_rows(symbol)
-                logger.debug(
-                    "signal_compute.symbol_data_loaded",
+                    "signal_compute.data_loaded",
                     log_event="symbol_context",
                     stage="after_load",
                     symbol=symbol,
@@ -292,71 +144,39 @@ async def _compute_daily_signals_async(trading_date_str: str | None = None, *, s
                     symbols_no_data.append(symbol)
                     return
 
-                # All price/volume/indicator data comes from daily bars.
-                # Post-market task runs after daily bars are written, so
-                # today's close & volume are already present.
+                # ── Price & volume summary ─────────────────
                 close_price = float(bars_df["close"].iloc[-1])
                 prev_close = float(bars_df["close"].iloc[-2]) if len(bars_df) >= 2 else close_price
                 daily_return = (close_price - prev_close) / prev_close if prev_close > 0 else 0.0
                 total_volume = int(bars_df["volume"].iloc[-1])
 
+                # ── Technical indicators ───────────────────
                 stock_indicators = compute_stock_indicators(bars_df)
                 option_indicators = await compute_option_indicators(symbol, option_df, close_price)
 
-                # Cross-asset features
+                # ── Cross-asset indicators ─────────────────
                 bar_returns = bars_df["close"].pct_change().dropna()
-
-                # Aggregate per-timestamp mean IV before computing changes
-                # (raw option_df mixes different contracts; pct_change across
-                # contracts is meaningless)
-                corr = 0.0
-                if not option_df.empty and "timestamp" in option_df.columns:
-                    avg_iv = (
-                        option_df[option_df["iv"] > 0]
-                        .groupby("timestamp")["iv"]
-                        .mean()
-                        .sort_index()
-                    )
-                    iv_changes = avg_iv.pct_change().dropna()
-                else:
-                    iv_changes = pd.Series(dtype=float)
-
-                if len(bar_returns) > 10 and len(iv_changes) > 10:
-                    sample_size = min(len(bar_returns), len(iv_changes))
-                    merged = pd.DataFrame(
-                        {
-                            "ret": bar_returns.tail(sample_size).reset_index(drop=True),
-                            "iv": iv_changes.tail(sample_size).reset_index(drop=True),
-                        }
-                    )
-                    if len(merged) > 5:
-                        corr = float(merged["ret"].corr(merged["iv"])) if merged["ret"].std() > 0 and merged["iv"].std() > 0 else 0.0
-
                 total_option_volume = float(option_df["volume"].sum()) if not option_df.empty else 0.0
-                option_vs_stock_volume_ratio = total_option_volume / max(float(total_volume), 1.0)
                 hedge_ratio = -float(option_indicators.portfolio_greeks.get("delta", 0.0))
 
-                # SPY beta & index correlation (new cross-asset fields)
-                spy_beta = 0.0
-                index_correlation_20d = 0.0
-                # TODO: load SPY returns and compute beta / correlation when SPY data available
-
-                cross_asset = CrossAssetIndicators(
-                    stock_iv_correlation=round(corr, 6),
-                    option_vs_stock_volume_ratio=round(option_vs_stock_volume_ratio, 6),
-                    delta_adjusted_hedge_ratio=round(hedge_ratio, 4),
-                    spy_beta=round(spy_beta, 4),
-                    index_correlation_20d=round(index_correlation_20d, 4),
-                    confidence_scores={
-                        "corr_quality": round(min(1.0, len(bar_returns) / 100), 4),
-                        "volume_quality": 1.0 if total_volume > 0 else 0.0,
-                    },
+                cross_asset = build_cross_asset_indicators(
+                    symbol=symbol,
+                    bars_df=bars_df,
+                    bar_returns=bar_returns,
+                    option_df=option_df,
+                    benchmark_returns=benchmark_returns,
+                    vix_bars=vix_bars,
+                    total_volume=total_volume,
+                    total_option_volume=total_option_volume,
+                    hedge_ratio=hedge_ratio,
                 )
 
-                # Fill HV-IV spread in stock indicators
-                stock_indicators.hv_iv_spread = round(stock_indicators.hv_20d - option_indicators.current_iv, 6)
+                # ── HV-IV spread ───────────────────────────
+                stock_indicators.hv_iv_spread = round(
+                    stock_indicators.hv_20d - option_indicators.current_iv, 6,
+                )
 
-                # 4) 生成综合信号
+                # ── Assemble signal ────────────────────────
                 features = generate_signal(
                     symbol=symbol,
                     trading_date=td,
@@ -371,46 +191,11 @@ async def _compute_daily_signals_async(trading_date_str: str | None = None, *, s
                     option_row_count=len(option_df),
                 )
 
-                # 5) 写入 DB
-                async with get_postgres_session() as session:
-                    logger.debug(
-                        "signal_compute.db_write_started",
-                        log_event="db_write",
-                        stage="before_write",
-                        symbol=symbol,
-                        trading_date=str(td),
-                    )
-                    await session.execute(
-                        text(
-                            "INSERT INTO signal_features (symbol, date, computed_at, features_json) "
-                            "VALUES (:symbol, :date, :computed_at, :features_json) "
-                            "ON CONFLICT (symbol, date) DO UPDATE SET "
-                            "computed_at = :computed_at, features_json = :features_json"
-                        ),
-                        {
-                            "symbol": symbol,
-                            "date": td,
-                            "computed_at": features.computed_at,
-                            "features_json": features.model_dump_json(),
-                        },
-                    )
-                    logger.debug(
-                        "signal_compute.db_write_finished",
-                        log_event="db_write",
-                        stage="after_write",
-                        symbol=symbol,
-                        trading_date=str(td),
-                    )
+                # ── Persist to DB ──────────────────────────
+                await _write_signal(symbol, td, features)
 
-                # 6) Write-through cache refresh (best effort)
-                try:
-                    await set_signal_cache(symbol, td, features.model_dump(mode="json"))
-                except Exception as cache_exc:
-                    logger.debug("signal_compute.cache_refresh_failed", symbol=symbol, error=str(cache_exc))
-                    try:
-                        await delete_signal_cache(symbol, td)
-                    except Exception as del_exc:
-                        logger.debug("signal_compute.cache_delete_failed", symbol=symbol, error=str(del_exc))
+                # ── Refresh cache (best-effort) ────────────
+                await _refresh_cache(symbol, td, features, set_signal_cache, delete_signal_cache)
 
                 result["symbols_computed"] += 1
                 logger.debug(
@@ -420,7 +205,7 @@ async def _compute_daily_signals_async(trading_date_str: str | None = None, *, s
                     symbol=symbol,
                     trading_date=str(td),
                     bar_type=bar_type,
-                    duration_ms=round((perf_counter() - symbol_started) * 1000, 2),
+                    duration_ms=round((perf_counter() - t0) * 1000, 2),
                 )
                 logger.info(
                     "signal_compute.done",
@@ -434,7 +219,7 @@ async def _compute_daily_signals_async(trading_date_str: str | None = None, *, s
 
     await asyncio.gather(*[_process_symbol(s) for s in target_symbols])
 
-    # If ALL symbols had no data, surface a clear error
+    # ── Summarise ──────────────────────────────────────────
     if result["symbols_computed"] == 0 and not result["errors"]:
         no_data_msg = f"No stock data found for trading_date={td}. Symbols checked: {', '.join(target_symbols)}"
         result["errors"].append(no_data_msg)
@@ -444,7 +229,6 @@ async def _compute_daily_signals_async(trading_date_str: str | None = None, *, s
             symbols=target_symbols,
         )
     elif symbols_no_data:
-        # Partial: some symbols had no data — record them for visibility
         result["symbols_no_data"] = symbols_no_data
 
     logger.debug(
@@ -459,3 +243,51 @@ async def _compute_daily_signals_async(trading_date_str: str | None = None, *, s
     )
     logger.info("signal_compute.batch_completed", **result)
     return result
+
+
+# ── DB write helper ────────────────────────────────────────
+
+async def _write_signal(symbol: str, td: date, features) -> None:
+    async with get_postgres_session() as session:
+        logger.debug(
+            "signal_compute.db_write",
+            log_event="db_write",
+            stage="before_write",
+            symbol=symbol,
+            trading_date=str(td),
+        )
+        await session.execute(
+            text(
+                "INSERT INTO signal_features (symbol, date, computed_at, features_json) "
+                "VALUES (:symbol, :date, :computed_at, :features_json) "
+                "ON CONFLICT (symbol, date) DO UPDATE SET "
+                "computed_at = :computed_at, features_json = :features_json"
+            ),
+            {
+                "symbol": symbol,
+                "date": td,
+                "computed_at": features.computed_at,
+                "features_json": features.model_dump_json(),
+            },
+        )
+        logger.debug(
+            "signal_compute.db_write_done",
+            log_event="db_write",
+            stage="after_write",
+            symbol=symbol,
+            trading_date=str(td),
+        )
+
+
+# ── Cache helper ───────────────────────────────────────────
+
+async def _refresh_cache(symbol, td, features, set_fn, delete_fn) -> None:
+    """Write-through cache refresh; falls back to delete on error."""
+    try:
+        await set_fn(symbol, td, features.model_dump(mode="json"))
+    except Exception as cache_exc:
+        logger.debug("signal_compute.cache_refresh_failed", symbol=symbol, error=str(cache_exc))
+        try:
+            await delete_fn(symbol, td)
+        except Exception as del_exc:
+            logger.debug("signal_compute.cache_delete_failed", symbol=symbol, error=str(del_exc))

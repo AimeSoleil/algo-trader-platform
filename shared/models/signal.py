@@ -105,10 +105,25 @@ class CrossAssetIndicators(BaseModel):
     stock_iv_correlation: float = 0.0
     option_vs_stock_volume_ratio: float = 0.0
     delta_adjusted_hedge_ratio: float = 0.0
-    spy_beta: float = 0.0  # Beta relative to SPY (equity market sensitivity)
+
+    # ── Market beta & correlation (multi-benchmark) ────────
+    spy_beta: float = 0.0                  # Beta relative to SPY (equity market)
+    index_correlation_20d: float = 0.0     # 20-day rolling correlation to SPY
+    qqq_beta: float = 0.0                  # Beta relative to QQQ (tech/growth)
+    qqq_correlation_20d: float = 0.0       # 20-day rolling correlation to QQQ
+    iwm_beta: float = 0.0                  # Beta relative to IWM (small-cap risk)
+    iwm_correlation_20d: float = 0.0       # 20-day rolling correlation to IWM
+    tlt_correlation_20d: float = 0.0       # 20-day rolling correlation to TLT (rate sensitivity)
+
+    # ── Volatility environment (VIX) ──────────────────────
+    vix_level: float = 0.0                 # Current VIX close
+    vix_percentile_52w: float = 0.0        # VIX 52-week percentile (0-1)
+    vix_correlation_20d: float = 0.0       # 20-day correlation to VIX (fear sensitivity)
+
+    # ── Placeholders (next iteration) ─────────────────────
     sector_relative_strength: float = 0.0  # Relative strength vs sector ETF
-    earnings_proximity_days: int = -1  # Days until next earnings (-1 = unknown)
-    index_correlation_20d: float = 0.0  # 20-day rolling correlation to SPY
+    earnings_proximity_days: int = -1      # Days until next earnings (-1 = unknown)
+
     confidence_scores: dict[str, float] = Field(default_factory=dict)
 
 

@@ -20,9 +20,11 @@
 #                           Choices: data,backfill,signal,analysis
 #   ENABLE_FLOWER           Set to 1 to start Flower     (default: 0)
 #   FLOWER_PORT             Flower listen port           (default: 5555)
+#   LOG_LEVEL               Celery worker log level      (default: INFO)
+#                           Choices: DEBUG,INFO,WARNING,ERROR,CRITICAL
 #
 # Usage:
-#   ./scripts/run_workers.sh [--with-flower] [--workers data,signal]
+#   ./scripts/run_workers.sh [--with-flower] [--workers data,signal] [--loglevel DEBUG]
 #   ./scripts/run_workers.sh --stop          # stop all workers, beat & flower
 #   ./scripts/run_workers.sh --list          # show available worker names
 #   ENABLE_FLOWER=1 ./scripts/run_workers.sh
@@ -46,6 +48,7 @@ SHUTDOWN_GRACE="${SHUTDOWN_GRACE:-30}"
 WORKERS="${WORKERS:-all}"
 ENABLE_FLOWER="${ENABLE_FLOWER:-0}"
 FLOWER_PORT="${FLOWER_PORT:-5555}"
+LOG_LEVEL="${LOG_LEVEL:-INFO}"
 
 ALL_QUEUES=(data backfill signal analysis)
 
@@ -75,6 +78,7 @@ for arg in "$@"; do
   case "$arg" in
     --with-flower) ENABLE_FLOWER=1 ;;
     --workers=*)   WORKERS="${arg#--workers=}" ;;
+    --loglevel=*)  LOG_LEVEL="${arg#--loglevel=}" ;;
     --stop)
       # ── Stop all managed processes ────────────────────────
       echo "[run_workers] Stopping all Celery processes..."
@@ -116,6 +120,17 @@ for arg in "$@"; do
       ;;
   esac
 done
+
+# Normalise and validate LOG_LEVEL
+LOG_LEVEL="$(echo "$LOG_LEVEL" | tr '[:lower:]' '[:upper:]')"
+case "$LOG_LEVEL" in
+  DEBUG|INFO|WARNING|ERROR|CRITICAL) ;;
+  *)
+    echo "[run_workers] 无效的日志级别: '${LOG_LEVEL}'" >&2
+    echo "  可选值: DEBUG, INFO, WARNING, ERROR, CRITICAL" >&2
+    exit 1
+    ;;
+esac
 
 # Resolve which workers to start
 if [[ "$WORKERS" == "all" ]]; then
@@ -410,6 +425,7 @@ log main "HEALTH_CHECK_INTERVAL=${HEALTH_CHECK_INTERVAL}s"
 log main "HEALTH_CHECK_FAILURES=${HEALTH_CHECK_FAILURES}"
 log main "SHUTDOWN_GRACE=${SHUTDOWN_GRACE}s"
 log main "WORKERS=${ACTIVE_WORKERS[*]}"
+log main "LOG_LEVEL=${LOG_LEVEL}"
 log main "ENABLE_FLOWER=${ENABLE_FLOWER}"
 [[ "$ENABLE_FLOWER" == "1" ]] && log main "FLOWER_PORT=${FLOWER_PORT}"
 log main "────────────────────────────────────────"
@@ -422,13 +438,13 @@ cleanup_stale_pids
 for queue in "${ACTIVE_WORKERS[@]}"; do
   run_with_restart "$queue" \
     $CELERY_CMD worker -Q "$queue" -n "${queue}@%h" \
-    --loglevel=INFO --logfile="$LOG_DIR/celery-${queue}.log" &
+    --loglevel="$LOG_LEVEL" --logfile="$LOG_DIR/celery-${queue}.log" &
   WRAPPER_PIDS[$queue]=$!
 done
 
 run_with_restart beat \
   $CELERY_CMD beat \
-  --loglevel=INFO --logfile="$LOG_DIR/celery-beat.log" &
+  --loglevel="$LOG_LEVEL" --logfile="$LOG_DIR/celery-beat.log" &
 WRAPPER_PIDS[beat]=$!
 
 # ── Flower (optional) ─────────────────────────────────────

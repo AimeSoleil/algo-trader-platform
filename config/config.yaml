@@ -123,6 +123,10 @@ schedule:
   signal_compute_time: "19:30"       # 19:30 计算交易信号
   blueprint_generate_time: "20:00"   # 20:00 生成明天的策略蓝图
 
+# ── Cross-asset benchmarks for multi-factor signal model ──
+cross_asset_benchmarks: ["SPY", "QQQ", "IWM", "TLT"]
+environment_symbols: ["^VIX"]  # market regime indicators (not traded)
+
 watchlist:
   - "AAPL"
   - "MSFT"
@@ -130,6 +134,9 @@ watchlist:
   - "TSLA"
   - "SPY"
   - "QQQ"
+  - "IWM"
+  - "TLT"
+  - "^VIX"
   - "AMZN"
   - "META"
   - "GOOGL"
