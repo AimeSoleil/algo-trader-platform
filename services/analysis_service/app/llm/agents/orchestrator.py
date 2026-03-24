@@ -1,0 +1,282 @@
+"""Multi-agent orchestrator for the analysis pipeline.
+
+Coordinates 6 specialist agents → Synthesizer → Critic in a structured
+pipeline, replacing the old chunk-split-merge approach.
+
+The Orchestrator creates the LLM provider based on ``settings.llm.provider``
+and injects it into every agent — no agent hardcodes which LLM to call.
+
+Flow:
+    6 Analysis Agents (parallel) → Synthesizer → Critic → [optional revision] → Final Blueprint
+"""
+from __future__ import annotations
+
+import asyncio
+import json
+from time import perf_counter
+from typing import Any
+
+from shared.config import get_settings
+from shared.metrics import llm_request_duration
+from shared.models.blueprint import LLMTradingBlueprint
+from shared.models.signal import SignalFeatures
+from shared.utils import get_logger
+
+from services.analysis_service.app.llm.agents.base_agent import AgentLLMProvider
+from services.analysis_service.app.llm.agents.chain_agent import ChainAgent
+from services.analysis_service.app.llm.agents.cross_asset_agent import CrossAssetAgent
+from services.analysis_service.app.llm.agents.critic_agent import CriticAgent
+from services.analysis_service.app.llm.agents.flow_agent import FlowAgent
+from services.analysis_service.app.llm.agents.spread_agent import SpreadAgent
+from services.analysis_service.app.llm.agents.synthesizer_agent import SynthesizerAgent
+from services.analysis_service.app.llm.agents.trend_agent import TrendAgent
+from services.analysis_service.app.llm.agents.volatility_agent import VolatilityAgent
+from services.analysis_service.app.llm.prompts import _serialize_one_signal
+
+logger = get_logger("agent_orchestrator")
+
+# Maximum revision rounds (Synthesizer ↔ Critic)
+_MAX_REVISIONS = 2
+
+
+def _create_agent_provider(provider_name: str | None = None) -> AgentLLMProvider:
+    """Instantiate the correct ``AgentLLMProvider`` based on config.
+
+    Parameters
+    ----------
+    provider_name:
+        ``"openai"`` or ``"copilot"``.  Defaults to ``settings.llm.provider``.
+    """
+    if provider_name is None:
+        provider_name = get_settings().llm.provider
+
+    if provider_name == "copilot":
+        from services.analysis_service.app.llm.agents._copilot_agent_provider import (
+            CopilotAgentProvider,
+        )
+        return CopilotAgentProvider()
+
+    # Default / "openai"
+    from services.analysis_service.app.llm.agents._openai_agent_provider import (
+        OpenAIAgentProvider,
+    )
+    return OpenAIAgentProvider()
+
+
+class AgentOrchestrator:
+    """Orchestrate multi-agent blueprint generation.
+
+    Usage::
+
+        orch = AgentOrchestrator()
+        blueprint = await orch.generate(signals, positions, prev_exec)
+    """
+
+    def __init__(self, *, provider: AgentLLMProvider | None = None):
+        # Specialist agents (stateless — safe to reuse)
+        self._trend = TrendAgent()
+        self._volatility = VolatilityAgent()
+        self._flow = FlowAgent()
+        self._chain = ChainAgent()
+        self._spread = SpreadAgent()
+        self._cross_asset = CrossAssetAgent()
+
+        # Synthesis & review
+        self._synthesizer = SynthesizerAgent()
+        self._critic = CriticAgent()
+
+        # Provider — lazy-created on first use if not supplied
+        self._provider = provider
+
+    async def generate(
+        self,
+        signal_features: list[SignalFeatures],
+        current_positions: dict | None = None,
+        previous_execution: dict | None = None,
+    ) -> LLMTradingBlueprint:
+        """Run the full multi-agent pipeline.
+
+        Parameters
+        ----------
+        signal_features:
+            All symbols' signal features.
+        current_positions:
+            Current portfolio positions (or None).
+        previous_execution:
+            Yesterday's execution summary (or None).
+
+        Returns
+        -------
+        LLMTradingBlueprint
+            The final reviewed blueprint.
+        """
+        started = perf_counter()
+
+        # ── Resolve provider (lazy-create on first call) ──
+        provider = self._provider
+        if provider is None:
+            provider = _create_agent_provider()
+            self._provider = provider
+
+        logger.info(
+            "orchestrator.started",
+            symbols=len(signal_features),
+            provider=provider.name,
+        )
+
+        # ── Step 0: Serialize signals once ──
+        serialized = self._serialize_signals(signal_features)
+        signals_summary = [
+            {
+                "symbol": sf.symbol,
+                "close_price": sf.close_price,
+                "volume": sf.volume,
+                "volatility_regime": sf.volatility_regime,
+            }
+            for sf in signal_features
+        ]
+
+        # ── Step 1: Run 6 specialist agents in parallel ──
+        agent_outputs = await self._run_specialists(serialized, provider=provider)
+
+        logger.info(
+            "orchestrator.specialists_done",
+            agents_succeeded=len(agent_outputs),
+        )
+
+        # ── Step 2: Synthesize ──
+        blueprint = await self._synthesizer.synthesize(
+            agent_outputs=agent_outputs,
+            signals_summary=signals_summary,
+            current_positions=current_positions,
+            previous_execution=previous_execution,
+            provider=provider,
+        )
+
+        logger.info(
+            "orchestrator.synthesis_done",
+            plans=len(blueprint.symbol_plans),
+        )
+
+        # ── Step 3: Critic review loop ──
+        for revision in range(_MAX_REVISIONS):
+            verdict = await self._critic.review(
+                blueprint_json=blueprint.model_dump(mode="json"),
+                agent_outputs=agent_outputs,
+                signals_summary=signals_summary,
+                provider=provider,
+            )
+
+            logger.info(
+                "orchestrator.critic_verdict",
+                revision=revision,
+                verdict=verdict.verdict,
+                issues=len(verdict.issues),
+            )
+
+            if verdict.verdict == "pass":
+                break
+
+            # Revision needed — feed critic feedback back to synthesizer
+            logger.info(
+                "orchestrator.revision_requested",
+                revision=revision + 1,
+                error_count=sum(1 for i in verdict.issues if i.severity == "error"),
+            )
+
+            blueprint = await self._synthesizer.synthesize(
+                agent_outputs=agent_outputs,
+                signals_summary=signals_summary,
+                current_positions=current_positions,
+                previous_execution=previous_execution,
+                critic_feedback=verdict.summary + "\n\nIssues:\n" + json.dumps(
+                    [i.model_dump() for i in verdict.issues],
+                    indent=2,
+                    ensure_ascii=False,
+                ),
+                provider=provider,
+            )
+
+        elapsed_ms = round((perf_counter() - started) * 1000, 2)
+        logger.info(
+            "orchestrator.completed",
+            plans=len(blueprint.symbol_plans),
+            elapsed_ms=elapsed_ms,
+        )
+        return blueprint
+
+    # ------------------------------------------------------------------
+    # Internal helpers
+    # ------------------------------------------------------------------
+
+    def _serialize_signals(self, features: list[SignalFeatures]) -> list[dict[str, Any]]:
+        """Serialize all signal features into dicts for agent consumption.
+
+        Uses the prompt serializer but parses back to dict so agents
+        can extract their relevant subsets.
+        """
+        results = []
+        for sf in features:
+            # Re-use the compact serialization from prompts module
+            text_block = _serialize_one_signal(sf)
+            # Extract JSON from "### SYMBOL\n{...}" format
+            lines = text_block.split("\n", 1)
+            if len(lines) == 2:
+                try:
+                    data = json.loads(lines[1])
+                    data["symbol"] = sf.symbol
+                    results.append(data)
+                except json.JSONDecodeError:
+                    # Fallback: minimal data
+                    results.append({
+                        "symbol": sf.symbol,
+                        "price": {"close_price": sf.close_price},
+                    })
+            else:
+                results.append({
+                    "symbol": sf.symbol,
+                    "price": {"close_price": sf.close_price},
+                })
+        return results
+
+    async def _run_specialists(
+        self,
+        serialized_signals: list[dict[str, Any]],
+        *,
+        provider: AgentLLMProvider,
+    ) -> dict[str, Any]:
+        """Run all 6 specialist agents in parallel, collecting results.
+
+        Failed agents are logged but do NOT fail the pipeline — the
+        synthesizer will work with whatever analyses are available.
+        """
+        agents = {
+            "trend": self._trend,
+            "volatility": self._volatility,
+            "flow": self._flow,
+            "chain": self._chain,
+            "spread": self._spread,
+            "cross_asset": self._cross_asset,
+        }
+
+        async def _run_one(name: str, agent):
+            try:
+                result = await agent.analyze(serialized_signals, provider=provider)
+                return name, result.model_dump(mode="json")
+            except Exception as e:
+                logger.warning(
+                    f"orchestrator.agent_failed",
+                    agent=name,
+                    error=str(e),
+                )
+                return name, None
+
+        tasks = [_run_one(name, agent) for name, agent in agents.items()]
+        results = await asyncio.gather(*tasks)
+
+        outputs = {}
+        for name, result in results:
+            if result is not None:
+                outputs[name] = result
+
+        return outputs

@@ -67,6 +67,17 @@ class LLMSettings(BaseSettings):
         description="Symbols injected into every chunk for market context",
     )
 
+    # ── Agentic pipeline ──
+    agentic_mode: bool = False                  # True → multi-agent pipeline, False → chunk-based one-shot
+    max_critic_revisions: int = 2               # max Synthesizer↔Critic revision rounds
+
+    # ── Retry / Resilience ──
+    max_retries: int = 3
+    backoff_base_seconds: float = 2.0          # exponential backoff base
+    backoff_max_seconds: float = 60.0          # cap on backoff delay
+    circuit_breaker_threshold: int = 5         # consecutive failures before circuit opens
+    circuit_breaker_cooldown_seconds: int = 60 # seconds before circuit half-opens
+
 class TradingSettings(BaseSettings):
     timezone: str = "America/New_York"
     execution_interval: int = 300  # seconds (5 min)

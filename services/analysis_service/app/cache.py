@@ -9,7 +9,14 @@ from shared.utils import get_logger
 
 logger = get_logger("analysis_cache")
 
-_CACHE_TTL = 3600  # 1 hour — blueprints change infrequently
+def _cache_ttl() -> int:
+    from shared.config import get_settings
+    return get_settings().llm.cache_ttl
+
+
+def _cache_enabled() -> bool:
+    from shared.config import get_settings
+    return get_settings().llm.cache_enabled
 _CACHE_PREFIX = "blueprint"
 
 
@@ -23,6 +30,8 @@ def _get_redis():
 
 async def get_cached_blueprint(trading_date: date) -> dict | None:
     """Try to get blueprint from Redis cache."""
+    if not _cache_enabled():
+        return None
     try:
         redis = _get_redis()
         cached = await redis.get(_cache_key(trading_date))
@@ -36,12 +45,14 @@ async def get_cached_blueprint(trading_date: date) -> dict | None:
 
 async def set_cached_blueprint(trading_date: date, data: dict) -> None:
     """Store blueprint in Redis cache."""
+    if not _cache_enabled():
+        return
     try:
         redis = _get_redis()
         await redis.set(
             _cache_key(trading_date),
             json.dumps(data, default=str),
-            ex=_CACHE_TTL,
+            ex=_cache_ttl(),
         )
     except Exception as e:
         logger.warning("cache.set_failed", error=str(e))
@@ -49,11 +60,13 @@ async def set_cached_blueprint(trading_date: date, data: dict) -> None:
 
 async def set_cached_blueprint_strict(trading_date: date, data: dict) -> None:
     """Strict set for task write-through; raise to caller on failure."""
+    if not _cache_enabled():
+        return
     redis = _get_redis()
     await redis.set(
         _cache_key(trading_date),
         json.dumps(data, default=str),
-        ex=_CACHE_TTL,
+        ex=_cache_ttl(),
     )
 
 

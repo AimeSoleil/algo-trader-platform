@@ -201,7 +201,15 @@ def generate_daily_blueprint(self, trading_date: str | None = None, prev_result=
         resolved_trading_date=resolved_trading_date,
         retry=getattr(self.request, "retries", 0),
     )
-    return _run_async(_generate_blueprint_async(resolved_trading_date))
+    try:
+        return _run_async(_generate_blueprint_async(resolved_trading_date))
+    except Exception as exc:
+        logger.warning(
+            "blueprint.generate.retrying",
+            error=str(exc),
+            retry=getattr(self.request, "retries", 0),
+        )
+        raise self.retry(exc=exc, countdown=60)
 
 
 async def _generate_blueprint_async(trading_date_str: str | None = None) -> dict:
@@ -359,7 +367,16 @@ def manual_analyze(self, symbol: str, trading_date: str | None = None) -> dict:
         trading_date=trading_date,
         retry=getattr(self.request, "retries", 0),
     )
-    return _run_async(_manual_analyze_async(self, symbol.upper(), trading_date))
+    try:
+        return _run_async(_manual_analyze_async(self, symbol.upper(), trading_date))
+    except Exception as exc:
+        logger.warning(
+            "manual_analyze.retrying",
+            symbol=symbol,
+            error=str(exc),
+            retry=getattr(self.request, "retries", 0),
+        )
+        raise self.retry(exc=exc, countdown=30)
 
 
 async def _manual_analyze_async(task, symbol: str, trading_date_str: str | None = None) -> dict:

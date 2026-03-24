@@ -82,6 +82,8 @@ llm:
   cache_enabled: true
   cache_ttl: 3600
   skill_dir: ""
+  agentic_mode: true                    # true = multi-agent pipeline, false = legacy chunk-split
+  max_critic_revisions: 2               # Synthesizer↔Critic revision rounds
   chunk_size: 5                        # max symbols per LLM chunk (excl. benchmarks)
   max_concurrent_chunks: 3             # max parallel LLM calls for large watchlists
   benchmark_symbols: ["SPY", "QQQ"]    # injected into every chunk for market context

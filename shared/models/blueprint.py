@@ -2,8 +2,8 @@
 from __future__ import annotations
 from datetime import date, datetime
 from enum import Enum
-from typing import Any
-from pydantic import BaseModel, Field
+from typing import Any, Literal
+from pydantic import BaseModel, Field, model_validator
 import uuid
 
 from shared.models.signal import DataQuality
@@ -122,8 +122,8 @@ class OptionLeg(BaseModel):
     """期权策略单腿"""
     expiry: date
     strike: float
-    option_type: str  # "call" / "put"
-    side: str  # "buy" / "sell"
+    option_type: Literal["call", "put"]
+    side: Literal["buy", "sell"]
     quantity: int = 1
     target_entry_price: float | None = None  # 目标入场价（限价）
     price_tolerance: float = 0.05  # 价格容忍度（滑点范围）
@@ -155,11 +155,11 @@ class SymbolPlan(BaseModel):
     max_position_size: int = 1  # 最大合约组数
     stop_loss_amount: float | None = None  # 止损金额
     take_profit_amount: float | None = None  # 止盈金额
-    max_loss_per_trade: float = 500.0  # 单笔最大亏损
+    max_loss_per_trade: float = Field(500.0, gt=0, description="单笔最大亏损")
     
     # LLM推理
     reasoning: str = ""  # LLM 推理过程
-    confidence: float = 0.5  # 置信度 0-1
+    confidence: float = Field(0.5, ge=0.0, le=1.0, description="置信度 0-1")
 
     # 信号数据质量标注（由 analysis-service 后处理注入）
     data_quality_score: float = Field(1.0, ge=0.0, le=1.0, description="信号数据综合质量 0-1")
@@ -175,6 +175,31 @@ class SymbolPlan(BaseModel):
     exit_fill_prices: list[float] = Field(default_factory=list)
     realized_pnl: float = 0.0
 
+    @model_validator(mode="after")
+    def _validate_strategy_legs(self):
+        """Validate strategy_type ↔ legs count consistency."""
+        n = len(self.legs)
+        expected = {
+            StrategyType.SINGLE_LEG: (1, 1),
+            StrategyType.VERTICAL_SPREAD: (2, 2),
+            StrategyType.IRON_CONDOR: (4, 4),
+            StrategyType.IRON_BUTTERFLY: (4, 4),
+            StrategyType.BUTTERFLY: (3, 4),
+            StrategyType.CALENDAR_SPREAD: (2, 2),
+            StrategyType.DIAGONAL_SPREAD: (2, 2),
+            StrategyType.STRADDLE: (2, 2),
+            StrategyType.STRANGLE: (2, 2),
+            StrategyType.COVERED_CALL: (1, 2),
+            StrategyType.PROTECTIVE_PUT: (1, 2),
+            StrategyType.COLLAR: (2, 3),
+        }
+        rng = expected.get(self.strategy_type)
+        if rng and not (rng[0] <= n <= rng[1]):
+            raise ValueError(
+                f"{self.strategy_type.value} expects {rng[0]}-{rng[1]} legs, got {n}"
+            )
+        return self
+
 
 class LLMTradingBlueprint(BaseModel):
     """LLM 生成的日内交易蓝图"""
@@ -185,7 +210,7 @@ class LLMTradingBlueprint(BaseModel):
     model_version: str = "gpt-4o"
     
     # 市场判断
-    market_regime: str = "neutral"  # "high_vol" / "low_vol" / "trending_up" / "trending_down" / "ranging" / "neutral"
+    market_regime: str = "neutral"  # LLM may return varied regime strings — keep loose for forward compat
     market_analysis: str = ""  # 市场分析摘要
     
     # 标的级策略
@@ -204,6 +229,9 @@ class LLMTradingBlueprint(BaseModel):
     # 数据质量全局摘要（所有 symbol_plan 中的最低 data_quality_score）
     min_data_quality_score: float = Field(1.0, ge=0.0, le=1.0, description="所有标的中最低数据质量分")
     data_quality_summary: list[str] = Field(default_factory=list, description="全局数据质量警告")
+
+    # Symbols from failed chunks that couldn't be analyzed
+    missing_symbols: list[str] = Field(default_factory=list, description="Symbols lost due to chunk failures")
 
     # 盘后执行摘要（收盘后回填）
     execution_summary: dict[str, Any] | None = None
