@@ -149,7 +149,6 @@ class DataProviderSettings(BaseSettings):
 
 
 class DataServiceSettings(BaseSettings):
-    intraday_enabled: bool = False
     providers: DataProviderSettings = Field(default_factory=DataProviderSettings)
     market_hours: MarketHoursSettings = Field(default_factory=MarketHoursSettings)
     intraday: DataServiceIntradaySettings = Field(default_factory=DataServiceIntradaySettings)
