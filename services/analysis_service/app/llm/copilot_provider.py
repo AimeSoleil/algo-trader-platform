@@ -123,13 +123,20 @@ class CopilotProvider(LLMProviderBase):
         *,
         chunk_mode: bool = False,
     ) -> LLMTradingBlueprint:
-        """Generate a next-day trading blueprint via Copilot SDK.
+        """Generate a next-day trading blueprint via Copilot SDK."""
+        import asyncio
+        import random
+        from time import perf_counter
 
-        The ``trading-analysis`` skill is loaded via ``skill_directories``
-        so the SDK injects the SKILL.md content into session context
-        automatically.  The model can then navigate references/ via
-        file-system tools.
-        """
+        from pydantic import ValidationError
+
+        from shared.metrics import llm_request_duration, llm_retries_total
+
+        settings = get_settings()
+        max_retries = settings.llm.max_retries
+        backoff_base = settings.llm.backoff_base_seconds
+        backoff_max = settings.llm.backoff_max_seconds
+
         client = await self._get_client()
         prompt = build_blueprint_prompt(
             signal_features, current_positions, previous_execution,
@@ -137,8 +144,11 @@ class CopilotProvider(LLMProviderBase):
         )
         full_prompt = _build_structured_prompt(prompt)
 
-        max_retries = 3
+        last_exc: Exception | None = None
         for attempt in range(max_retries):
+            t0 = perf_counter()
+            status = "error"
+            session = None
             try:
                 await self._get_client()
                 session = await client.create_session({
@@ -152,9 +162,7 @@ class CopilotProvider(LLMProviderBase):
                     {"prompt": full_prompt},
                     timeout=self.request_timeout,
                 )
-                await session.disconnect()
 
-                # Extract text from result
                 response_text = (
                     result.content
                     if hasattr(result, "content")
@@ -163,13 +171,14 @@ class CopilotProvider(LLMProviderBase):
 
                 blueprint_data = _parse_blueprint_json(response_text)
 
-                # Add metadata
                 blueprint_data["trading_date"] = _next_trading_day().isoformat()
                 blueprint_data["generated_at"] = now_utc().isoformat()
                 blueprint_data["model_provider"] = "copilot"
                 blueprint_data["model_version"] = "copilot-sdk"
 
                 blueprint = LLMTradingBlueprint.model_validate(blueprint_data)
+
+                status = "ok"
                 logger.info(
                     "copilot.blueprint_generated",
                     trading_date=str(blueprint.trading_date),
@@ -177,16 +186,63 @@ class CopilotProvider(LLMProviderBase):
                 )
                 return blueprint
 
+            except (json.JSONDecodeError, ValidationError) as e:
+                llm_retries_total.labels(provider="copilot", error_type="parse").inc()
+                logger.warning(
+                    "copilot.parse_error",
+                    attempt=attempt + 1,
+                    error=str(e),
+                    error_type=type(e).__name__,
+                )
+                raise
+
             except Exception as e:
+                last_exc = e
+                error_type = type(e).__name__
+                is_retryable = hasattr(e, "status_code") and getattr(e, "status_code", 0) >= 500
+
+                # Treat timeouts and connection errors as retryable
+                if "timeout" in str(e).lower() or "connection" in str(e).lower():
+                    is_retryable = True
+
+                if is_retryable and attempt < max_retries - 1:
+                    delay = min(
+                        backoff_base * (2 ** attempt) + random.uniform(0, 1),
+                        backoff_max,
+                    )
+                    llm_retries_total.labels(provider="copilot", error_type=error_type).inc()
+                    logger.warning(
+                        "copilot.retryable_error",
+                        attempt=attempt + 1,
+                        error=str(e),
+                        error_type=error_type,
+                        retry_delay_s=round(delay, 2),
+                    )
+                    await asyncio.sleep(delay)
+                    continue
+
                 logger.warning(
                     "copilot.generation_failed",
                     attempt=attempt + 1,
                     error=str(e),
+                    error_type=error_type,
+                    retryable=is_retryable,
                 )
-                if attempt == max_retries - 1:
-                    raise
+                raise
 
-        raise RuntimeError("Copilot failed to generate blueprint after retries")
+            finally:
+                elapsed = perf_counter() - t0
+                llm_request_duration.labels(
+                    provider="copilot", agent="blueprint", status=status,
+                ).observe(elapsed)
+                # Always disconnect session to prevent resource leaks
+                if session is not None:
+                    try:
+                        await session.disconnect()
+                    except Exception:
+                        pass
+
+        raise last_exc or RuntimeError("Copilot failed to generate blueprint after retries")
 
     async def health_check(self) -> bool:
         try:

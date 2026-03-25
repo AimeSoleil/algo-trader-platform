@@ -1,4 +1,4 @@
-"""LLM 适配器 — 统一接口 + 回退逻辑 + 并行分片"""
+"""LLM 适配器 — 统一接口 + 回退逻辑 + 并行分片 + multi-agent 模式"""
 from __future__ import annotations
 
 import asyncio
@@ -12,8 +12,39 @@ from shared.utils import get_logger
 from services.analysis_service.app.llm.base import LLMProviderBase
 from services.analysis_service.app.llm.chunker import merge_blueprints, split_signal_features
 from services.analysis_service.app.llm.openai_provider import OpenAIProvider
+from shared.metrics import llm_fallback_total, llm_circuit_open_total
 
 logger = get_logger("llm_adapter")
+
+
+class _CircuitBreaker:
+    """Simple circuit breaker for LLM providers."""
+
+    def __init__(self, threshold: int = 5, cooldown: float = 60.0):
+        self._threshold = threshold
+        self._cooldown = cooldown
+        self._failure_count = 0
+        self._opened_at: float | None = None
+
+    @property
+    def is_open(self) -> bool:
+        if self._opened_at is None:
+            return False
+        # Check if cooldown has elapsed (half-open)
+        from time import monotonic
+        if monotonic() - self._opened_at >= self._cooldown:
+            return False
+        return True
+
+    def record_success(self) -> None:
+        self._failure_count = 0
+        self._opened_at = None
+
+    def record_failure(self) -> None:
+        self._failure_count += 1
+        if self._failure_count >= self._threshold:
+            from time import monotonic
+            self._opened_at = monotonic()
 
 
 class LLMAdapter:
@@ -34,6 +65,16 @@ class LLMAdapter:
         self._chunk_size = settings.llm.chunk_size
         self._max_concurrent = settings.llm.max_concurrent_chunks
         self._benchmark_symbols = settings.llm.benchmark_symbols
+
+        # Global concurrency limiter (shared across all invocations)
+        self._semaphore = asyncio.Semaphore(self._max_concurrent)
+
+        # Per-provider circuit breakers
+        self._circuit: dict[str, _CircuitBreaker] = {}
+
+        # Agentic mode
+        self._agentic_mode = settings.llm.agentic_mode
+        self._orchestrator = None  # lazy-init
 
     def _create_provider(self, name: str) -> LLMProviderBase:
         if name == "openai":
@@ -69,6 +110,16 @@ class LLMAdapter:
                 logger.info("llm_adapter.secondary_initialized")
         return self._secondary
 
+    def _get_circuit(self, provider_name: str) -> _CircuitBreaker:
+        """Get or create circuit breaker for a provider."""
+        if provider_name not in self._circuit:
+            settings = get_settings()
+            self._circuit[provider_name] = _CircuitBreaker(
+                threshold=settings.llm.circuit_breaker_threshold,
+                cooldown=settings.llm.circuit_breaker_cooldown_seconds,
+            )
+        return self._circuit[provider_name]
+
     # ------------------------------------------------------------------
     # Single-chunk generation (primary → fallback)
     # ------------------------------------------------------------------
@@ -81,27 +132,54 @@ class LLMAdapter:
         *,
         chunk_mode: bool = False,
     ) -> LLMTradingBlueprint:
-        """Generate a blueprint for one chunk with primary→secondary fallback."""
+        """Generate a blueprint for one chunk with primary→secondary fallback + circuit breaker."""
         primary = self._get_primary()
-        try:
-            return await primary.generate_blueprint(
-                signal_features, current_positions, previous_execution,
-                chunk_mode=chunk_mode,
-            )
-        except Exception as e:
-            logger.warning(
-                "llm_adapter.primary_failed",
-                provider=self.primary_name,
-                error=str(e),
-            )
-            secondary = self._get_secondary()
-            if secondary:
-                logger.info("llm_adapter.fallback_to_secondary")
-                return await secondary.generate_blueprint(
+        primary_cb = self._get_circuit(self.primary_name)
+
+        if not primary_cb.is_open:
+            try:
+                bp = await primary.generate_blueprint(
                     signal_features, current_positions, previous_execution,
                     chunk_mode=chunk_mode,
                 )
-            raise
+                primary_cb.record_success()
+                return bp
+            except Exception as e:
+                primary_cb.record_failure()
+                if primary_cb.is_open:
+                    llm_circuit_open_total.labels(provider=self.primary_name).inc()
+                    logger.warning(
+                        "llm_adapter.circuit_opened",
+                        provider=self.primary_name,
+                    )
+                logger.warning(
+                    "llm_adapter.primary_failed",
+                    provider=self.primary_name,
+                    error=str(e),
+                )
+        else:
+            logger.info(
+                "llm_adapter.primary_circuit_open",
+                provider=self.primary_name,
+            )
+
+        secondary = self._get_secondary()
+        if secondary:
+            llm_fallback_total.inc()
+            logger.info("llm_adapter.fallback_to_secondary")
+            secondary_name = "copilot" if self.primary_name == "openai" else "openai"
+            secondary_cb = self._get_circuit(secondary_name)
+            try:
+                bp = await secondary.generate_blueprint(
+                    signal_features, current_positions, previous_execution,
+                    chunk_mode=chunk_mode,
+                )
+                secondary_cb.record_success()
+                return bp
+            except Exception as e:
+                secondary_cb.record_failure()
+                raise
+        raise RuntimeError(f"Primary provider {self.primary_name} failed and no secondary available")
 
     # ------------------------------------------------------------------
     # Public API — auto-chunking orchestrator
@@ -113,7 +191,80 @@ class LLMAdapter:
         current_positions: dict | None = None,
         previous_execution: dict | None = None,
     ) -> LLMTradingBlueprint:
-        """生成蓝图：自动分片 → 并行 LLM 调用 → 合并结果。
+        """生成蓝图：agentic 模式或 legacy 分片模式。
+
+        When ``agentic_mode`` is enabled, delegates to the multi-agent
+        orchestrator (6 specialist agents → Synthesizer → Critic).
+        Falls back to the legacy chunk-split pipeline on failure.
+
+        When ``agentic_mode`` is disabled, uses the classic
+        split → parallel LLM calls → merge approach.
+        """
+        if self._agentic_mode:
+            return await self._generate_agentic(
+                signal_features, current_positions, previous_execution,
+            )
+        return await self._generate_legacy(
+            signal_features, current_positions, previous_execution,
+        )
+
+    # ------------------------------------------------------------------
+    # Agentic pipeline (multi-agent orchestrator)
+    # ------------------------------------------------------------------
+
+    def _get_orchestrator(self):
+        """Lazy-init the AgentOrchestrator."""
+        if self._orchestrator is None:
+            from services.analysis_service.app.llm.agents.orchestrator import AgentOrchestrator
+            self._orchestrator = AgentOrchestrator()
+            logger.info("llm_adapter.orchestrator_initialized")
+        return self._orchestrator
+
+    async def _generate_agentic(
+        self,
+        signal_features: list[SignalFeatures],
+        current_positions: dict | None,
+        previous_execution: dict | None,
+    ) -> LLMTradingBlueprint:
+        """Multi-agent pipeline with fallback to legacy on failure."""
+        started = perf_counter()
+        try:
+            orchestrator = self._get_orchestrator()
+            blueprint = await orchestrator.generate(
+                signal_features=signal_features,
+                current_positions=current_positions,
+                previous_execution=previous_execution,
+            )
+            elapsed_ms = round((perf_counter() - started) * 1000, 2)
+            logger.info(
+                "llm_adapter.agentic_success",
+                plans=len(blueprint.symbol_plans),
+                elapsed_ms=elapsed_ms,
+            )
+            return blueprint
+        except Exception as e:
+            elapsed_ms = round((perf_counter() - started) * 1000, 2)
+            logger.warning(
+                "llm_adapter.agentic_failed_fallback_to_legacy",
+                error=str(e),
+                elapsed_ms=elapsed_ms,
+            )
+            # Fallback to legacy chunk pipeline
+            return await self._generate_legacy(
+                signal_features, current_positions, previous_execution,
+            )
+
+    # ------------------------------------------------------------------
+    # Legacy chunk-split pipeline
+    # ------------------------------------------------------------------
+
+    async def _generate_legacy(
+        self,
+        signal_features: list[SignalFeatures],
+        current_positions: dict | None = None,
+        previous_execution: dict | None = None,
+    ) -> LLMTradingBlueprint:
+        """Legacy 分片模式：自动分片 → 并行 LLM 调用 → 合并结果。
 
         When the number of non-benchmark symbols exceeds ``chunk_size``,
         the features are split into smaller chunks (each containing
@@ -146,10 +297,9 @@ class LLMAdapter:
             max_concurrent=self._max_concurrent,
         )
         started = perf_counter()
-        semaphore = asyncio.Semaphore(self._max_concurrent)
 
         async def _process_chunk(idx: int, chunk: list[SignalFeatures]) -> LLMTradingBlueprint:
-            async with semaphore:
+            async with self._semaphore:
                 symbols = [sf.symbol for sf in chunk]
                 logger.debug(
                     "llm_adapter.chunk_start",
@@ -189,11 +339,27 @@ class LLMAdapter:
                 errors=[str(e) for _, e in errors],
             )
 
+        # Track symbols lost from failed chunks
+        missing_symbols: list[str] = []
+        if errors:
+            all_chunks_symbols = {i: [sf.symbol for sf in chunk] for i, chunk in enumerate(chunks)}
+            benchmark_set = {s.upper() for s in self._benchmark_symbols}
+            for idx, _ in errors:
+                for sym in all_chunks_symbols.get(idx, []):
+                    if sym.upper() not in benchmark_set:
+                        missing_symbols.append(sym)
+
         if not blueprints:
             # All chunks failed — re-raise the first error
             raise errors[0][1]
 
         merged = merge_blueprints(blueprints)
+        if missing_symbols:
+            merged.missing_symbols = missing_symbols
+            logger.warning(
+                "llm_adapter.missing_symbols",
+                symbols=missing_symbols,
+            )
 
         elapsed_ms = round((perf_counter() - started) * 1000, 2)
         logger.info(

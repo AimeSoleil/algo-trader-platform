@@ -56,19 +56,59 @@ def _load_skill_md() -> str:
     return _SKILL_MD_PATH.read_text(encoding="utf-8")
 
 
-def _build_hybrid_instructions() -> str:
-    """Embed workflow from SKILL.md in instructions; keep references as shell files."""
-    skill_md = _load_skill_md().strip()
-    if not skill_md:
-        return SYSTEM_PROMPT
+@lru_cache(maxsize=1)
+def _load_always_refs() -> str:
+    """Load always-needed reference docs for inlining into instructions."""
+    always_load = [
+        "trend-momentum.md",
+        "volatility-analysis.md",
+        "flow-microstructure.md",
+        "risk-management.md",
+    ]
+    refs_dir = _SKILL_DIR / "references"
+    parts: list[str] = []
+    for filename in always_load:
+        path = refs_dir / filename
+        if path.exists():
+            parts.append(f"### {filename}\n{path.read_text(encoding='utf-8').strip()}")
+    return "\n\n".join(parts)
 
-    return (
-        f"{SYSTEM_PROMPT}\n\n"
-        "Embedded trading-analysis workflow (from SKILL.md):\n"
-        f"{skill_md}\n\n"
-        "Reference files under trading-analysis/references are mounted in the shell environment. "
-        "Load them on-demand based on market context."
+
+def _build_hybrid_instructions() -> str:
+    """Embed workflow + always-load references in instructions; keep conditional refs as shell files.
+
+    Always-load refs (trend-momentum, volatility-analysis, flow-microstructure,
+    risk-management) are inlined to avoid shell latency and ensure the model
+    always sees them.  Conditional refs (option-chain-structure, spread-arbitrage,
+    cross-asset) remain as shell files to be loaded on-demand.
+    """
+    skill_md = _load_skill_md().strip()
+    always_refs = _load_always_refs()
+
+    parts: list[str] = [SYSTEM_PROMPT]
+
+    if skill_md:
+        parts.append(
+            "## Trading Analysis Workflow (from SKILL.md)\n\n"
+            f"{skill_md}"
+        )
+
+    if always_refs:
+        parts.append(
+            "## Core Reference Analyses (always loaded)\n\n"
+            f"{always_refs}"
+        )
+
+    parts.append(
+        "## Conditional References\n\n"
+        "These reference files are mounted in the shell under "
+        "trading-analysis/references/ — load them only when needed:\n"
+        "- option-chain-structure.md — load when option liquidity data is available\n"
+        "- spread-arbitrage.md — load when evaluating multi-leg strategies\n"
+        "- cross-asset.md — load when cross-asset indicators are available"
     )
+
+    return "\n\n".join(parts)
 
 
 # ---------------------------------------------------------------------------
@@ -99,13 +139,32 @@ class OpenAIProvider(LLMProviderBase):
         chunk_mode: bool = False,
     ) -> LLMTradingBlueprint:
         """Call OpenAI Responses API with the trading-analysis skill mounted."""
+        import asyncio
+        import random
+        from time import perf_counter
+
+        from pydantic import ValidationError
+
+        from shared.metrics import (
+            llm_request_duration,
+            llm_retries_total,
+            llm_tokens_total,
+        )
+
+        settings = get_settings()
+        max_retries = settings.llm.max_retries
+        backoff_base = settings.llm.backoff_base_seconds
+        backoff_max = settings.llm.backoff_max_seconds
+
         prompt = build_blueprint_prompt(
             signal_features, current_positions, previous_execution,
             chunk_mode=chunk_mode,
         )
 
-        max_retries = 3
+        last_exc: Exception | None = None
         for attempt in range(max_retries):
+            t0 = perf_counter()
+            status = "error"
             try:
                 response = await self.client.responses.create(
                     model=self.model,
@@ -142,6 +201,16 @@ class OpenAIProvider(LLMProviderBase):
 
                 blueprint = LLMTradingBlueprint.model_validate(blueprint_data)
 
+                status = "ok"
+                # Record token metrics
+                if response.usage:
+                    llm_tokens_total.labels(provider="openai", direction="prompt").inc(
+                        response.usage.input_tokens or 0,
+                    )
+                    llm_tokens_total.labels(provider="openai", direction="completion").inc(
+                        response.usage.output_tokens or 0,
+                    )
+
                 logger.info(
                     "openai.blueprint_generated",
                     trading_date=str(blueprint.trading_date),
@@ -150,16 +219,64 @@ class OpenAIProvider(LLMProviderBase):
                 )
                 return blueprint
 
+            except (json.JSONDecodeError, ValidationError) as e:
+                # Parse / validation errors — retrying won't help
+                llm_retries_total.labels(provider="openai", error_type="parse").inc()
+                logger.warning(
+                    "openai.parse_error",
+                    attempt=attempt + 1,
+                    error=str(e),
+                    error_type=type(e).__name__,
+                )
+                raise  # fail fast
+
             except Exception as e:
+                last_exc = e
+                # Check if retryable
+                error_type = type(e).__name__
+                retryable_types = (
+                    "RateLimitError",
+                    "APITimeoutError",
+                    "APIConnectionError",
+                    "InternalServerError",
+                )
+                is_retryable = error_type in retryable_types or (
+                    hasattr(e, "status_code") and getattr(e, "status_code", 0) >= 500
+                )
+
+                if is_retryable and attempt < max_retries - 1:
+                    delay = min(
+                        backoff_base * (2 ** attempt) + random.uniform(0, 1),
+                        backoff_max,
+                    )
+                    llm_retries_total.labels(provider="openai", error_type=error_type).inc()
+                    logger.warning(
+                        "openai.retryable_error",
+                        attempt=attempt + 1,
+                        error=str(e),
+                        error_type=error_type,
+                        retry_delay_s=round(delay, 2),
+                    )
+                    await asyncio.sleep(delay)
+                    continue
+
+                # Non-retryable or last attempt
                 logger.warning(
                     "openai.generation_failed",
                     attempt=attempt + 1,
                     error=str(e),
+                    error_type=error_type,
+                    retryable=is_retryable,
                 )
-                if attempt == max_retries - 1:
-                    raise
+                raise
 
-        raise RuntimeError("Failed to generate blueprint after retries")
+            finally:
+                elapsed = perf_counter() - t0
+                llm_request_duration.labels(
+                    provider="openai", agent="blueprint", status=status,
+                ).observe(elapsed)
+
+        raise last_exc or RuntimeError("Failed to generate blueprint after retries")
 
     async def health_check(self) -> bool:
         try:

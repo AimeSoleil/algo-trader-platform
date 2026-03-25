@@ -113,6 +113,14 @@ def _serialize_signals(features: list[SignalFeatures]) -> str:
     return "\n\n".join(blocks)
 
 
+def _prune_defaults(d: dict[str, Any]) -> dict[str, Any]:
+    """Remove zero-value / empty entries to reduce prompt token count."""
+    return {
+        k: v for k, v in d.items()
+        if v and v != 0 and v != 0.0 and v != {} and v != "" and v != []
+    }
+
+
 def _serialize_one_signal(sf: SignalFeatures) -> str:
     """Produce a compact JSON block for a single symbol."""
     oi = sf.option_indicators
@@ -174,7 +182,15 @@ def _serialize_one_signal(sf: SignalFeatures) -> str:
         "spy_beta": round(ca.spy_beta, 4),
         "sector_relative_strength": round(ca.sector_relative_strength, 4),
         "earnings_proximity_days": ca.earnings_proximity_days,
-        "index_correlation_20d": round(ca.index_correlation_20d, 4),
+        "spy_correlation_20d": round(ca.index_correlation_20d, 4),
+        "qqq_beta": round(ca.qqq_beta, 4),
+        "qqq_correlation_20d": round(ca.qqq_correlation_20d, 4),
+        "iwm_beta": round(ca.iwm_beta, 4),
+        "iwm_correlation_20d": round(ca.iwm_correlation_20d, 4),
+        "tlt_correlation_20d": round(ca.tlt_correlation_20d, 4),
+        "vix_level": round(ca.vix_level, 4),
+        "vix_percentile_52w": round(ca.vix_percentile_52w, 4),
+        "vix_correlation_20d": round(ca.vix_correlation_20d, 4),
     }
     if ca.confidence_scores:
         cross_asset["confidence"] = ca.confidence_scores
@@ -186,21 +202,21 @@ def _serialize_one_signal(sf: SignalFeatures) -> str:
             "volume": sf.volume,
             "volatility_regime": sf.volatility_regime,
         },
-        "stock_trend": stock_trend,
-        "stock_vol": {
+        "stock_trend": _prune_defaults(stock_trend),
+        "stock_vol": _prune_defaults({
             "hv_20d": round(si.hv_20d, 4),
             "hv_iv_spread": round(si.hv_iv_spread, 4),
             "garch_vol_forecast": round(si.garch_vol_forecast, 4),
-        },
-        "stock_flow": {
+        }),
+        "stock_flow": _prune_defaults({
             "vwap": round(si.vwap, 2),
             "volume_profile_poc": round(si.volume_profile_poc, 2),
             "volume_profile_val": round(si.volume_profile_val, 2),
             "volume_profile_vah": round(si.volume_profile_vah, 2),
             "cmf_20": round(si.cmf_20, 4),
             "tick_volume_delta": round(si.tick_volume_delta, 4),
-        },
-        "option_vol_surface": {
+        }),
+        "option_vol_surface": _prune_defaults({
             "iv_rank": round(oi.iv_rank, 2),
             "iv_percentile": round(oi.iv_percentile, 2),
             "current_iv": round(oi.current_iv, 4),
@@ -209,24 +225,26 @@ def _serialize_one_signal(sf: SignalFeatures) -> str:
             "term_structure_slope": round(oi.term_structure_slope, 4),
             "atm_iv": {k: round(v, 4) for k, v in oi.atm_iv.items()},
             "vol_surface_fit_error": round(oi.vol_surface_fit_error, 6),
-        },
-        "option_greeks": {
+        }),
+        "option_greeks": _prune_defaults({
             "delta_exposure_profile": {k: round(v, 4) for k, v in oi.delta_exposure_profile.items()},
             "gamma_peak_strike": round(oi.gamma_peak_strike, 2),
             "theta_decay_rate": round(oi.theta_decay_rate, 4),
             "vanna": round(oi.vanna, 4),
             "charm": round(oi.charm, 4),
             "portfolio_greeks": {k: round(v, 4) for k, v in oi.portfolio_greeks.items()},
-        },
-        "option_chain": option_chain,
-        "option_spreads": {
+        }),
+        "option_chain": _prune_defaults(option_chain),
+        "option_spreads": _prune_defaults({
             "vertical_spread_risk_reward": round(oi.vertical_spread_risk_reward, 4),
             "calendar_spread_theta_capture": round(oi.calendar_spread_theta_capture, 4),
             "butterfly_pricing_error": round(oi.butterfly_pricing_error, 4),
             "box_spread_arbitrage": round(oi.box_spread_arbitrage, 4),
-        },
-        "cross_asset": cross_asset,
+        }),
+        "cross_asset": _prune_defaults(cross_asset),
     }
+
+    data = {k: v for k, v in data.items() if v}
 
     if not sf.data_quality.complete:
         data["data_quality"] = {
@@ -302,7 +320,8 @@ def _build_task_section(*, chunk_mode: bool = False) -> str:
             f"ALL non-benchmark symbols provided in the signal data. Design concrete "
             f"strategies with fully defined legs for each.\n\n"
             f"If the Current Portfolio section shows open positions, evaluate each for "
-            f"hold / increase / decrease / close before proposing new trades."
+            f"hold / increase / decrease / close before proposing new trades.\n\n"
+            f"Output ONLY raw JSON — no markdown code fences, no commentary.\n\n"
         )
     return (
         f"## Task\n\n"
@@ -310,7 +329,8 @@ def _build_task_section(*, chunk_mode: bool = False) -> str:
         f"Follow the trading-analysis skill workflow. Select 1-3 optimal underlyings "
         f"from the signal data, design concrete strategies with fully defined legs.\n\n"
         f"If the Current Portfolio section shows open positions, evaluate each for "
-        f"hold / increase / decrease / close before proposing new trades."
+        f"hold / increase / decrease / close before proposing new trades.\n\n"
+        f"Output ONLY raw JSON — no markdown code fences, no commentary."
     )
 
 

@@ -28,3 +28,54 @@ def setup_metrics(app, *, metrics_path: str = "/metrics") -> Instrumentator:
     instrumentator.instrument(app)
     instrumentator.expose(app, endpoint=metrics_path, include_in_schema=False)
     return instrumentator
+
+
+# ---------------------------------------------------------------------------
+# LLM pipeline metrics
+# ---------------------------------------------------------------------------
+
+try:
+    from prometheus_client import Counter, Histogram
+
+    llm_request_duration = Histogram(
+        "llm_request_duration_seconds",
+        "Latency of individual LLM API calls",
+        labelnames=["provider", "agent", "status"],
+        buckets=(1, 2, 5, 10, 20, 30, 60, 120, 300, 600),
+    )
+
+    llm_tokens_total = Counter(
+        "llm_tokens_total",
+        "Total tokens consumed by LLM calls",
+        labelnames=["provider", "direction"],  # direction: prompt | completion
+    )
+
+    llm_retries_total = Counter(
+        "llm_retries_total",
+        "LLM call retry attempts",
+        labelnames=["provider", "error_type"],
+    )
+
+    llm_fallback_total = Counter(
+        "llm_fallback_total",
+        "Times the LLM adapter fell back to secondary provider",
+    )
+
+    llm_circuit_open_total = Counter(
+        "llm_circuit_open_total",
+        "Times a provider circuit breaker opened",
+        labelnames=["provider"],
+    )
+
+except ImportError:
+    # prometheus_client not installed — provide no-op stubs
+    class _NoOp:
+        def labels(self, *a, **kw): return self
+        def observe(self, *a, **kw): pass
+        def inc(self, *a, **kw): pass
+
+    llm_request_duration = _NoOp()
+    llm_tokens_total = _NoOp()
+    llm_retries_total = _NoOp()
+    llm_fallback_total = _NoOp()
+    llm_circuit_open_total = _NoOp()

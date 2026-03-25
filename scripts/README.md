@@ -46,6 +46,8 @@ bash scripts/run_workers.sh
 bash scripts/run_workers.sh --with-flower
 # or
 ENABLE_FLOWER=1 bash scripts/run_workers.sh
+# or start beat only
+uv run celery -A shared.celery_app.celery_app beat --loglevel=INFO
 ```
 
 ### Features
