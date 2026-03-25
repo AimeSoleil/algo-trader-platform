@@ -281,14 +281,15 @@ async def _batch_flush_to_db_async(trading_date_str: str | None = None) -> dict:
             rows=len(df),
         )
         conn = await session.connection()
-        raw_conn = await conn.get_raw_connection()
-        df.to_sql(
-            "option_5min_snapshots",
-            con=raw_conn.dbapi_connection,
-            if_exists="append",
-            index=False,
-            method="multi",
-            chunksize=1000,
+        await conn.run_sync(
+            lambda sync_conn: df.to_sql(
+                "option_5min_snapshots",
+                con=sync_conn,
+                if_exists="append",
+                index=False,
+                method="multi",
+                chunksize=1000,
+            )
         )
         logger.debug(
             "batch_flush.db_write_finished",
@@ -437,6 +438,49 @@ def run_post_market_pipeline(trading_date: str | None = None) -> str:
         task_id=str(result.id),
     )
     return f"Pipeline started: {result.id}"
+
+
+# ── Post-market data collection only (no signals / blueprint) ──
+
+
+@celery_app.task(
+    name="data_service.tasks.collect_post_market_data",
+    bind=True,
+    max_retries=3,
+)
+def collect_post_market_data(self, trading_date: str | None = None) -> dict:
+    """只执行盘后数据采集（1m bars / daily bars / flush option parquet / aggregate）。
+
+    Chain:  capture_post_market_data → batch_flush_to_db → aggregate_option_daily
+    不触发 backfill / signals / blueprint，适合手动补采。
+    """
+    td = trading_date or today_trading().isoformat()
+    logger.info(
+        "collect_post_market.building",
+        log_event="task_start",
+        stage="compose_chain",
+        trading_date=td,
+        task_id=getattr(self.request, "id", None),
+    )
+
+    pipeline = celery_chain(
+        capture_post_market_data.si(td),
+        batch_flush_to_db.si(td),
+        aggregate_option_daily.si(td),
+    )
+
+    result = pipeline.apply_async()
+    logger.info("collect_post_market.started", trading_date=td, chain_id=str(result.id))
+    return {
+        "status": "chain_dispatched",
+        "trading_date": td,
+        "chain_id": str(result.id),
+        "steps": [
+            "capture_post_market_data",
+            "batch_flush_to_db",
+            "aggregate_option_daily",
+        ],
+    }
 
 
 # ── Manual collection task (triggered via REST API) ────────
