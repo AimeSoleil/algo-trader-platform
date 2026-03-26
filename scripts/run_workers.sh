@@ -85,7 +85,10 @@ show_status() {
 
   echo "[run_workers] Status"
   echo "  LOG_DIR=${LOG_DIR}"
+  echo ""
 
+  # ── Process status ──
+  local _pad
   if [[ -f "$manager_pid_file" ]]; then
     local manager_pid
     manager_pid="$(cat "$manager_pid_file" 2>/dev/null || true)"
@@ -101,18 +104,28 @@ show_status() {
   local names=("${ALL_QUEUES[@]}" beat flower watchdog)
   for name in "${names[@]}"; do
     local pidfile="$LOG_DIR/${name}.pid"
+    _pad="$(printf '%*s' $((10-${#name})) '')"
     if [[ -f "$pidfile" ]]; then
       local pid
       pid="$(cat "$pidfile" 2>/dev/null || true)"
       if [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null; then
-        echo "  ${name}$(printf '%*s' $((10-${#name})) ''): RUNNING (pid=${pid})"
+        echo "  ${name}${_pad}: RUNNING (pid=${pid})"
       else
-        echo "  ${name}$(printf '%*s' $((10-${#name})) ''): STALE_PID_FILE"
+        echo "  ${name}${_pad}: STALE_PID_FILE"
       fi
     else
-      echo "  ${name}$(printf '%*s' $((10-${#name})) ''): STOPPED"
+      echo "  ${name}${_pad}: STOPPED"
     fi
   done
+
+  # ── Log files ──
+  echo ""
+  echo "  日志文件:"
+  printf "    %-10s → %s\n" "manager" "${LOG_DIR}/run_workers-manager.out"
+  for q in "${ALL_QUEUES[@]}"; do
+    printf "    %-10s → %s\n" "$q" "${LOG_DIR}/celery-${q}.log"
+  done
+  printf "    %-10s → %s\n" "beat" "${LOG_DIR}/celery-beat.log"
 }
 
 # Accept CLI flags (supports both --param=value and --param value)
@@ -266,8 +279,22 @@ if [[ "$DAEMON_MODE" == "1" ]]; then
   daemon_pid=$!
   echo "$daemon_pid" > "$MANAGER_PID_FILE"
   echo "[run_workers] manager 后台启动成功 (pid=${daemon_pid})"
-  echo "[run_workers] 日志: ${LOG_DIR}/run_workers-manager.out"
+  echo ""
+  echo "  Workers:  ${ACTIVE_WORKERS[*]}"
+  echo "  LogLevel: ${LOG_LEVEL}"
+  echo ""
+  echo "  日志文件:"
+  echo "    manager : ${LOG_DIR}/run_workers-manager.out"
+  for _q in "${ACTIVE_WORKERS[@]}"; do
+    printf "    %-10s: %s\n" "$_q" "${LOG_DIR}/celery-${_q}.log"
+  done
+  printf "    %-10s: %s\n" "beat" "${LOG_DIR}/celery-beat.log"
+  if [[ "$ENABLE_FLOWER" == "1" ]]; then
+    printf "    %-10s: %s\n" "flower" "http://localhost:${FLOWER_PORT}"
+  fi
+  echo ""
   echo "[run_workers] 使用 --stop 停止全部进程"
+  echo "[run_workers] 使用 --status 查看运行状态"
   exit 0
 fi
 
