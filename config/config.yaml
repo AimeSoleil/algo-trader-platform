@@ -47,18 +47,34 @@ broker:
 # ── Services — 各服务业务配置 ────────────────────────────────
 
 data_service:
+  # ── 数据源选择 ──
   providers:
-    stock: "yfinance"                # stock bar data provider
-    options: "yfinance"              # option chain data provider
-    options_historical: "none"       # historical options (none = not available)
+    stock: "yfinance"                  # stock bar provider: yfinance | ...
+    options: "yfinance"                # option chain provider: yfinance | ...
+
+  # ── 交易时段 ──
   market_hours:
     start: "09:30"
     end: "16:00"
+
+  # ── 盘中采集 ──
   intraday:
     capture_every_minutes: 5
-    hot_storage_retention_days:
-      stock_1min: 90                 # 盘后采集的 1m bars 保留天数
-      option_5min: 60                # 盘中 option snapshots 保留天数
+    retention_days:
+      stock_1min: 90                   # 盘中 1m bars 热存储保留天数
+      option_5min: 60                  # 盘中 option snapshots 保留天数
+
+  # ── 期权采集专属 ──
+  options:
+    max_days_to_expiry: 730            # 跳过超过此天数的远期到期日（~2年）
+
+  # ── 采集器韧性（provider 无关）──
+  resilience:
+    max_retries: 3                     # 每次 API 调用最大重试次数
+    backoff_base_seconds: 1.0          # 指数退避基础（1s → 2s → 4s）
+    rate_limit_per_call_seconds: 0.5   # 单次 API 调用间隔（如每个到期日请求之间）
+    rate_limit_per_symbol_seconds: 1.5 # 多 symbol 批量采集时，symbol 之间的间隔
+    concurrent_symbols: 3              # 多 symbol 批量采集最大并发数
 
 option_strategy:
   lookback_days: 252                 # iv_percentile 滚动窗口（交易日）

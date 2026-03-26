@@ -1,9 +1,12 @@
-"""YFinance 期权链采集器 — OptionFetcherProtocol 实现"""
+"""YFinance 期权链采集器 — OptionFetcherProtocol 实现
+
+Retry / rate-limit / concurrency 由 resilience 模块统一处理，
+本模块仅关注 yfinance 数据格式转换。
+"""
 from __future__ import annotations
 
 import asyncio
 from datetime import date, datetime
-import time
 
 import pandas as pd
 import yfinance as yf
@@ -16,17 +19,22 @@ from shared.models.option import (
 )
 from shared.utils import get_logger, now_utc, today_trading
 from services.data_service.app.fetchers.greeks import enrich_snapshot_greeks
+from services.data_service.app.fetchers.resilience import (
+    gather_with_concurrency,
+    rate_limit_sync,
+    retry_sync,
+)
 
 logger = get_logger("option_fetcher")
 
-# Minimum acceptable values for filtering
-MIN_VOLUME = 0
-MIN_OPEN_INTEREST = 0
+# ── Filtering constants ────────────────────────────────────
 MIN_DAYS_TO_EXPIRY = 1
 MAX_IV = 5.0  # Filter out unreasonable IV
-MAX_DAYS_TO_EXPIRY = 730  # ~2 years — skip far-dated low-liquidity expiries
-_CHAIN_FETCH_MAX_RETRIES = 3
-_CHAIN_FETCH_BACKOFF_BASE = 1.0  # seconds; retry delays: 1s, 2s, 4s
+
+
+def _get_option_settings():
+    from shared.config import get_settings
+    return get_settings().data_service.options
 
 
 def _safe_int(val, default: int = 0) -> int:
@@ -42,25 +50,29 @@ def _safe_int(val, default: int = 0) -> int:
         return default
 
 
+# ── Core sync fetch (runs in thread pool) ──────────────────
+
+
 def _fetch_option_chain_sync(symbol: str) -> OptionChainSnapshot | None:
     """同步获取期权链（在线程池中执行）"""
     try:
+        opt_cfg = _get_option_settings()
         logger.debug("option_fetcher.fetch_start", symbol=symbol)
         ticker = yf.Ticker(symbol)
 
-        # 1) 获取标的物当前价格 — 只调用一次
-        logger.debug("option_fetcher.underlying_fetch_start", symbol=symbol, period="1d")
-        hist = ticker.history(period="1d")
-        logger.debug("option_fetcher.underlying_fetch_done", symbol=symbol, rows=len(hist))
+        # 1) 获取标的物当前价格
+        hist = retry_sync(
+            lambda: ticker.history(period="1d"),
+            label="option.underlying",
+            symbol=symbol,
+        )
         if hist.empty:
             logger.warning("option_fetcher.no_history", symbol=symbol)
             return None
         underlying_price = float(hist["Close"].iloc[-1])
 
         # 2) 获取所有到期日
-        logger.debug("option_fetcher.expiries_fetch_start", symbol=symbol)
         expiries = ticker.options
-        logger.debug("option_fetcher.expiries_fetch_done", symbol=symbol, expiries_count=len(expiries))
         if not expiries:
             logger.warning("option_fetcher.no_expiries", symbol=symbol)
             return None
@@ -68,17 +80,15 @@ def _fetch_option_chain_sync(symbol: str) -> OptionChainSnapshot | None:
         contracts: list[OptionContract] = []
         now = now_utc()
 
-        logger.debug("option_fetcher.contract_transform_start", symbol=symbol, expiries_count=len(expiries))
         for expiry_str in expiries:
             expiry_date = pd.to_datetime(expiry_str).date()
             days_to_expiry = (expiry_date - today_trading()).days
 
-            # 跳过已过期或当天到期的合约（避免除零）
             if days_to_expiry < MIN_DAYS_TO_EXPIRY:
                 continue
 
             # 跳过超远期到期日（流动性极低，数据质量差）
-            if days_to_expiry > MAX_DAYS_TO_EXPIRY:
+            if days_to_expiry > opt_cfg.max_days_to_expiry:
                 logger.debug(
                     "option_fetcher.expiry_too_far",
                     symbol=symbol,
@@ -87,58 +97,34 @@ def _fetch_option_chain_sync(symbol: str) -> OptionChainSnapshot | None:
                 )
                 continue
 
-            # 请求间限流，避免触发 Yahoo Finance 速率限制
-            time.sleep(0.5)
+            # 请求间限流（provider 无关）
+            rate_limit_sync()
 
             # 带重试的期权链获取
-            chain = None
-            for attempt in range(1, _CHAIN_FETCH_MAX_RETRIES + 1):
-                try:
-                    logger.debug("option_fetcher.chain_fetch_start", symbol=symbol, expiry=expiry_str, attempt=attempt)
-                    chain = ticker.option_chain(expiry_str)
-                    logger.debug(
-                        "option_fetcher.chain_fetch_done",
-                        symbol=symbol,
-                        expiry=expiry_str,
-                        calls_rows=len(chain.calls),
-                        puts_rows=len(chain.puts),
-                    )
-                    break  # 成功，退出重试循环
-                except Exception as e:
-                    if attempt < _CHAIN_FETCH_MAX_RETRIES:
-                        backoff = _CHAIN_FETCH_BACKOFF_BASE * (2 ** (attempt - 1))
-                        logger.warning(
-                            "option_fetcher.chain_retry",
-                            symbol=symbol,
-                            expiry=expiry_str,
-                            attempt=attempt,
-                            backoff_s=backoff,
-                            error=str(e),
-                        )
-                        time.sleep(backoff)
-                    else:
-                        logger.warning(
-                            "option_fetcher.chain_error",
-                            symbol=symbol,
-                            expiry=expiry_str,
-                            attempts_exhausted=_CHAIN_FETCH_MAX_RETRIES,
-                            error=str(e),
-                        )
-            if chain is None:
+            try:
+                chain = retry_sync(
+                    lambda _e=expiry_str: ticker.option_chain(_e),
+                    label="option.chain",
+                    symbol=symbol,
+                )
+            except Exception as e:
+                logger.warning(
+                    "option_fetcher.chain_error",
+                    symbol=symbol,
+                    expiry=expiry_str,
+                    error=str(e),
+                )
                 continue
 
-            # 处理 calls 和 puts（yfinance 分开返回两个 DataFrame）
+            # 处理 calls 和 puts
             for option_type, df in [("call", chain.calls), ("put", chain.puts)]:
                 if df.empty:
                     continue
-
                 for _, row in df.iterrows():
                     try:
                         iv = float(row.get("impliedVolatility", 0.0))
-                        # 过滤不合理的 IV
                         if iv <= 0 or iv > MAX_IV:
                             continue
-
                         contract = OptionContract(
                             symbol=str(row.get("contractSymbol", "")),
                             underlying=symbol,
@@ -163,7 +149,6 @@ def _fetch_option_chain_sync(symbol: str) -> OptionChainSnapshot | None:
                             expiry=expiry_str,
                             error=str(e),
                         )
-                        continue
 
         snapshot = OptionChainSnapshot(
             underlying=symbol,
@@ -171,10 +156,7 @@ def _fetch_option_chain_sync(symbol: str) -> OptionChainSnapshot | None:
             timestamp=now,
             contracts=contracts,
         )
-        logger.debug("option_fetcher.contract_transform_done", symbol=symbol, contracts_count=len(contracts))
-        logger.debug("option_fetcher.greeks_enrich_start", symbol=symbol, contracts_count=len(contracts))
         enrich_snapshot_greeks(snapshot)
-        logger.debug("option_fetcher.greeks_enrich_done", symbol=symbol, contracts_count=len(snapshot.contracts))
         logger.info(
             "option_fetcher.success",
             symbol=symbol,
@@ -188,27 +170,27 @@ def _fetch_option_chain_sync(symbol: str) -> OptionChainSnapshot | None:
         return None
 
 
+# ── Async class ────────────────────────────────────────────
+
+
 class YFinanceOptionFetcher:
     """yfinance-backed option fetcher implementing OptionFetcherProtocol."""
 
     async def fetch_current(self, symbol: str) -> OptionChainSnapshot | None:
-        """Fetch the current option chain snapshot."""
         return await asyncio.to_thread(_fetch_option_chain_sync, symbol)
 
     async def fetch_current_multiple(
         self, symbols: list[str]
     ) -> dict[str, OptionChainSnapshot]:
-        """Fetch current snapshots for multiple symbols concurrently."""
+        """Fetch snapshots for multiple symbols (concurrency + rate-limit via resilience)."""
         results: dict[str, OptionChainSnapshot] = {}
-        semaphore = asyncio.Semaphore(3)
 
-        async def _fetch_with_limit(sym: str) -> None:
-            async with semaphore:
-                snapshot = await self.fetch_current(sym)
-                if snapshot:
-                    results[sym] = snapshot
+        async def _fetch(sym: str) -> None:
+            snapshot = await self.fetch_current(sym)
+            if snapshot:
+                results[sym] = snapshot
 
-        await asyncio.gather(*[_fetch_with_limit(s) for s in symbols])
+        await gather_with_concurrency([_fetch(s) for s in symbols])
         return results
 
     async def fetch_historical(
@@ -221,20 +203,3 @@ class YFinanceOptionFetcher:
             target_date=str(target_date),
         )
         return None
-
-
-# ── Backward-compatible module-level helpers ───────────────
-
-_default = YFinanceOptionFetcher()
-
-
-async def fetch_option_chain(symbol: str) -> OptionChainSnapshot | None:
-    """Backward-compatible async fetch (wraps class method)."""
-    return await _default.fetch_current(symbol)
-
-
-async def fetch_multiple_option_chains(
-    symbols: list[str],
-) -> dict[str, OptionChainSnapshot]:
-    """Backward-compatible batch fetch."""
-    return await _default.fetch_current_multiple(symbols)

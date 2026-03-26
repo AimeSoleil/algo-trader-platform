@@ -55,13 +55,14 @@ def capture_post_market_data(self, trading_date: str | None = None) -> dict:
 
 
 async def _capture_post_market_async(trading_date_str: str | None = None) -> dict:
-    from services.data_service.app.fetchers.stock_fetcher import fetch_stock_bars
+    from services.data_service.app.fetchers.registry import get_stock_fetcher
     from services.data_service.app.storage import (
         write_intraday_stock,
         write_swing_stock,
     )
 
     settings = get_settings()
+    stock_fetcher = get_stock_fetcher()
     symbols = settings.watchlist
     td = date.fromisoformat(trading_date_str) if trading_date_str else today_trading()
     started = perf_counter()
@@ -100,7 +101,7 @@ async def _capture_post_market_async(trading_date_str: str | None = None) -> dic
                 period="1d",
                 interval="1m",
             )
-            bars_1m = await fetch_stock_bars(symbol, period="1d", interval="1m")
+            bars_1m = await stock_fetcher.fetch_bars(symbol, period="1d", interval="1m")
             logger.debug(
                 "capture_post_market.fetch_stock_1m_finished",
                 log_event="external_call",
@@ -148,7 +149,7 @@ async def _capture_post_market_async(trading_date_str: str | None = None) -> dic
                 period="5d",
                 interval="1d",
             )
-            bars_daily = await fetch_stock_bars(symbol, period="5d", interval="1d")
+            bars_daily = await stock_fetcher.fetch_bars(symbol, period="5d", interval="1d")
             logger.debug(
                 "capture_post_market.fetch_stock_daily_finished",
                 log_event="external_call",
@@ -532,12 +533,13 @@ async def _manual_collect_async(
     end_date_str: str,
     data_types: list[str],
 ) -> dict:
-    from services.data_service.app.fetchers.stock_fetcher import fetch_stock_bars_range
+    from services.data_service.app.fetchers.registry import get_stock_fetcher
     from services.data_service.app.storage import (
         write_intraday_stock,
         write_swing_stock,
     )
 
+    stock_fetcher = get_stock_fetcher()
     sd = date.fromisoformat(start_date_str)
     ed = date.fromisoformat(end_date_str)
 
@@ -602,7 +604,7 @@ async def _manual_collect_async(
                     symbol=symbol,
                     provider="yfinance",
                 )
-                rows, warns = await fetch_stock_bars_range(symbol, sd, ed, interval="1d")
+                rows, warns = await stock_fetcher.fetch_bars_range(symbol, sd, ed, interval="1d")
                 logger.debug(
                     "manual_collect.fetch_bars_daily_finished",
                     log_event="external_call",
@@ -653,7 +655,7 @@ async def _manual_collect_async(
                     symbol=symbol,
                     provider="yfinance",
                 )
-                rows, warns = await fetch_stock_bars_range(symbol, sd, ed, interval="1m")
+                rows, warns = await stock_fetcher.fetch_bars_range(symbol, sd, ed, interval="1m")
                 logger.debug(
                     "manual_collect.fetch_bars_1m_finished",
                     log_event="external_call",
