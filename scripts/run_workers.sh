@@ -12,6 +12,7 @@
 #
 # Configuration (environment variables):
 #   LOG_DIR                 Log / PID directory          (default: logs)
+#   DAEMON_MODE             Start manager in background  (default: 1)
 #   RESTART_MAX_BACKOFF     Max backoff seconds          (default: 60)
 #   HEALTH_CHECK_INTERVAL   Seconds between pings        (default: 30)
 #   HEALTH_CHECK_FAILURES   Consecutive fails before kill (default: 3)
@@ -25,7 +26,9 @@
 #
 # Usage:
 #   ./scripts/run_workers.sh [--with-flower] [--workers data,signal] [--loglevel DEBUG]
+#   ./scripts/run_workers.sh --foreground    # keep manager attached to current terminal
 #   ./scripts/run_workers.sh --stop          # stop all workers, beat & flower
+#   ./scripts/run_workers.sh --status        # show manager/workers status
 #   ./scripts/run_workers.sh --list          # show available worker names
 #   ENABLE_FLOWER=1 ./scripts/run_workers.sh
 #   WORKERS=data,signal ./scripts/run_workers.sh
@@ -41,6 +44,7 @@ set -euo pipefail
 
 # ── Configuration ──────────────────────────────────────────
 LOG_DIR="${LOG_DIR:-logs}"
+DAEMON_MODE="${DAEMON_MODE:-1}"
 RESTART_MAX_BACKOFF="${RESTART_MAX_BACKOFF:-60}"
 HEALTH_CHECK_INTERVAL="${HEALTH_CHECK_INTERVAL:-30}"
 HEALTH_CHECK_FAILURES="${HEALTH_CHECK_FAILURES:-3}"
@@ -49,6 +53,8 @@ WORKERS="${WORKERS:-all}"
 ENABLE_FLOWER="${ENABLE_FLOWER:-0}"
 FLOWER_PORT="${FLOWER_PORT:-5555}"
 LOG_LEVEL="${LOG_LEVEL:-INFO}"
+
+FOREGROUND=0
 
 ALL_QUEUES=(data backfill signal analysis)
 
@@ -73,20 +79,71 @@ show_workers() {
   echo "默认启动全部: ${ALL_QUEUES[*]}"
 }
 
+show_status() {
+  mkdir -p "$LOG_DIR"
+  local manager_pid_file="$LOG_DIR/run_workers-manager.pid"
+
+  echo "[run_workers] Status"
+  echo "  LOG_DIR=${LOG_DIR}"
+
+  if [[ -f "$manager_pid_file" ]]; then
+    local manager_pid
+    manager_pid="$(cat "$manager_pid_file" 2>/dev/null || true)"
+    if [[ -n "$manager_pid" ]] && kill -0 "$manager_pid" 2>/dev/null; then
+      echo "  manager   : RUNNING (pid=${manager_pid})"
+    else
+      echo "  manager   : STALE_PID_FILE"
+    fi
+  else
+    echo "  manager   : STOPPED"
+  fi
+
+  local names=("${ALL_QUEUES[@]}" beat flower watchdog)
+  for name in "${names[@]}"; do
+    local pidfile="$LOG_DIR/${name}.pid"
+    if [[ -f "$pidfile" ]]; then
+      local pid
+      pid="$(cat "$pidfile" 2>/dev/null || true)"
+      if [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null; then
+        echo "  ${name}$(printf '%*s' $((10-${#name})) ''): RUNNING (pid=${pid})"
+      else
+        echo "  ${name}$(printf '%*s' $((10-${#name})) ''): STALE_PID_FILE"
+      fi
+    else
+      echo "  ${name}$(printf '%*s' $((10-${#name})) ''): STOPPED"
+    fi
+  done
+}
+
 # Accept CLI flags
 for arg in "$@"; do
   case "$arg" in
     --with-flower) ENABLE_FLOWER=1 ;;
     --workers=*)   WORKERS="${arg#--workers=}" ;;
     --loglevel=*)  LOG_LEVEL="${arg#--loglevel=}" ;;
+    --foreground)  FOREGROUND=1 ;;
     --stop)
       # ── Stop all managed processes ────────────────────────
       echo "[run_workers] Stopping all Celery processes..."
+      mkdir -p "$LOG_DIR"
+      MANAGER_PID_FILE="$LOG_DIR/run_workers-manager.pid"
       stopped=0
+
+      # 0) Stop manager daemon first (if running)
+      if [[ -f "$MANAGER_PID_FILE" ]]; then
+        manager_pid="$(cat "$MANAGER_PID_FILE" 2>/dev/null || true)"
+        if [[ -n "$manager_pid" ]] && kill -0 "$manager_pid" 2>/dev/null; then
+          echo "  SIGTERM → manager (pid=${manager_pid})"
+          kill "$manager_pid" 2>/dev/null || true
+          stopped=$((stopped + 1))
+        fi
+        rm -f "$MANAGER_PID_FILE"
+      fi
 
       # 1) Kill processes tracked by PID files
       for pidfile in "${LOG_DIR}"/*.pid; do
         [[ -f "$pidfile" ]] || continue
+        [[ "$(basename "$pidfile")" == "run_workers-manager.pid" ]] && continue
         pid="$(cat "$pidfile" 2>/dev/null)" || continue
         name="$(basename "$pidfile" .pid)"
         if kill -0 "$pid" 2>/dev/null; then
@@ -114,12 +171,21 @@ for arg in "$@"; do
       fi
       exit 0
       ;;
+    --status)
+      show_status
+      exit 0
+      ;;
     --list|--help|-h)
       show_workers
       exit 0
       ;;
   esac
 done
+
+# foreground mode overrides daemon setting
+if (( FOREGROUND == 1 )); then
+  DAEMON_MODE=0
+fi
 
 # Normalise and validate LOG_LEVEL
 LOG_LEVEL="$(echo "$LOG_LEVEL" | tr '[:lower:]' '[:upper:]')"
@@ -153,6 +219,40 @@ fi
 CELERY_CMD="uv run celery -A shared.celery_app.celery_app"
 
 mkdir -p "$LOG_DIR"
+MANAGER_PID_FILE="$LOG_DIR/run_workers-manager.pid"
+
+# ── Daemon launcher (default) ─────────────────────────────
+if [[ "$DAEMON_MODE" == "1" ]]; then
+  if [[ -f "$MANAGER_PID_FILE" ]]; then
+    existing_pid="$(cat "$MANAGER_PID_FILE" 2>/dev/null || true)"
+    if [[ -n "$existing_pid" ]] && kill -0 "$existing_pid" 2>/dev/null; then
+      echo "[run_workers] manager 已在后台运行 (pid=${existing_pid})"
+      echo "[run_workers] 使用 --stop 停止全部进程"
+      exit 0
+    fi
+    rm -f "$MANAGER_PID_FILE"
+  fi
+
+  script_path="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")"
+  LOG_DIR="$LOG_DIR" \
+  RESTART_MAX_BACKOFF="$RESTART_MAX_BACKOFF" \
+  HEALTH_CHECK_INTERVAL="$HEALTH_CHECK_INTERVAL" \
+  HEALTH_CHECK_FAILURES="$HEALTH_CHECK_FAILURES" \
+  SHUTDOWN_GRACE="$SHUTDOWN_GRACE" \
+  WORKERS="$WORKERS" \
+  ENABLE_FLOWER="$ENABLE_FLOWER" \
+  FLOWER_PORT="$FLOWER_PORT" \
+  LOG_LEVEL="$LOG_LEVEL" \
+  DAEMON_MODE=0 \
+  nohup "$script_path" --foreground >> "$LOG_DIR/run_workers-manager.out" 2>&1 &
+
+  daemon_pid=$!
+  echo "$daemon_pid" > "$MANAGER_PID_FILE"
+  echo "[run_workers] manager 后台启动成功 (pid=${daemon_pid})"
+  echo "[run_workers] 日志: ${LOG_DIR}/run_workers-manager.out"
+  echo "[run_workers] 使用 --stop 停止全部进程"
+  exit 0
+fi
 
 # ── Colour helpers (no-op when not a tty) ──────────────────
 if [[ -t 1 ]]; then
@@ -222,6 +322,7 @@ cleanup_stale_pids() {
   log main "检查并清理过期 PID 文件..."
   for pidfile in "$LOG_DIR"/*.pid; do
     [[ -f "$pidfile" ]] || continue
+    [[ "$(basename "$pidfile")" == "run_workers-manager.pid" ]] && continue
     local old_pid
     old_pid="$(cat "$pidfile" 2>/dev/null)" || continue
     local base
@@ -315,7 +416,7 @@ health_watchdog() {
     local ping_output
     ping_output="$(${CELERY_CMD} inspect ping 2>&1)" || true
 
-    for w in "${worker_names[@]}"; do
+    for w in "${ACTIVE_WORKERS[@]}"; do
       local worker_id="${w}@"
       if echo "$ping_output" | grep -q "${worker_id}"; then
         # Worker responded
@@ -409,6 +510,8 @@ cleanup() {
   for name in "${!CHILD_PIDS[@]}"; do
     remove_pid_file "$name"
   done
+  remove_pid_file watchdog
+  rm -f "$MANAGER_PID_FILE"
 
   log main "所有进程已停止，清理完成。"
 }
@@ -427,11 +530,15 @@ log main "SHUTDOWN_GRACE=${SHUTDOWN_GRACE}s"
 log main "WORKERS=${ACTIVE_WORKERS[*]}"
 log main "LOG_LEVEL=${LOG_LEVEL}"
 log main "ENABLE_FLOWER=${ENABLE_FLOWER}"
+log main "DAEMON_MODE=${DAEMON_MODE}"
 [[ "$ENABLE_FLOWER" == "1" ]] && log main "FLOWER_PORT=${FLOWER_PORT}"
 log main "────────────────────────────────────────"
 
 # Clean up stale PID files from previous runs
 cleanup_stale_pids
+
+# Register current manager PID (foreground runtime)
+echo "$$" > "$MANAGER_PID_FILE"
 
 # ── Start workers (only those in ACTIVE_WORKERS) ──────────
 
@@ -462,6 +569,7 @@ fi
 # ── Health-check watchdog ──────────────────────────────────
 health_watchdog &
 WATCHDOG_PID=$!
+write_pid_file watchdog "$WATCHDOG_PID"
 log main "健康检查 watchdog 已启动 pid=${WATCHDOG_PID}"
 
 log main "────────────────────────────────────────"
