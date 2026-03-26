@@ -25,7 +25,7 @@
 #                           Choices: DEBUG,INFO,WARNING,ERROR,CRITICAL
 #
 # Usage:
-#   ./scripts/run_workers.sh [--with-flower] [--workers data,signal] [--loglevel DEBUG]
+#   ./scripts/run_workers.sh [--with-flower] [--workers=data,signal] [--loglevel DEBUG]
 #   ./scripts/run_workers.sh --foreground    # keep manager attached to current terminal
 #   ./scripts/run_workers.sh --stop          # stop all workers, beat & flower
 #   ./scripts/run_workers.sh --status        # show manager/workers status
@@ -115,13 +115,25 @@ show_status() {
   done
 }
 
-# Accept CLI flags
-for arg in "$@"; do
-  case "$arg" in
-    --with-flower) ENABLE_FLOWER=1 ;;
-    --workers=*)   WORKERS="${arg#--workers=}" ;;
-    --loglevel=*)  LOG_LEVEL="${arg#--loglevel=}" ;;
-    --foreground)  FOREGROUND=1 ;;
+# Accept CLI flags (supports both --param=value and --param value)
+while (( $# > 0 )); do
+  case "$1" in
+    --with-flower)
+      ENABLE_FLOWER=1; shift ;;
+    --workers=*)
+      WORKERS="${1#--workers=}"; shift ;;
+    --workers)
+      WORKERS="${2:?'--workers requires a value'}"; shift 2 ;;
+    --loglevel=*)
+      LOG_LEVEL="${1#--loglevel=}"; shift ;;
+    --loglevel)
+      LOG_LEVEL="${2:?'--loglevel requires a value'}"; shift 2 ;;
+    --flower-port=*)
+      FLOWER_PORT="${1#--flower-port=}"; shift ;;
+    --flower-port)
+      FLOWER_PORT="${2:?'--flower-port requires a value'}"; shift 2 ;;
+    --foreground)
+      FOREGROUND=1; shift ;;
     --stop)
       # ── Stop all managed processes ────────────────────────
       echo "[run_workers] Stopping all Celery processes..."
@@ -178,6 +190,11 @@ for arg in "$@"; do
     --list|--help|-h)
       show_workers
       exit 0
+      ;;
+    *)
+      echo "[run_workers] 未知参数: $1" >&2
+      echo "  用法: ./scripts/run_workers.sh [--workers=data,signal] [--loglevel=DEBUG] [--with-flower] [--foreground] [--stop] [--status]" >&2
+      exit 1
       ;;
   esac
 done
@@ -560,7 +577,7 @@ if [[ "$ENABLE_FLOWER" == "1" ]]; then
   log main "等待 5s 让 workers 注册到 broker..."
   sleep 5
   run_with_restart flower \
-    $CELERY_CMD flower --port="$FLOWER_PORT" \
+    env FLOWER_UNAUTHENTICATED_API=true $CELERY_CMD flower --port="$FLOWER_PORT" \
     --inspect_timeout=10000 &
   WRAPPER_PIDS[flower]=$!
   log main "Flower 已启动: http://localhost:${FLOWER_PORT}"

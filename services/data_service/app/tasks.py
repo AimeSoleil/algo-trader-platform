@@ -36,6 +36,7 @@ logger = get_logger("data_tasks")
     name="data_service.tasks.capture_post_market_data",
     bind=True,
     max_retries=3,
+    queue="data",
 )
 def capture_post_market_data(self, trading_date: str | None = None) -> dict:
     """盘后统一采集：1m bars → stock_1min_bars, daily bar → stock_daily（不含期权）"""
@@ -217,6 +218,7 @@ async def _capture_post_market_async(trading_date_str: str | None = None) -> dic
     name="data_service.tasks.batch_flush_to_db",
     bind=True,
     max_retries=3,
+    queue="data",
 )
 def batch_flush_to_db(self, trading_date: str | None = None, prev_result=None) -> dict:
     """将盘中期权链 Parquet 缓存批量写入 option_5min_snapshots（仅 intraday 模式产生数据）"""
@@ -322,6 +324,7 @@ async def _batch_flush_to_db_async(trading_date_str: str | None = None) -> dict:
     name="data_service.tasks.aggregate_option_daily",
     bind=True,
     max_retries=3,
+    queue="data",
 )
 def aggregate_option_daily(self, trading_date: str | None = None, prev_result=None) -> dict:
     """Aggregate intraday 5-min snapshots into option_daily + option_iv_daily.
@@ -392,7 +395,7 @@ async def _aggregate_option_daily_async(trading_date_str: str | None = None) -> 
 # ── Pipeline 入口 ──────────────────────────────────────────
 
 
-@celery_app.task(name="data_service.tasks.run_post_market_pipeline")
+@celery_app.task(name="data_service.tasks.run_post_market_pipeline", queue="data")
 def run_post_market_pipeline(trading_date: str | None = None) -> str:
     """盘后流水线入口（由 Celery Beat 触发）
 
@@ -407,9 +410,9 @@ def run_post_market_pipeline(trading_date: str | None = None) -> str:
     )
 
     pipeline = celery_chain(
-        capture_post_market_data.si(td),
-        batch_flush_to_db.si(td),
-        aggregate_option_daily.si(td),
+        capture_post_market_data.si(td).set(queue="data"),
+        batch_flush_to_db.si(td).set(queue="data"),
+        aggregate_option_daily.si(td).set(queue="data"),
         celery_app.signature(
             "backfill_service.tasks.detect_and_backfill_gaps",
             args=[td],
@@ -449,6 +452,7 @@ def run_post_market_pipeline(trading_date: str | None = None) -> str:
     name="data_service.tasks.collect_post_market_data",
     bind=True,
     max_retries=3,
+    queue="data",
 )
 def collect_post_market_data(self, trading_date: str | None = None) -> dict:
     """只执行盘后数据采集（1m bars / daily bars / flush option parquet / aggregate）。
@@ -466,9 +470,9 @@ def collect_post_market_data(self, trading_date: str | None = None) -> dict:
     )
 
     pipeline = celery_chain(
-        capture_post_market_data.si(td),
-        batch_flush_to_db.si(td),
-        aggregate_option_daily.si(td),
+        capture_post_market_data.si(td).set(queue="data"),
+        batch_flush_to_db.si(td).set(queue="data"),
+        aggregate_option_daily.si(td).set(queue="data"),
     )
 
     result = pipeline.apply_async()
@@ -492,6 +496,7 @@ def collect_post_market_data(self, trading_date: str | None = None) -> dict:
     name="data_service.tasks.manual_collect",
     bind=True,
     max_retries=1,
+    queue="data",
 )
 def manual_collect(
     self,
