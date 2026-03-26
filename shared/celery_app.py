@@ -59,6 +59,7 @@ def create_celery_app() -> Celery:
         task_track_started=True,
         task_acks_late=True,
         worker_prefetch_multiplier=1,
+        worker_max_memory_per_child=500_000,  # 500 MB — 超出后自动重启 worker 子进程
         # Key prefix for result backend (isolates Celery keys in cluster mode)
         result_backend_transport_options={"global_keyprefix": "celery:result:"},
         # Task routes — each service handles its own tasks

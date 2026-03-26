@@ -20,6 +20,8 @@ services:
       - .env
     environment:
       PYTHONPATH: /app
+    mem_limit: 2g
+    memswap_limit: 2g   # 禁止 swap，OOM 时快速失败而非拖慢宿主机
     restart: unless-stopped
     depends_on:
       timescaledb:

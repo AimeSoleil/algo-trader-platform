@@ -1,7 +1,9 @@
 """盘中双层缓存 — L1 内存 + L2 Parquet 文件"""
 from __future__ import annotations
 
+import contextlib
 import os
+import tempfile
 from datetime import date
 from pathlib import Path
 
@@ -60,7 +62,7 @@ class MarketHoursCache:
     # ── L2: 文件刷盘 ──────────────────────────────────────
 
     def _flush_to_file(self, data_type: str = "option") -> None:
-        """将期权链 buffer 刷到 Parquet 文件"""
+        """将期权链 buffer 刷到 Parquet 文件（原子写入）"""
         buffer = self._option_buffer
         if not buffer:
             return
@@ -75,7 +77,20 @@ class MarketHoursCache:
                 df = pd.concat([existing, df], ignore_index=True)
 
             table = pa.Table.from_pandas(df)
-            pq.write_table(table, str(filepath))
+
+            # 原子写入：先写临时文件，再 rename，避免写入中途崩溃导致文件损坏
+            fd, tmp_path = tempfile.mkstemp(
+                suffix=".parquet.tmp", dir=str(self.cache_dir)
+            )
+            try:
+                os.close(fd)
+                pq.write_table(table, tmp_path)
+                os.replace(tmp_path, str(filepath))
+            except BaseException:
+                # 清理临时文件（如果还在）
+                with contextlib.suppress(OSError):
+                    os.unlink(tmp_path)
+                raise
 
             buffer.clear()
             logger.info("cache.flushed_to_file", data_type=data_type, file=str(filepath), rows=len(df))

@@ -238,68 +238,70 @@ def batch_flush_to_db(self, trading_date: str | None = None, prev_result=None) -
 
 
 async def _batch_flush_to_db_async(trading_date_str: str | None = None) -> dict:
+    import pyarrow.parquet as pq
     from services.data_service.app.cache import MarketHoursCache
 
     trading_date = date.fromisoformat(trading_date_str) if trading_date_str else today_trading()
     started = perf_counter()
     cache = MarketHoursCache()
-    logger.debug(
-        "batch_flush.cache_flush_started",
-        log_event="cache_flush",
-        stage="before_flush",
-        trading_date=str(trading_date),
-    )
-    cache.flush_all()
-    logger.debug(
-        "batch_flush.cache_flush_finished",
-        log_event="cache_flush",
-        stage="after_flush",
-        trading_date=str(trading_date),
-    )
 
     result = {"option_rows": 0}
 
-    df = cache.read_parquet("option", trading_date)
-    if df is None or df.empty:
+    parquet_path = cache.get_parquet_path("option", trading_date)
+    if not parquet_path.exists():
         logger.info("batch_flush.no_option_data", date=str(trading_date))
         return result
 
+    pf = pq.ParquetFile(str(parquet_path))
+    total_rows = pf.metadata.num_rows
     logger.debug(
-        "batch_flush.parquet_loaded",
+        "batch_flush.parquet_opened",
         log_event="cache_read",
-        stage="after_read",
+        stage="after_open",
         trading_date=str(trading_date),
-        rows=len(df),
+        total_rows=total_rows,
     )
 
+    batch_size = 10_000  # 每批读取行数，控制内存峰值
+
     async with get_timescale_session() as session:
-        logger.debug(
-            "batch_flush.db_write_started",
-            log_event="db_write",
-            stage="before_write",
-            trading_date=str(trading_date),
-            rows=len(df),
-        )
         conn = await session.connection()
-        await conn.run_sync(
-            lambda sync_conn: df.to_sql(
-                "option_5min_snapshots",
-                con=sync_conn,
-                if_exists="append",
-                index=False,
-                method="multi",
-                chunksize=1000,
+        rows_written = 0
+
+        for batch in pf.iter_batches(batch_size=batch_size):
+            chunk_df = batch.to_pandas()
+            if chunk_df.empty:
+                continue
+
+            logger.debug(
+                "batch_flush.chunk_write_start",
+                log_event="db_write",
+                stage="chunk_start",
+                trading_date=str(trading_date),
+                chunk_rows=len(chunk_df),
+                rows_written=rows_written,
             )
-        )
+            await conn.run_sync(
+                lambda sync_conn, _df=chunk_df: _df.to_sql(
+                    "option_5min_snapshots",
+                    con=sync_conn,
+                    if_exists="append",
+                    index=False,
+                    method="multi",
+                    chunksize=1000,
+                )
+            )
+            rows_written += len(chunk_df)
+
         logger.debug(
             "batch_flush.db_write_finished",
             log_event="db_write",
             stage="after_write",
             trading_date=str(trading_date),
-            rows=len(df),
+            rows=rows_written,
         )
 
-    result["option_rows"] = len(df)
+    result["option_rows"] = rows_written
     cache.clear_parquet("option", trading_date)
     logger.debug(
         "batch_flush.summary",
