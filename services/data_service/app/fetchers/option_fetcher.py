@@ -2,7 +2,8 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime
+from datetime import date, datetime
+import time
 
 import pandas as pd
 import yfinance as yf
@@ -23,6 +24,9 @@ MIN_VOLUME = 0
 MIN_OPEN_INTEREST = 0
 MIN_DAYS_TO_EXPIRY = 1
 MAX_IV = 5.0  # Filter out unreasonable IV
+MAX_DAYS_TO_EXPIRY = 730  # ~2 years — skip far-dated low-liquidity expiries
+_CHAIN_FETCH_MAX_RETRIES = 3
+_CHAIN_FETCH_BACKOFF_BASE = 1.0  # seconds; retry delays: 1s, 2s, 4s
 
 
 def _safe_int(val, default: int = 0) -> int:
@@ -73,23 +77,54 @@ def _fetch_option_chain_sync(symbol: str) -> OptionChainSnapshot | None:
             if days_to_expiry < MIN_DAYS_TO_EXPIRY:
                 continue
 
-            try:
-                logger.debug("option_fetcher.chain_fetch_start", symbol=symbol, expiry=expiry_str)
-                chain = ticker.option_chain(expiry_str)
+            # 跳过超远期到期日（流动性极低，数据质量差）
+            if days_to_expiry > MAX_DAYS_TO_EXPIRY:
                 logger.debug(
-                    "option_fetcher.chain_fetch_done",
+                    "option_fetcher.expiry_too_far",
                     symbol=symbol,
                     expiry=expiry_str,
-                    calls_rows=len(chain.calls),
-                    puts_rows=len(chain.puts),
+                    days_to_expiry=days_to_expiry,
                 )
-            except Exception as e:
-                logger.warning(
-                    "option_fetcher.chain_error",
-                    symbol=symbol,
-                    expiry=expiry_str,
-                    error=str(e),
-                )
+                continue
+
+            # 请求间限流，避免触发 Yahoo Finance 速率限制
+            time.sleep(0.5)
+
+            # 带重试的期权链获取
+            chain = None
+            for attempt in range(1, _CHAIN_FETCH_MAX_RETRIES + 1):
+                try:
+                    logger.debug("option_fetcher.chain_fetch_start", symbol=symbol, expiry=expiry_str, attempt=attempt)
+                    chain = ticker.option_chain(expiry_str)
+                    logger.debug(
+                        "option_fetcher.chain_fetch_done",
+                        symbol=symbol,
+                        expiry=expiry_str,
+                        calls_rows=len(chain.calls),
+                        puts_rows=len(chain.puts),
+                    )
+                    break  # 成功，退出重试循环
+                except Exception as e:
+                    if attempt < _CHAIN_FETCH_MAX_RETRIES:
+                        backoff = _CHAIN_FETCH_BACKOFF_BASE * (2 ** (attempt - 1))
+                        logger.warning(
+                            "option_fetcher.chain_retry",
+                            symbol=symbol,
+                            expiry=expiry_str,
+                            attempt=attempt,
+                            backoff_s=backoff,
+                            error=str(e),
+                        )
+                        time.sleep(backoff)
+                    else:
+                        logger.warning(
+                            "option_fetcher.chain_error",
+                            symbol=symbol,
+                            expiry=expiry_str,
+                            attempts_exhausted=_CHAIN_FETCH_MAX_RETRIES,
+                            error=str(e),
+                        )
+            if chain is None:
                 continue
 
             # 处理 calls 和 puts（yfinance 分开返回两个 DataFrame）
