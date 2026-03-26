@@ -264,7 +264,7 @@ async def _batch_flush_to_db_async(trading_date_str: str | None = None) -> dict:
         total_rows=total_rows,
     )
 
-    batch_size = 10_000  # 每批读取行数，控制内存峰值
+    batch_size = 100_000  # 每批读取行数，~~20-30 MB 内存
 
     async with get_timescale_session() as session:
         conn = await session.connection()
