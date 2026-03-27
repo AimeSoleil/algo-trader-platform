@@ -114,6 +114,8 @@ def _fix_json(text: str) -> str:
     """Best-effort repair of common LLM JSON quirks.
 
     Handles:
+    - Literal ``\\n`` / ``\\t`` / ``\\r`` escape sequences outside strings
+      (Copilot SDK sometimes returns these instead of real whitespace)
     - Single-quoted strings → double-quoted
     - Trailing commas before ``}`` / ``]``
     - Python literals ``True`` / ``False`` / ``None``
@@ -123,17 +125,19 @@ def _fix_json(text: str) -> str:
     text = re.sub(r"\bFalse\b", "false", text)
     text = re.sub(r"\bNone\b", "null", text)
 
-    # ── Single quotes → double quotes ────────────────────────────
-    # Replace pairs of single-quoted strings with double quotes.
-    # We iterate character-by-character to avoid breaking apostrophes
-    # inside already-double-quoted strings.
+    # ── Character-by-character walk ──────────────────────────────
+    # Simultaneously handles:
+    #   1. Escaped whitespace outside strings → real whitespace
+    #   2. Single-quoted strings → double-quoted strings
+    _ESCAPE_MAP = {"n": "\n", "t": "\t", "r": "\r"}
+
     out: list[str] = []
     i = 0
     n = len(text)
     while i < n:
         ch = text[i]
         if ch == '"':
-            # Skip entire double-quoted string
+            # Skip entire double-quoted string (preserve contents as-is)
             j = i + 1
             while j < n:
                 if text[j] == '\\':
@@ -167,6 +171,10 @@ def _fix_json(text: str) -> str:
             out.append("".join(inner))
             out.append('"')
             i = j
+        elif ch == '\\' and i + 1 < n and text[i + 1] in _ESCAPE_MAP:
+            # Outside a string: literal \n / \t / \r  →  real whitespace
+            out.append(_ESCAPE_MAP[text[i + 1]])
+            i += 2
         else:
             out.append(ch)
             i += 1

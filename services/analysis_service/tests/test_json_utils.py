@@ -100,6 +100,42 @@ class TestExtractJsonStr:
         assert parsed["msg"] == 'say "hello"'
         assert parsed["ok"] is True
 
+    def test_literal_escaped_newlines(self):
+        """Copilot SDK sometimes returns literal \\n instead of real newlines."""
+        raw = '{\\n  "symbols": [\\n    {\\n      "symbol": "NVDA",\\n      "score": 0.8\\n    }\\n  ]\\n}'
+        result = extract_json_str(raw)
+        parsed = json.loads(result)
+        assert parsed["symbols"][0]["symbol"] == "NVDA"
+        assert parsed["symbols"][0]["score"] == 0.8
+
+    def test_literal_escaped_tabs(self):
+        """Literal \\t outside strings converted to real tabs."""
+        raw = '{\\t"key": "value"}'
+        result = extract_json_str(raw)
+        parsed = json.loads(result)
+        assert parsed["key"] == "value"
+
+    def test_escaped_newlines_preserved_inside_strings(self):
+        """\\n inside double-quoted string values must stay as JSON \\n escape."""
+        raw = '{\\n  "msg": "line1\\nline2",\\n  "count": 1\\n}'
+        result = extract_json_str(raw)
+        parsed = json.loads(result)
+        assert parsed["msg"] == "line1\nline2"
+        assert parsed["count"] == 1
+
+    def test_literal_escaped_newlines_with_nested_objects(self):
+        """Full Copilot-style response with literal \\n throughout."""
+        raw = (
+            '{\\n  "symbols": [\\n    {\\n      "symbol": "NVDA",\\n'
+            '      "best_spread_type": null,\\n      "risk_reward_ratio": 0.0,\\n'
+            '      "mispricing_detected": false\\n    }\\n  ]\\n}'
+        )
+        result = extract_json_str(raw)
+        parsed = json.loads(result)
+        assert parsed["symbols"][0]["symbol"] == "NVDA"
+        assert parsed["symbols"][0]["best_spread_type"] is None
+        assert parsed["symbols"][0]["mispricing_detected"] is False
+
 
 # ── parse_llm_json ────────────────────────────────────────────────────
 
