@@ -60,6 +60,7 @@ def build_blueprint_prompt(
     previous_execution: dict | None = None,
     *,
     chunk_mode: bool = False,
+    signal_date: date | None = None,
 ) -> str:
     """Build the user prompt containing market data and task instructions.
 
@@ -80,9 +81,10 @@ def build_blueprint_prompt(
     sections: list[str] = []
 
     # Market Signal Data
+    data_date = signal_date or today_trading()
     signal_section = _serialize_signals(signal_features)
     sections.append(
-        f"## Market Signal Data (computed after {today_trading()} close)\n\n{signal_section}"
+        f"## Market Signal Data (computed after {data_date} close)\n\n{signal_section}"
     )
 
     # Current Positions & Portfolio Context
@@ -97,7 +99,7 @@ def build_blueprint_prompt(
     sections.append(f"## Previous Execution Review\n\n{prev_exec_text}")
 
     # Task
-    sections.append(_build_task_section(chunk_mode=chunk_mode))
+    sections.append(_build_task_section(chunk_mode=chunk_mode, signal_date=signal_date))
 
     return "\n\n".join(sections) + "\n"
 
@@ -310,11 +312,12 @@ def _build_positions_section(current_positions: dict | None) -> str:
     return "\n".join(lines)
 
 
-def _build_task_section(*, chunk_mode: bool = False) -> str:
+def _build_task_section(*, chunk_mode: bool = False, signal_date: date | None = None) -> str:
+    target_date = _next_trading_day(from_date=signal_date)
     if chunk_mode:
         return (
             f"## Task\n\n"
-            f"Generate a Trading Blueprint for **{_next_trading_day()}**.\n\n"
+            f"Generate a Trading Blueprint for **{target_date}**.\n\n"
             f"This is a **subset** of the full watchlist processed in parallel. "
             f"Benchmark symbols (SPY, QQQ) are included for market context only — "
             f"do NOT generate plans for them unless they present actionable setups.\n\n"
@@ -327,7 +330,7 @@ def _build_task_section(*, chunk_mode: bool = False) -> str:
         )
     return (
         f"## Task\n\n"
-        f"Generate a Trading Blueprint for **{_next_trading_day()}**.\n\n"
+        f"Generate a Trading Blueprint for **{target_date}**.\n\n"
         f"Follow the trading-analysis skill workflow. Select 1-3 optimal underlyings "
         f"from the signal data, design concrete strategies with fully defined legs.\n\n"
         f"If the Current Portfolio section shows open positions, evaluate each for "
@@ -341,7 +344,7 @@ def _build_task_section(*, chunk_mode: bool = False) -> str:
 # ---------------------------------------------------------------------------
 
 
-def _next_trading_day() -> str:
+def _next_trading_day(from_date: date | None = None) -> str:
     """Return the ISO date string for the next trading day (skip weekends)."""
     from shared.utils import next_trading_day
-    return next_trading_day().isoformat()
+    return next_trading_day(from_date=from_date).isoformat()

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from datetime import date, datetime, timedelta
 from time import perf_counter
 
@@ -127,6 +128,7 @@ async def _run_blueprint_pipeline(
         signal_features=signal_features,
         current_positions=current_positions,
         previous_execution=previous_execution,
+        signal_date=td,
     )
     logger.debug(
         "blueprint.pipeline_generation_finished",
@@ -267,10 +269,13 @@ async def _generate_blueprint_async(trading_date_str: str | None = None) -> dict
         await session.execute(
             text(
                 "INSERT INTO llm_trading_blueprint "
-                "(id, trading_date, generated_at, model_provider, model_version, blueprint_json, status) "
-                "VALUES (:id, :trading_date, :generated_at, :model_provider, :model_version, :blueprint_json, 'pending') "
+                "(id, trading_date, generated_at, model_provider, model_version, "
+                " blueprint_json, reasoning_json, status) "
+                "VALUES (:id, :trading_date, :generated_at, :model_provider, "
+                " :model_version, :blueprint_json, :reasoning_json, 'pending') "
                 "ON CONFLICT (trading_date) DO UPDATE SET "
-                "blueprint_json = :blueprint_json, generated_at = :generated_at, "
+                "blueprint_json = :blueprint_json, reasoning_json = :reasoning_json, "
+                "generated_at = :generated_at, "
                 "model_provider = :model_provider, model_version = :model_version, status = 'pending'"
             ),
             {
@@ -280,6 +285,7 @@ async def _generate_blueprint_async(trading_date_str: str | None = None) -> dict
                 "model_provider": blueprint.model_provider,
                 "model_version": blueprint.model_version,
                 "blueprint_json": blueprint.model_dump_json(),
+                "reasoning_json": json.dumps(blueprint.reasoning_context, default=str) if blueprint.reasoning_context else None,
             },
         )
         logger.debug(
@@ -450,9 +456,9 @@ async def _manual_analyze_async(task, symbol: str, trading_date_str: str | None 
             text(
                 "INSERT INTO llm_trading_blueprint "
                 "(id, trading_date, generated_at, model_provider, model_version, "
-                " blueprint_json, status) "
+                " blueprint_json, reasoning_json, status) "
                 "VALUES (:id, :trading_date, :generated_at, :model_provider, "
-                " :model_version, :blueprint_json, 'manual')"
+                " :model_version, :blueprint_json, :reasoning_json, 'manual')"
             ),
             {
                 "id": manual_id,
@@ -461,6 +467,7 @@ async def _manual_analyze_async(task, symbol: str, trading_date_str: str | None 
                 "model_provider": blueprint.model_provider,
                 "model_version": blueprint.model_version,
                 "blueprint_json": blueprint.model_dump_json(),
+                "reasoning_json": json.dumps(blueprint.reasoning_context, default=str) if blueprint.reasoning_context else None,
             },
         )
         logger.debug(

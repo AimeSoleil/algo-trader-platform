@@ -136,6 +136,7 @@ class CopilotProvider(LLMProviderBase):
         previous_execution: dict | None = None,
         *,
         chunk_mode: bool = False,
+        signal_date: date | None = None,
     ) -> LLMTradingBlueprint:
         """Generate a next-day trading blueprint via Copilot SDK."""
         import asyncio
@@ -155,6 +156,7 @@ class CopilotProvider(LLMProviderBase):
         prompt = build_blueprint_prompt(
             signal_features, current_positions, previous_execution,
             chunk_mode=chunk_mode,
+            signal_date=signal_date,
         )
         full_prompt = _build_structured_prompt(prompt)
 
@@ -204,12 +206,21 @@ class CopilotProvider(LLMProviderBase):
 
                 blueprint_data = _parse_blueprint_json(response_text)
 
-                blueprint_data["trading_date"] = _next_trading_day().isoformat()
+                blueprint_data["trading_date"] = _next_trading_day(from_date=signal_date).isoformat()
                 blueprint_data["generated_at"] = now_utc().isoformat()
                 blueprint_data["model_provider"] = "copilot"
                 blueprint_data["model_version"] = "copilot-sdk"
 
                 blueprint = LLMTradingBlueprint.model_validate(blueprint_data)
+
+                # Attach reasoning context for auditability
+                blueprint.reasoning_context = {
+                    "pipeline": "legacy_copilot",
+                    "provider": "copilot",
+                    "model": self.model,
+                    "raw_response": response_text,
+                    "prompt_preview": full_prompt[:2000],
+                }
 
                 status = "ok"
                 logger.info(

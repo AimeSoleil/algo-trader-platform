@@ -52,9 +52,13 @@ class AnalyzeRequest(BaseModel):
         min_length=1,
         description="Ticker symbols to analyze, e.g. ['AAPL', 'MSFT']",
     )
-    trading_date: str | None = Field(
+    signal_date: str | None = Field(
         None,
-        description="Signal date (ISO format). Defaults to today.",
+        description=(
+            "The date of the signal data to analyze (ISO format, e.g. '2026-03-26'). "
+            "The generated blueprint will target the next trading day. "
+            "Defaults to today."
+        ),
     )
 
 
@@ -83,17 +87,41 @@ async def trigger_analysis(req: AnalyzeRequest):
     for symbol in clean_symbols:
         task = celery_app.send_task(
             "analysis_service.tasks.manual_analyze",
-            args=[symbol, req.trading_date],
+            args=[symbol, req.signal_date],
             queue="analysis",
         )
         task_ids.append({"symbol": symbol, "task_id": task.id})
 
-    date_suffix = f" (date={req.trading_date})" if req.trading_date else ""
+    date_suffix = f" (signal_date={req.signal_date})" if req.signal_date else ""
     return AnalyzeResponse(
         task_ids=task_ids,
         status="queued",
         message=f"Analysis queued for {len(clean_symbols)} symbol(s): {', '.join(clean_symbols)}{date_suffix}",
     )
+
+
+# ---------------------------------------------------------------------------
+# Reasoning context query
+# ---------------------------------------------------------------------------
+
+
+@router.get("/analysis/blueprint/reasoning/{blueprint_id}")
+async def get_blueprint_reasoning(blueprint_id: str):
+    """查询蓝图的完整 LLM 推理上下文（agent outputs、critic 反馈、原始响应等）。
+
+    可用于审查 LLM 分析结论是否合理。
+    """
+    from services.analysis_service.app.queries import query_reasoning
+
+    result = await query_reasoning(blueprint_id)
+    if "error" in result:
+        raise HTTPException(status_code=404, detail=result["error"])
+    return result
+
+
+# ---------------------------------------------------------------------------
+# Task status polling
+# ---------------------------------------------------------------------------
 
 
 @router.get("/analysis/{task_id}")

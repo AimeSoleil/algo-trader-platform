@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import date
 from time import perf_counter
 
 from shared.config import get_settings
@@ -131,6 +132,7 @@ class LLMAdapter:
         previous_execution: dict | None,
         *,
         chunk_mode: bool = False,
+        signal_date: date | None = None,
     ) -> LLMTradingBlueprint:
         """Generate a blueprint for one chunk with primary→secondary fallback + circuit breaker."""
         primary = self._get_primary()
@@ -141,6 +143,7 @@ class LLMAdapter:
                 bp = await primary.generate_blueprint(
                     signal_features, current_positions, previous_execution,
                     chunk_mode=chunk_mode,
+                    signal_date=signal_date,
                 )
                 primary_cb.record_success()
                 return bp
@@ -173,6 +176,7 @@ class LLMAdapter:
                 bp = await secondary.generate_blueprint(
                     signal_features, current_positions, previous_execution,
                     chunk_mode=chunk_mode,
+                    signal_date=signal_date,
                 )
                 secondary_cb.record_success()
                 return bp
@@ -190,6 +194,8 @@ class LLMAdapter:
         signal_features: list[SignalFeatures],
         current_positions: dict | None = None,
         previous_execution: dict | None = None,
+        *,
+        signal_date: date | None = None,
     ) -> LLMTradingBlueprint:
         """生成蓝图：agentic 模式或 legacy 分片模式。
 
@@ -203,9 +209,11 @@ class LLMAdapter:
         if self._agentic_mode:
             return await self._generate_agentic(
                 signal_features, current_positions, previous_execution,
+                signal_date=signal_date,
             )
         return await self._generate_legacy(
             signal_features, current_positions, previous_execution,
+            signal_date=signal_date,
         )
 
     # ------------------------------------------------------------------
@@ -225,6 +233,8 @@ class LLMAdapter:
         signal_features: list[SignalFeatures],
         current_positions: dict | None,
         previous_execution: dict | None,
+        *,
+        signal_date: date | None = None,
     ) -> LLMTradingBlueprint:
         """Multi-agent pipeline with fallback to legacy on failure."""
         started = perf_counter()
@@ -234,6 +244,7 @@ class LLMAdapter:
                 signal_features=signal_features,
                 current_positions=current_positions,
                 previous_execution=previous_execution,
+                signal_date=signal_date,
             )
             elapsed_ms = round((perf_counter() - started) * 1000, 2)
             logger.info(
@@ -252,6 +263,7 @@ class LLMAdapter:
             # Fallback to legacy chunk pipeline
             return await self._generate_legacy(
                 signal_features, current_positions, previous_execution,
+                signal_date=signal_date,
             )
 
     # ------------------------------------------------------------------
@@ -263,6 +275,8 @@ class LLMAdapter:
         signal_features: list[SignalFeatures],
         current_positions: dict | None = None,
         previous_execution: dict | None = None,
+        *,
+        signal_date: date | None = None,
     ) -> LLMTradingBlueprint:
         """Legacy 分片模式：自动分片 → 并行 LLM 调用 → 合并结果。
 
@@ -284,6 +298,7 @@ class LLMAdapter:
             blueprint = await self._generate_single(
                 chunks[0], current_positions, previous_execution,
                 chunk_mode=False,
+                signal_date=signal_date,
             )
             logger.info("llm_adapter.success", provider=self.primary_name, chunks=1)
             return blueprint
@@ -309,6 +324,7 @@ class LLMAdapter:
                 bp = await self._generate_single(
                     chunk, current_positions, previous_execution,
                     chunk_mode=True,
+                    signal_date=signal_date,
                 )
                 logger.debug(
                     "llm_adapter.chunk_done",

@@ -130,6 +130,20 @@ async def migrate_add_columns() -> None:
     print("[init_db] 新列迁移完成")
 
 
+async def migrate_business_columns() -> None:
+    """Add new columns to business DB tables (idempotent)."""
+    print("[init_db] 迁移：业务表新列（IF NOT EXISTS）...")
+    engine = get_postgres_engine()
+    async with engine.begin() as conn:
+        await conn.execute(
+            text(
+                "ALTER TABLE IF EXISTS llm_trading_blueprint "
+                "ADD COLUMN IF NOT EXISTS reasoning_json JSONB"
+            )
+        )
+    print("[init_db] 业务表新列迁移完成")
+
+
 async def reconcile_timeseries_constraints() -> None:
     """Normalize legacy constraints so hypertable conversion always succeeds."""
     print("[init_db] 对齐时序表约束（兼容旧 schema）...")
@@ -343,6 +357,7 @@ async def main() -> None:
         await init_timescale_schema()
         await init_business_schema()
         await migrate_add_columns()
+        await migrate_business_columns()
         await reconcile_timeseries_constraints()
         await create_hypertables()
         await apply_retention_policies()

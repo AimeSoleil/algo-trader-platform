@@ -192,6 +192,7 @@ class BlueprintRecord(BusinessBase):
     model_provider = Column(String(20), nullable=False, default="openai")
     model_version = Column(String(50), nullable=False, default="gpt-4o")
     blueprint_json = Column(JSONB, nullable=False)
+    reasoning_json = Column(JSONB, nullable=True)
     status = Column(String(20), nullable=False, default="pending")
     execution_summary = Column(JSONB, nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())

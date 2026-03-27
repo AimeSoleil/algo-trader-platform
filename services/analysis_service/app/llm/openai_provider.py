@@ -137,6 +137,7 @@ class OpenAIProvider(LLMProviderBase):
         previous_execution: dict | None = None,
         *,
         chunk_mode: bool = False,
+        signal_date: date | None = None,
     ) -> LLMTradingBlueprint:
         """Call OpenAI Responses API with the trading-analysis skill mounted."""
         import asyncio
@@ -159,6 +160,7 @@ class OpenAIProvider(LLMProviderBase):
         prompt = build_blueprint_prompt(
             signal_features, current_positions, previous_execution,
             chunk_mode=chunk_mode,
+            signal_date=signal_date,
         )
 
         last_exc: Exception | None = None
@@ -195,12 +197,25 @@ class OpenAIProvider(LLMProviderBase):
                 blueprint_data = parse_llm_json(content)
 
                 # Add metadata
-                blueprint_data["trading_date"] = _next_trading_day().isoformat()
+                blueprint_data["trading_date"] = _next_trading_day(from_date=signal_date).isoformat()
                 blueprint_data["generated_at"] = now_utc().isoformat()
                 blueprint_data["model_provider"] = "openai"
                 blueprint_data["model_version"] = self.model
 
                 blueprint = LLMTradingBlueprint.model_validate(blueprint_data)
+
+                # Attach reasoning context for auditability
+                blueprint.reasoning_context = {
+                    "pipeline": "legacy_openai",
+                    "provider": "openai",
+                    "model": self.model,
+                    "raw_response": content,
+                    "prompt_preview": prompt[:2000],
+                    "usage": {
+                        "input_tokens": response.usage.input_tokens if response.usage else 0,
+                        "output_tokens": response.usage.output_tokens if response.usage else 0,
+                    },
+                }
 
                 status = "ok"
                 # Record token metrics

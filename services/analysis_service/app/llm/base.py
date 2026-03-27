@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from datetime import date
 
 from shared.models.blueprint import LLMTradingBlueprint
 from shared.models.signal import SignalFeatures
@@ -18,6 +19,7 @@ class LLMProviderBase(ABC):
         previous_execution: dict | None = None,
         *,
         chunk_mode: bool = False,
+        signal_date: date | None = None,
     ) -> LLMTradingBlueprint:
         """生成次日交易蓝图
 

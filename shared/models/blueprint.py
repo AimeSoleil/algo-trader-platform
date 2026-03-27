@@ -233,5 +233,13 @@ class LLMTradingBlueprint(BaseModel):
     # Symbols from failed chunks that couldn't be analyzed
     missing_symbols: list[str] = Field(default_factory=list, description="Symbols lost due to chunk failures")
 
+    # LLM reasoning context (agent outputs, critic feedback, raw response)
+    # Stored separately — not part of the blueprint_json column.
+    reasoning_context: dict[str, Any] | None = Field(
+        None,
+        exclude=True,
+        description="Full LLM reasoning chain for auditability",
+    )
+
     # 盘后执行摘要（收盘后回填）
     execution_summary: dict[str, Any] | None = None

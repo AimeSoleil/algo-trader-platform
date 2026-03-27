@@ -54,3 +54,47 @@ async def query_blueprint(
     # Populate cache
     await set_cached_blueprint(td, data)
     return {**data, "_from_cache": False}
+
+
+async def query_reasoning(blueprint_id: str) -> dict:
+    """从 DB 查询蓝图的 LLM 推理上下文"""
+    async with get_postgres_session() as session:
+        result = await session.execute(
+            text(
+                "SELECT id, trading_date, model_provider, model_version, "
+                "       generated_at, reasoning_json "
+                "FROM llm_trading_blueprint WHERE id = :id"
+            ),
+            {"id": blueprint_id},
+        )
+        row = result.fetchone()
+
+    if not row:
+        return {"error": f"No blueprint found with id '{blueprint_id}'"}
+
+    reasoning = row[5]
+    if reasoning is None:
+        return {
+            "blueprint_id": row[0],
+            "trading_date": str(row[1]),
+            "model_provider": row[2],
+            "model_version": row[3],
+            "generated_at": str(row[4]),
+            "reasoning": None,
+            "_note": "No reasoning context was stored for this blueprint. "
+                     "Reasoning is captured for blueprints generated after this feature was added.",
+        }
+
+    # reasoning_json may be str or dict depending on driver
+    if isinstance(reasoning, str):
+        import json
+        reasoning = json.loads(reasoning)
+
+    return {
+        "blueprint_id": row[0],
+        "trading_date": str(row[1]),
+        "model_provider": row[2],
+        "model_version": row[3],
+        "generated_at": str(row[4]),
+        "reasoning": reasoning,
+    }

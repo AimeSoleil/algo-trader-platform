@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from datetime import date
 from time import perf_counter
 from typing import Any
 
@@ -93,6 +94,8 @@ class AgentOrchestrator:
         signal_features: list[SignalFeatures],
         current_positions: dict | None = None,
         previous_execution: dict | None = None,
+        *,
+        signal_date: date | None = None,
     ) -> LLMTradingBlueprint:
         """Run the full multi-agent pipeline.
 
@@ -151,6 +154,7 @@ class AgentOrchestrator:
             current_positions=current_positions,
             previous_execution=previous_execution,
             provider=provider,
+            signal_date=signal_date,
         )
 
         logger.info(
@@ -159,6 +163,7 @@ class AgentOrchestrator:
         )
 
         # ── Step 3: Critic review loop ──
+        critic_history: list[dict] = []
         for revision in range(_MAX_REVISIONS):
             verdict = await self._critic.review(
                 blueprint_json=blueprint.model_dump(mode="json"),
@@ -166,6 +171,13 @@ class AgentOrchestrator:
                 signals_summary=signals_summary,
                 provider=provider,
             )
+
+            critic_history.append({
+                "revision": revision,
+                "verdict": verdict.verdict,
+                "summary": verdict.summary,
+                "issues": [i.model_dump() for i in verdict.issues],
+            })
 
             logger.info(
                 "orchestrator.critic_verdict",
@@ -195,7 +207,17 @@ class AgentOrchestrator:
                     ensure_ascii=False,
                 ),
                 provider=provider,
+                signal_date=signal_date,
             )
+
+        # ── Attach reasoning context for auditability ──
+        blueprint.reasoning_context = {
+            "pipeline": "agentic",
+            "provider": provider.name,
+            "signals_summary": signals_summary,
+            "agent_outputs": agent_outputs,
+            "critic_history": critic_history,
+        }
 
         elapsed_ms = round((perf_counter() - started) * 1000, 2)
         logger.info(

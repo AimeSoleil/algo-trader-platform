@@ -8,6 +8,7 @@ from __future__ import annotations
 import asyncio
 import json
 import random
+from datetime import date
 from time import perf_counter
 from typing import Any
 
@@ -41,6 +42,7 @@ class SynthesizerAgent:
         critic_feedback: str | None = None,
         *,
         provider: AgentLLMProvider | None = None,
+        signal_date: date | None = None,
     ) -> LLMTradingBlueprint:
         """Produce a trading blueprint from specialist agent analyses.
 
@@ -90,7 +92,7 @@ class SynthesizerAgent:
                 data = parse_llm_json(result.content)
 
                 # Inject metadata
-                data["trading_date"] = next_trading_day().isoformat()
+                data["trading_date"] = next_trading_day(from_date=signal_date).isoformat()
                 data["generated_at"] = now_utc().isoformat()
                 data["model_provider"] = provider.name
                 data["model_version"] = settings.analysis_service.llm.openai.model
