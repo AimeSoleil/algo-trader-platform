@@ -28,6 +28,24 @@ from shared.utils import get_logger
 
 logger = get_logger("analysis_agent")
 
+
+def _default_provider() -> "AgentLLMProvider":
+    """Module-level helper: build the correct provider based on config."""
+    settings = get_settings()
+    provider_name = settings.analysis_service.llm.provider
+
+    if provider_name == "copilot":
+        from services.analysis_service.app.llm.agents._copilot_agent_provider import (
+            CopilotAgentProvider,
+        )
+        return CopilotAgentProvider()
+
+    from services.analysis_service.app.llm.agents._openai_agent_provider import (
+        OpenAIAgentProvider,
+    )
+    return OpenAIAgentProvider()
+
+
 T = TypeVar("T", bound=BaseModel)
 
 
@@ -244,10 +262,7 @@ class AnalysisAgent(ABC):
 
     def _default_provider(self) -> AgentLLMProvider:
         """Build a default OpenAI provider for standalone / test usage."""
-        from services.analysis_service.app.llm.agents._openai_agent_provider import (
-            OpenAIAgentProvider,
-        )
-        return OpenAIAgentProvider()
+        return _default_provider()
 
     def _build_user_prompt(
         self,

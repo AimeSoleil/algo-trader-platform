@@ -74,6 +74,25 @@ class CopilotProvider(LLMProviderBase):
     """Copilot SDK provider with native skill mounting.
 
     SDK docs: https://github.com/github/copilot-sdk
+    KNOWN_MODELS = [
+        "claude-haiku-4.5",
+        "claude-opus-4.5",
+        "claude-opus-4.6",
+        "claude-opus-4.6-fast",
+        "claude-sonnet-4",
+        "claude-sonnet-4.5",
+        "gemini-3-pro-preview",
+        "gpt-4.1",
+        "gpt-5",
+        "gpt-5-mini",
+        "gpt-5.1",
+        "gpt-5.1-codex",
+        "gpt-5.1-codex-max",
+        "gpt-5.1-codex-mini",
+        "gpt-5.2",
+        "gpt-5.2-codex",
+        "gpt-5.3-codex",
+    ]
     """
 
     def __init__(self):
