@@ -14,7 +14,7 @@ from apscheduler.triggers.interval import IntervalTrigger
 
 from services.data_service.app.cache import MarketHoursCache
 from services.data_service.app.converters import contracts_to_rows
-from services.data_service.app.fetchers.option_fetcher import fetch_option_chain
+from services.data_service.app.fetchers.registry import get_option_fetcher
 from services.data_service.app.storage import apply_intraday_retention
 from shared.config.settings import Settings
 from shared.distributed_lock import distributed_once
@@ -73,7 +73,7 @@ async def _capture_intraday(state: SchedulerState) -> None:
         # Skip index symbols (e.g. ^VIX) — they have no tradeable option chain
         if symbol.startswith("^"):
             continue
-        snapshot = await fetch_option_chain(symbol)
+        snapshot = await get_option_fetcher().fetch_current(symbol)
         if snapshot:
             rows = contracts_to_rows(snapshot, top_expiries=None)  # capture ALL expiries for aggregation
             state.cache.update_option_chain(symbol, rows)
@@ -126,8 +126,8 @@ def start_data_scheduler(cache: MarketHoursCache, settings: Settings) -> None:
     # Retention policy 无论模式都应用
     asyncio.create_task(
         apply_intraday_retention(
-            settings.data_service.intraday.hot_storage_retention_days.stock_1min,
-            settings.data_service.intraday.hot_storage_retention_days.option_5min,
+            settings.data_service.intraday.retention_days.stock_1min,
+            settings.data_service.intraday.retention_days.option_5min,
         )
     )
 

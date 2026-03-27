@@ -133,27 +133,42 @@ class MarketHoursSettings(BaseSettings):
     end: str = "16:00"
 
 
-class IntradayHotStorageRetention(BaseSettings):
+class IntradayRetentionSettings(BaseSettings):
     stock_1min: int = 90
     option_5min: int = 60
 
 
 class DataServiceIntradaySettings(BaseSettings):
     capture_every_minutes: int = 5
-    hot_storage_retention_days: IntradayHotStorageRetention = Field(default_factory=IntradayHotStorageRetention)
+    retention_days: IntradayRetentionSettings = Field(default_factory=IntradayRetentionSettings)
 
 
 class DataProviderSettings(BaseSettings):
     """Data fetcher provider selection."""
     stock: str = "yfinance"
     options: str = "yfinance"
-    options_historical: str = "none"
+
+
+class OptionFetchSettings(BaseSettings):
+    """Option-chain-specific fetch parameters."""
+    max_days_to_expiry: int = 730
+
+
+class ResilienceSettings(BaseSettings):
+    """Provider-agnostic retry / rate-limit / concurrency settings."""
+    max_retries: int = 3
+    backoff_base_seconds: float = 1.0
+    rate_limit_per_call_seconds: float = 0.5
+    rate_limit_per_symbol_seconds: float = 1.5
+    concurrent_symbols: int = 3
 
 
 class DataServiceSettings(BaseSettings):
     providers: DataProviderSettings = Field(default_factory=DataProviderSettings)
     market_hours: MarketHoursSettings = Field(default_factory=MarketHoursSettings)
     intraday: DataServiceIntradaySettings = Field(default_factory=DataServiceIntradaySettings)
+    options: OptionFetchSettings = Field(default_factory=OptionFetchSettings)
+    resilience: ResilienceSettings = Field(default_factory=ResilienceSettings)
 
 class OptionStrategySettings(BaseSettings):
     lookback_days: int = 252          # iv_percentile 滚动窗口（交易日）
