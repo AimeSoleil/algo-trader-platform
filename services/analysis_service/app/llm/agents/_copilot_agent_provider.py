@@ -21,6 +21,16 @@ from services.analysis_service.app.llm.agents.base_agent import LLMResult
 
 logger = get_logger("copilot_agent_provider")
 
+# Models known to support the ``reasoning_effort`` session parameter.
+# If the configured model does not match any prefix here, we omit the
+# parameter to avoid JSON-RPC -32603 errors from the Copilot backend.
+_REASONING_EFFORT_SUPPORTED_PREFIXES: tuple[str, ...] = (
+    "claude-",
+    "o1",
+    "o3",
+    "o4",
+)
+
 
 def _extract_json(text: str) -> str:
     """Strip markdown fences / noise and return the JSON body."""
@@ -85,12 +95,33 @@ class CopilotAgentProvider:
         max_tokens: int | None = None,
     ) -> LLMResult:
         client = await self._get_client()
-        session = await client.create_session({
+
+        session_opts: dict = {
             "model": self._model,
-            "reasoning_effort": self._reasoning_effort,
             "on_permission_request": self._on_permission_request,
-            # No skill_directories — instructions already contain the rules
-        })
+        }
+
+        # Only attach reasoning_effort for models known to support it;
+        # other models (e.g. gemini-*) will reject the parameter.
+        if self._reasoning_effort and any(
+            self._model.startswith(p) for p in _REASONING_EFFORT_SUPPORTED_PREFIXES
+        ):
+            session_opts["reasoning_effort"] = self._reasoning_effort
+
+        try:
+            session = await client.create_session(session_opts)
+        except Exception as exc:
+            # Graceful fallback: if reasoning_effort was the cause, retry
+            # without it so we don't lose the entire request.
+            if "reasoning effort" in str(exc).lower() and "reasoning_effort" in session_opts:
+                logger.warning(
+                    "copilot_agent.reasoning_effort_unsupported",
+                    model=self._model,
+                )
+                session_opts.pop("reasoning_effort")
+                session = await client.create_session(session_opts)
+            else:
+                raise
 
         # Combine instructions + user prompt in a structured format
         full_prompt = (

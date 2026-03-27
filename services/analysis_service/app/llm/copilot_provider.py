@@ -20,6 +20,14 @@ logger = get_logger("copilot_provider")
 # Directory containing the trading-analysis/ skill subdirectory
 _SKILLS_DIR = str(Path(__file__).resolve().parents[1] / "skills")
 
+# Models known to support the ``reasoning_effort`` session parameter.
+_REASONING_EFFORT_SUPPORTED_PREFIXES: tuple[str, ...] = (
+    "claude-",
+    "o1",
+    "o3",
+    "o4",
+)
+
 
 def _resolve_cli_path(configured_cli: str) -> str:
     """Resolve configured Copilot CLI to an executable path when possible.
@@ -170,12 +178,31 @@ class CopilotProvider(LLMProviderBase):
             session = None
             try:
                 await self._get_client()
-                session = await client.create_session({
+
+                session_opts: dict = {
                     "model": self.model,
-                    "reasoning_effort": self.reasoning_effort,
                     "skill_directories": [_SKILLS_DIR],
                     "on_permission_request": self._on_permission_request,
-                })
+                }
+
+                # Only attach reasoning_effort for models known to support it
+                if self.reasoning_effort and any(
+                    self.model.startswith(p) for p in _REASONING_EFFORT_SUPPORTED_PREFIXES
+                ):
+                    session_opts["reasoning_effort"] = self.reasoning_effort
+
+                try:
+                    session = await client.create_session(session_opts)
+                except Exception as exc:
+                    if "reasoning effort" in str(exc).lower() and "reasoning_effort" in session_opts:
+                        logger.warning(
+                            "copilot.reasoning_effort_unsupported",
+                            model=self.model,
+                        )
+                        session_opts.pop("reasoning_effort")
+                        session = await client.create_session(session_opts)
+                    else:
+                        raise
 
                 result = await session.send_and_wait(
                     {"prompt": full_prompt},
