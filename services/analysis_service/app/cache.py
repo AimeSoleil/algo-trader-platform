@@ -11,12 +11,12 @@ logger = get_logger("analysis_cache")
 
 def _cache_ttl() -> int:
     from shared.config import get_settings
-    return get_settings().llm.cache_ttl
+    return get_settings().analysis_service.llm.cache_ttl
 
 
 def _cache_enabled() -> bool:
     from shared.config import get_settings
-    return get_settings().llm.cache_enabled
+    return get_settings().analysis_service.llm.cache_enabled
 _CACHE_PREFIX = "blueprint"
 
 

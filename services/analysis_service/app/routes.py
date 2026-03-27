@@ -15,10 +15,10 @@ router = APIRouter(tags=["analysis"])
 # ---------------------------------------------------------------------------
 
 
-@router.get("/blueprint/{trading_date}")
+@router.get("/analysis/blueprint/{trading_date}")
 async def get_blueprint(
     trading_date: str,
-    symbols: list[str] | None = Query(None, description="Filter blueprint plans by symbols (comma-separated)"),
+    symbols: str | None = Query(None, description="Comma-separated symbols to filter, e.g. AAPL,NVDA"),
     by_pass_cache: bool = False,
 ):
     """查询某天的蓝图，可按 symbols 过滤 symbol_plans"""
@@ -28,7 +28,7 @@ async def get_blueprint(
 
     # Apply symbol filter if requested
     if symbols and "blueprint" in result and result["blueprint"]:
-        upper_symbols = {s.strip().upper() for s in symbols}
+        upper_symbols = {s.strip().upper() for s in symbols.split(",") if s.strip()}
         bp = result["blueprint"]
         # blueprint may be dict or JSON-parsed object
         if isinstance(bp, dict) and "symbol_plans" in bp:
@@ -36,7 +36,7 @@ async def get_blueprint(
                 plan for plan in bp["symbol_plans"]
                 if plan.get("underlying", "").upper() in upper_symbols
             ]
-        result["_symbol_filter"] = list(upper_symbols)
+        result["_symbol_filter"] = sorted(upper_symbols)
 
     return result
 
@@ -67,7 +67,7 @@ class AnalyzeResponse(BaseModel):
     message: str
 
 
-@router.post("/analyze", status_code=202, response_model=AnalyzeResponse)
+@router.post("/analysis", status_code=202, response_model=AnalyzeResponse)
 async def trigger_analysis(req: AnalyzeRequest):
     """Trigger manual LLM analysis for one or more symbols.
 
@@ -96,7 +96,7 @@ async def trigger_analysis(req: AnalyzeRequest):
     )
 
 
-@router.get("/analyze/{task_id}")
+@router.get("/analysis/{task_id}")
 async def get_analysis_status(task_id: str):
     """Poll the status of a manual analysis task."""
     result = AsyncResult(task_id, app=celery_app)

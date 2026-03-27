@@ -22,7 +22,7 @@ class ManualOverrideRequest(BaseModel):
     reason: str | None = None
 
 
-@router.get("/blueprint/status")
+@router.get("/trade/blueprint/status")
 async def blueprint_status(
     trading_date: date = Query(..., description="Target trading_date (YYYY-MM-DD)"),
 ):
@@ -88,7 +88,7 @@ async def blueprint_status(
     return response
 
 
-@router.post("/blueprint/load")
+@router.post("/trade/blueprint/load")
 async def load_blueprint(
     trading_date: date = Query(..., description="Target trading_date (YYYY-MM-DD)"),
 ):
@@ -110,7 +110,7 @@ async def load_blueprint(
     }
 
 
-@router.post("/override")
+@router.post("/trade/override")
 async def manual_override(payload: ManualOverrideRequest):
     runtime_state.paused = payload.action == "pause"
     runtime_state.manual_override_reason = payload.reason
