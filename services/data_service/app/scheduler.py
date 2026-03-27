@@ -15,6 +15,7 @@ from apscheduler.triggers.interval import IntervalTrigger
 from services.data_service.app.cache import MarketHoursCache
 from services.data_service.app.converters import contracts_to_rows
 from services.data_service.app.fetchers.registry import get_option_fetcher
+from services.data_service.app.filters import apply_option_pipeline
 from services.data_service.app.storage import apply_intraday_retention
 from shared.config.settings import Settings
 from shared.distributed_lock import distributed_once
@@ -75,6 +76,8 @@ async def _capture_intraday(state: SchedulerState) -> None:
             continue
         snapshot = await get_option_fetcher().fetch_current(symbol)
         if snapshot:
+            # 两阶段过滤：Stage 1 清洁 → Stage 2 可交易标记
+            snapshot, _filter_result = apply_option_pipeline(snapshot)
             rows = contracts_to_rows(snapshot, top_expiries=None)  # capture ALL expiries for aggregation
             state.cache.update_option_chain(symbol, rows)
             captured += 1

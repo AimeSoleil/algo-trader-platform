@@ -95,6 +95,38 @@ async def migrate_add_columns() -> None:
                     f"ADD COLUMN IF NOT EXISTS underlying_price FLOAT"
                 )
             )
+            # ── 两阶段过滤重构：新增 vanna / charm / is_tradeable 列 ──
+            await conn.execute(
+                text(
+                    f"ALTER TABLE IF EXISTS {table} "
+                    f"ADD COLUMN IF NOT EXISTS vanna FLOAT NOT NULL DEFAULT 0.0"
+                )
+            )
+            await conn.execute(
+                text(
+                    f"ALTER TABLE IF EXISTS {table} "
+                    f"ADD COLUMN IF NOT EXISTS charm FLOAT NOT NULL DEFAULT 0.0"
+                )
+            )
+            await conn.execute(
+                text(
+                    f"ALTER TABLE IF EXISTS {table} "
+                    f"ADD COLUMN IF NOT EXISTS is_tradeable BOOLEAN NOT NULL DEFAULT FALSE"
+                )
+            )
+        # ── 为 is_tradeable 创建索引（幂等）──
+        await conn.execute(
+            text(
+                "CREATE INDEX IF NOT EXISTS idx_option_snap_tradeable "
+                "ON option_5min_snapshots (underlying, \"timestamp\", is_tradeable)"
+            )
+        )
+        await conn.execute(
+            text(
+                "CREATE INDEX IF NOT EXISTS idx_option_daily_tradeable "
+                "ON option_daily (underlying, snapshot_date, is_tradeable)"
+            )
+        )
     print("[init_db] 新列迁移完成")
 
 
@@ -264,7 +296,7 @@ async def truncate_all_tables() -> None:
     async with p_engine.begin() as conn:
         await conn.execute(text(
             "TRUNCATE TABLE "
-            "llm_trading_blueprint, orders, positions, signal_features, backfill_logs, watchlist_symbols "
+            "llm_trading_blueprint, orders, positions, signal_features, backfill_logs, watchlist_symbols, execution_events "
             "RESTART IDENTITY"
         ))
 
@@ -290,6 +322,7 @@ async def drop_all_tables() -> None:
         await conn.execute(text("DROP TABLE IF EXISTS orders CASCADE"))
         await conn.execute(text("DROP TABLE IF EXISTS llm_trading_blueprint CASCADE"))
         await conn.execute(text("DROP TABLE IF EXISTS watchlist_symbols CASCADE"))
+        await conn.execute(text("DROP TABLE IF EXISTS execution_events CASCADE"))
 
     print("[init_db] DROP 完成")
 

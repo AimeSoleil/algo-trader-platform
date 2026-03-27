@@ -11,7 +11,7 @@ Pipeline 顺序:
 from __future__ import annotations
 
 import asyncio
-from datetime import date, datetime, time
+from datetime import date, datetime
 from time import perf_counter
 
 from celery import chain as celery_chain
@@ -243,6 +243,7 @@ def batch_flush_to_db(self, trading_date: str | None = None, prev_result=None) -
 async def _batch_flush_to_db_async(trading_date_str: str | None = None) -> dict:
     import pyarrow.parquet as pq
     from services.data_service.app.cache import MarketHoursCache
+    from services.data_service.app.storage import write_intraday_options
 
     trading_date = date.fromisoformat(trading_date_str) if trading_date_str else today_trading()
     started = perf_counter()
@@ -266,43 +267,41 @@ async def _batch_flush_to_db_async(trading_date_str: str | None = None) -> dict:
     )
 
     batch_size = 100_000  # 每批读取行数，~~20-30 MB 内存
+    rows_written = 0
 
-    async with get_timescale_session() as session:
-        conn = await session.connection()
-        rows_written = 0
+    for batch in pf.iter_batches(batch_size=batch_size):
+        chunk_df = batch.to_pandas()
+        if chunk_df.empty:
+            continue
 
-        for batch in pf.iter_batches(batch_size=batch_size):
-            chunk_df = batch.to_pandas()
-            if chunk_df.empty:
-                continue
-
-            logger.debug(
-                "batch_flush.chunk_write_start",
-                log_event="db_write",
-                stage="chunk_start",
-                trading_date=str(trading_date),
-                chunk_rows=len(chunk_df),
-                rows_written=rows_written,
-            )
-            await conn.run_sync(
-                lambda sync_conn, _df=chunk_df: _df.to_sql(
-                    "option_5min_snapshots",
-                    con=sync_conn,
-                    if_exists="append",
-                    index=False,
-                    method="multi",
-                    chunksize=1000,
-                )
-            )
-            rows_written += len(chunk_df)
+        # Backward compatibility: old Parquet files may lack new columns
+        if "vanna" not in chunk_df.columns:
+            chunk_df["vanna"] = 0.0
+        if "charm" not in chunk_df.columns:
+            chunk_df["charm"] = 0.0
+        if "is_tradeable" not in chunk_df.columns:
+            chunk_df["is_tradeable"] = False
 
         logger.debug(
-            "batch_flush.db_write_finished",
+            "batch_flush.chunk_write_start",
             log_event="db_write",
-            stage="after_write",
+            stage="chunk_start",
             trading_date=str(trading_date),
-            rows=rows_written,
+            chunk_rows=len(chunk_df),
+            rows_written=rows_written,
         )
+
+        chunk_dicts = chunk_df.to_dict("records")
+        written = await write_intraday_options(chunk_dicts)
+        rows_written += written
+
+    logger.debug(
+        "batch_flush.db_write_finished",
+        log_event="db_write",
+        stage="after_write",
+        trading_date=str(trading_date),
+        rows=rows_written,
+    )
 
     result["option_rows"] = rows_written
     cache.clear_parquet("option", trading_date)

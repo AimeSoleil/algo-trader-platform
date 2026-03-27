@@ -163,12 +163,89 @@ class ResilienceSettings(BaseSettings):
     concurrent_symbols: int = 3
 
 
+# ── Data Service — 期权 & 股票过滤器配置 ──────────────────────
+
+
+class OptionCleaningFilterSettings(BaseSettings):
+    """Stage 1: 数据清洁过滤 — 仅剔除坏数据，不影响 IV smile / skew.
+
+    注意：DTE 过滤由 option_fetcher 的到期日循环完成（OptionFetchSettings.max_days_to_expiry），
+    不属于合约级清洁逻辑。
+    """
+    max_iv: float = 5.0                    # IV > 500% 视为垃圾
+
+
+class OptionTradeableMarkingSettings(BaseSettings):
+    """Stage 2: 可交易标记 — 不剔除合约，只设置 is_tradeable 标志."""
+    min_volume: int = 10
+    min_open_interest: int = 50
+    max_relative_spread: float = 0.10      # bid-ask spread / mid > 10%
+    min_strike_ratio: float = 0.70         # strike < 0.7×underlying
+    max_strike_ratio: float = 1.30         # strike > 1.3×underlying
+    min_delta_threshold: float = 0.01      # |delta| < 0.01
+    max_stale_trade_days: int = 7          # 距上次成交 > 7 天
+
+
+class OptionDataFilterSettings(BaseSettings):
+    """data_service.filters.options — 组合清洁 + 可交易标记."""
+    cleaning: OptionCleaningFilterSettings = Field(default_factory=OptionCleaningFilterSettings)
+    tradeable_marking: OptionTradeableMarkingSettings = Field(default_factory=OptionTradeableMarkingSettings)
+
+
+# class StockDataFilterSettings(BaseSettings):
+#     """data_service.filters.stocks — 预留，未来股票数据清洁."""
+#     pass
+
+
+class DataServiceFilterSettings(BaseSettings):
+    """data_service.filters — 按资产类型组织的过滤器配置."""
+    options: OptionDataFilterSettings = Field(default_factory=OptionDataFilterSettings)
+    # stocks: StockDataFilterSettings | None = None  # 预留
+
+
+# ── Signal Service — 过滤器配置 ──────────────────────────────
+
+
+class SignalOptionTradingFilterSettings(BaseSettings):
+    """Stage 3: 交易级过滤 — 仅用于策略类指标，不影响分析类指标."""
+    min_volume: int = 10
+    min_open_interest: int = 100
+    max_relative_spread: float = 0.08
+    min_delta: float = 0.05
+    max_delta: float = 0.95
+    min_dte: int = 7
+    max_dte: int = 180
+
+
+class SignalOptionFilterSettings(BaseSettings):
+    """signal_service.filters.options — 期权交易级过滤."""
+    trading: SignalOptionTradingFilterSettings = Field(default_factory=SignalOptionTradingFilterSettings)
+
+
+# class SignalStockFilterSettings(BaseSettings):
+#     """signal_service.filters.stocks — 预留."""
+#     pass
+
+
+class SignalServiceFilterSettings(BaseSettings):
+    """signal_service.filters — 按资产类型组织."""
+    options: SignalOptionFilterSettings = Field(default_factory=SignalOptionFilterSettings)
+    # stocks: SignalStockFilterSettings | None = None  # 预留
+
+
+class SignalServiceSettings(BaseSettings):
+    """signal_service 顶级配置."""
+    iv_lookback_days: int = 252            # IV Rank / Percentile 历史窗口
+    filters: SignalServiceFilterSettings = Field(default_factory=SignalServiceFilterSettings)
+
+
 class DataServiceSettings(BaseSettings):
     providers: DataProviderSettings = Field(default_factory=DataProviderSettings)
     market_hours: MarketHoursSettings = Field(default_factory=MarketHoursSettings)
     intraday: DataServiceIntradaySettings = Field(default_factory=DataServiceIntradaySettings)
     options: OptionFetchSettings = Field(default_factory=OptionFetchSettings)
     resilience: ResilienceSettings = Field(default_factory=ResilienceSettings)
+    filters: "DataServiceFilterSettings" = Field(default_factory=lambda: DataServiceFilterSettings())
 
 class OptionStrategySettings(BaseSettings):
     lookback_days: int = 252          # iv_percentile 滚动窗口（交易日）
@@ -213,6 +290,7 @@ class Settings(BaseSettings):
     risk: RiskSettings = Field(default_factory=RiskSettings)
     data_quality: DataQualitySettings = Field(default_factory=DataQualitySettings)
     data_service: DataServiceSettings = Field(default_factory=DataServiceSettings)
+    signal_service: "SignalServiceSettings" = Field(default_factory=lambda: SignalServiceSettings())
     option_strategy: OptionStrategySettings = Field(default_factory=OptionStrategySettings)
     schedule: ScheduleSettings = Field(default_factory=ScheduleSettings)
     logging: LoggingSettings = Field(default_factory=LoggingSettings)

@@ -27,9 +27,8 @@ from services.data_service.app.fetchers.resilience import (
 
 logger = get_logger("option_fetcher")
 
-# ── Filtering constants ────────────────────────────────────
-MIN_DAYS_TO_EXPIRY = 1
-MAX_IV = 5.0  # Filter out unreasonable IV
+# ── Fetch constants ────────────────────────────────────────
+MIN_DAYS_TO_EXPIRY = 1  # 跳过当天到期（到期日级别，非合约过滤）
 
 
 def _get_option_settings():
@@ -123,8 +122,15 @@ def _fetch_option_chain_sync(symbol: str) -> OptionChainSnapshot | None:
                 for _, row in df.iterrows():
                     try:
                         iv = float(row.get("impliedVolatility", 0.0))
-                        if iv <= 0 or iv > MAX_IV:
-                            continue
+                        # IV 清洁过滤已移至 filters/option_filters.py (Stage 1)
+                        # 此处保留 iv 原始值（包括 0），由 greeks 模块尝试 BSM 反算
+                        # Parse last trade date from yfinance (used for stale trade check)
+                        _raw_ltd = row.get("lastTradeDate")
+                        _last_trade_date = (
+                            pd.to_datetime(_raw_ltd).date()
+                            if pd.notna(_raw_ltd) else None
+                        )
+
                         contract = OptionContract(
                             symbol=str(row.get("contractSymbol", "")),
                             underlying=symbol,
@@ -140,6 +146,7 @@ def _fetch_option_chain_sync(symbol: str) -> OptionChainSnapshot | None:
                             open_interest=_safe_int(row.get("openInterest")),
                             greeks=OptionGreeks(iv=iv),
                             timestamp=now,
+                            last_trade_date=_last_trade_date,
                         )
                         contracts.append(contract)
                     except Exception as e:

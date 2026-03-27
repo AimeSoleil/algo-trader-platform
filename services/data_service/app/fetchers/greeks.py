@@ -1,8 +1,11 @@
-"""期权希腊字母计算 — 使用 py_vollib Black-Scholes 解析式"""
+"""期权希腊字母计算 — 使用 py_vollib Black-Scholes 解析式 + Vanna / Charm"""
 from __future__ import annotations
 
-from py_vollib.black_scholes.greeks.analytical import delta, gamma, theta, vega, rho
+import math
+
+from py_vollib.black_scholes.greeks.analytical import delta, gamma, theta, vega
 from py_vollib.black_scholes.implied_volatility import implied_volatility
+from scipy.stats import norm
 
 from shared.models.option import OptionChainSnapshot, OptionContract, OptionGreeks, OptionType
 from shared.utils import get_logger
@@ -40,6 +43,40 @@ def _recalc_iv(
     return None
 
 
+def _compute_vanna_charm(
+    S: float, K: float, T: float, r: float, sigma: float,
+) -> tuple[float, float]:
+    """BSM 解析式计算 Vanna 与 Charm（call/put 共用）。
+
+    Vanna = ∂Δ/∂σ = -n(d1) × d2 / σ
+    Charm = -∂Δ/∂T = -n(d1) × [2rT - d2·σ·√T] / (2T·σ·√T)
+
+    Returns (vanna, charm).  如果输入不合法则返回 (0.0, 0.0)。
+    """
+    if T <= 0 or sigma <= 0 or S <= 0 or K <= 0:
+        return 0.0, 0.0
+
+    try:
+        sqrt_T = math.sqrt(T)
+        d1 = (math.log(S / K) + (r + sigma ** 2 / 2) * T) / (sigma * sqrt_T)
+        d2 = d1 - sigma * sqrt_T
+        n_d1 = norm.pdf(d1)
+
+        # Vanna: sensitivity of delta to volatility
+        van = -n_d1 * d2 / sigma
+
+        # Charm: sensitivity of delta to time (negative ∂Δ/∂T)
+        denom = 2.0 * T * sigma * sqrt_T
+        if abs(denom) < 1e-15:
+            cha = 0.0
+        else:
+            cha = -n_d1 * (2.0 * r * T - d2 * sigma * sqrt_T) / denom
+    except (ValueError, ZeroDivisionError, OverflowError):
+        return 0.0, 0.0
+
+    return van, cha
+
+
 def compute_greeks(
     flag: str,
     S: float,
@@ -48,7 +85,7 @@ def compute_greeks(
     r: float,
     sigma: float,
 ) -> OptionGreeks:
-    """计算单个合约的希腊字母。
+    """计算单个合约的希腊字母（含 Vanna / Charm）。
 
     Parameters
     ----------
@@ -73,17 +110,20 @@ def compute_greeks(
         g = gamma(flag, S, K, T, r, sigma)
         t = theta(flag, S, K, T, r, sigma)
         v = vega(flag, S, K, T, r, sigma)
-        rh = rho(flag, S, K, T, r, sigma)
     except (ValueError, ZeroDivisionError):
         return OptionGreeks(iv=sigma)
+
+    # ── Vanna & Charm (BSM analytical) ──
+    van, cha = _compute_vanna_charm(S, K, T, r, sigma)
 
     return OptionGreeks(
         delta=d,
         gamma=g,
         theta=t,
         vega=v,  # py_vollib already returns per-1% IV change
-        rho=rh,
         iv=sigma,
+        vanna=van,
+        charm=cha,
     )
 
 
@@ -125,7 +165,9 @@ def enrich_snapshot_greeks(
         # yfinance sometimes returns nonsensical IV (e.g. 0.003 for a contract
         # worth $6) when bid=ask=0 (market closed / illiquid).  In that case
         # we recalculate IV from the last traded price via BSM inversion.
-        if 0 < sigma < IV_RECALC_THRESHOLD:
+        # Also attempt recalculation when IV is exactly 0 (fetcher no longer
+        # filters these out — cleaning filter handles removal post-enrichment).
+        if sigma < IV_RECALC_THRESHOLD:
             recalced = _recalc_iv(flag, S, K, T, risk_free_rate, contract.last_price)
             if recalced is not None:
                 logger.debug(

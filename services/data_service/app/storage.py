@@ -11,6 +11,48 @@ from shared.utils import get_logger
 
 logger = get_logger("data_storage")
 
+# ── Option table column definitions ────────────────────────
+# Shared across write_intraday_options and write_swing_options to avoid duplication.
+OPTION_COLS = (
+    "underlying", "symbol", "{time_col}", "expiry", "strike", "option_type",
+    "last_price", "bid", "ask", "volume", "open_interest",
+    "iv", "delta", "gamma", "theta", "vega",
+    "vanna", "charm", "underlying_price", "is_tradeable",
+)
+
+# Columns that get updated on conflict (everything except the key columns)
+OPTION_UPSERT_COLS = (
+    "last_price", "bid", "ask", "volume", "open_interest",
+    "iv", "delta", "gamma", "theta", "vega",
+    "vanna", "charm", "underlying_price", "is_tradeable",
+)
+
+
+def _build_option_upsert_sql(table: str, time_col: str, conflict_key: str) -> str:
+    """Generate INSERT ... ON CONFLICT DO UPDATE SQL for option tables.
+
+    Parameters
+    ----------
+    table : str
+        Target table name.
+    time_col : str
+        Time column name (``"timestamp"`` for intraday, ``"snapshot_date"`` for daily).
+    conflict_key : str
+        Conflict constraint columns, e.g. ``"symbol, timestamp"``.
+    """
+    cols = [c.replace("{time_col}", time_col) for c in OPTION_COLS]
+    col_list = ", ".join(cols)
+    param_list = ", ".join(f":{c}" for c in cols)
+    update_list = ",\n            ".join(f"{c} = EXCLUDED.{c}" for c in OPTION_UPSERT_COLS)
+
+    return f"""
+        INSERT INTO {table} ({col_list})
+        VALUES ({param_list})
+        ON CONFLICT ({conflict_key})
+        DO UPDATE SET
+            {update_list}
+    """
+
 
 async def write_intraday_stock(rows: Sequence[dict]) -> int:
     if not rows:
@@ -41,33 +83,11 @@ async def write_intraday_options(rows: Sequence[dict]) -> int:
     if not rows:
         return 0
 
-    stmt = text(
-        """
-        INSERT INTO option_5min_snapshots (
-            underlying, symbol, timestamp, expiry, strike, option_type,
-            last_price, bid, ask, volume, open_interest, iv, delta, gamma, theta, vega,
-            underlying_price
-        )
-        VALUES (
-            :underlying, :symbol, :timestamp, :expiry, :strike, :option_type,
-            :last_price, :bid, :ask, :volume, :open_interest, :iv, :delta, :gamma, :theta, :vega,
-            :underlying_price
-        )
-        ON CONFLICT (symbol, timestamp)
-        DO UPDATE SET
-            last_price = EXCLUDED.last_price,
-            bid = EXCLUDED.bid,
-            ask = EXCLUDED.ask,
-            volume = EXCLUDED.volume,
-            open_interest = EXCLUDED.open_interest,
-            iv = EXCLUDED.iv,
-            delta = EXCLUDED.delta,
-            gamma = EXCLUDED.gamma,
-            theta = EXCLUDED.theta,
-            vega = EXCLUDED.vega,
-            underlying_price = EXCLUDED.underlying_price
-        """
-    )
+    stmt = text(_build_option_upsert_sql(
+        table="option_5min_snapshots",
+        time_col="timestamp",
+        conflict_key="symbol, timestamp",
+    ))
 
     async with get_timescale_session() as session:
         await session.execute(stmt, list(rows))
@@ -105,33 +125,11 @@ async def write_swing_options(rows: Sequence[dict]) -> int:
     if not rows:
         return 0
 
-    stmt = text(
-        """
-        INSERT INTO option_daily (
-            underlying, symbol, snapshot_date, expiry, strike, option_type,
-            last_price, bid, ask, volume, open_interest, iv, delta, gamma, theta, vega,
-            underlying_price
-        )
-        VALUES (
-            :underlying, :symbol, :snapshot_date, :expiry, :strike, :option_type,
-            :last_price, :bid, :ask, :volume, :open_interest, :iv, :delta, :gamma, :theta, :vega,
-            :underlying_price
-        )
-        ON CONFLICT (symbol, snapshot_date)
-        DO UPDATE SET
-            last_price = EXCLUDED.last_price,
-            bid = EXCLUDED.bid,
-            ask = EXCLUDED.ask,
-            volume = EXCLUDED.volume,
-            open_interest = EXCLUDED.open_interest,
-            iv = EXCLUDED.iv,
-            delta = EXCLUDED.delta,
-            gamma = EXCLUDED.gamma,
-            theta = EXCLUDED.theta,
-            vega = EXCLUDED.vega,
-            underlying_price = EXCLUDED.underlying_price
-        """
-    )
+    stmt = text(_build_option_upsert_sql(
+        table="option_daily",
+        time_col="snapshot_date",
+        conflict_key="symbol, snapshot_date",
+    ))
 
     async with get_timescale_session() as session:
         await session.execute(stmt, list(rows))
@@ -180,7 +178,9 @@ async def aggregate_daily_from_snapshots(trading_date: date) -> dict:
     day_start = datetime.combine(trading_date, time.min, tzinfo=timezone.utc)
     day_end = datetime.combine(trading_date, time(23, 59, 59), tzinfo=timezone.utc)
 
-    # CTE: rank snapshots per symbol, keep only the last one
+    # CTE: rank snapshots per symbol, keep only the last one.
+    # Volume uses MAX() across all intraday snapshots (not just the last one)
+    # to capture the true daily traded volume.
     upsert_sql = text(
         """
         WITH ranked AS (
@@ -189,18 +189,30 @@ async def aggregate_daily_from_snapshots(trading_date: date) -> dict:
             FROM option_5min_snapshots
             WHERE "timestamp" >= :day_start
               AND "timestamp" <= :day_end
+        ),
+        vol_max AS (
+            SELECT symbol, MAX(volume) AS max_volume
+            FROM option_5min_snapshots
+            WHERE "timestamp" >= :day_start
+              AND "timestamp" <= :day_end
+            GROUP BY symbol
         )
         INSERT INTO option_daily (
             underlying, symbol, snapshot_date, expiry, strike, option_type,
             last_price, bid, ask, volume, open_interest,
-            iv, delta, gamma, theta, vega, underlying_price
+            iv, delta, gamma, theta, vega, vanna, charm,
+            underlying_price, is_tradeable
         )
         SELECT
-            underlying, symbol, :snapshot_date, expiry, strike, option_type,
-            last_price, bid, ask, volume, open_interest,
-            iv, delta, gamma, theta, vega, underlying_price
-        FROM ranked
-        WHERE rn = 1
+            r.underlying, r.symbol, :snapshot_date, r.expiry, r.strike, r.option_type,
+            r.last_price, r.bid, r.ask,
+            COALESCE(v.max_volume, r.volume),
+            r.open_interest,
+            r.iv, r.delta, r.gamma, r.theta, r.vega, r.vanna, r.charm,
+            r.underlying_price, r.is_tradeable
+        FROM ranked r
+        LEFT JOIN vol_max v ON r.symbol = v.symbol
+        WHERE r.rn = 1
         ON CONFLICT (symbol, snapshot_date)
         DO UPDATE SET
             last_price       = EXCLUDED.last_price,
@@ -213,7 +225,10 @@ async def aggregate_daily_from_snapshots(trading_date: date) -> dict:
             gamma            = EXCLUDED.gamma,
             theta            = EXCLUDED.theta,
             vega             = EXCLUDED.vega,
-            underlying_price = EXCLUDED.underlying_price
+            vanna            = EXCLUDED.vanna,
+            charm            = EXCLUDED.charm,
+            underlying_price = EXCLUDED.underlying_price,
+            is_tradeable     = EXCLUDED.is_tradeable
         """
     )
 

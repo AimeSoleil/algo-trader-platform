@@ -18,8 +18,10 @@ class OptionGreeks(BaseModel):
     gamma: float = 0.0
     theta: float = 0.0
     vega: float = 0.0
-    rho: float = 0.0
+    rho: float = 0.0  # 保留字段（向后兼容），当前不计算/不持久化
     iv: float = 0.0  # implied volatility
+    vanna: float = 0.0  # ∂Δ/∂σ — IV 变化对 delta 的二阶影响
+    charm: float = 0.0  # ∂Δ/∂t — 时间对 delta 的衰减影响
 
 
 class OptionContract(BaseModel):
@@ -36,6 +38,8 @@ class OptionContract(BaseModel):
     open_interest: int = 0
     greeks: OptionGreeks = Field(default_factory=OptionGreeks)
     timestamp: datetime | None = None
+    is_tradeable: bool = False  # 由 filter 模块标记，非 fetcher 设置
+    last_trade_date: date | None = None  # yfinance lastTradeDate，用于 stale trade check
 
     @property
     def mid_price(self) -> float:

@@ -86,11 +86,15 @@ class OptionSnapshot(TimescaleBase):
     gamma = Column(Float, nullable=False, default=0.0)
     theta = Column(Float, nullable=False, default=0.0)
     vega = Column(Float, nullable=False, default=0.0)
+    vanna = Column(Float, nullable=False, default=0.0)
+    charm = Column(Float, nullable=False, default=0.0)
     underlying_price = Column(Float, nullable=True)
+    is_tradeable = Column(Boolean, nullable=False, default=False)
 
     __table_args__ = (
         Index("idx_option_snap_underlying_expiry", "underlying", "expiry", "timestamp"),
         Index("idx_option_snap_strike", "underlying", "strike", "option_type"),
+        Index("idx_option_snap_tradeable", "underlying", "timestamp", "is_tradeable"),
     )
 
 
@@ -136,12 +140,16 @@ class OptionDailySnapshot(TimescaleBase):
     gamma = Column(Float, nullable=False, default=0.0)
     theta = Column(Float, nullable=False, default=0.0)
     vega = Column(Float, nullable=False, default=0.0)
+    vanna = Column(Float, nullable=False, default=0.0)
+    charm = Column(Float, nullable=False, default=0.0)
     underlying_price = Column(Float, nullable=True)
+    is_tradeable = Column(Boolean, nullable=False, default=False)
 
     __table_args__ = (
         UniqueConstraint("symbol", "snapshot_date", name="uq_option_daily"),
         Index("idx_option_daily_underlying_date", "underlying", "snapshot_date"),
         Index("idx_option_daily_expiry", "underlying", "expiry", "snapshot_date"),
+        Index("idx_option_daily_tradeable", "underlying", "snapshot_date", "is_tradeable"),
     )
 
 

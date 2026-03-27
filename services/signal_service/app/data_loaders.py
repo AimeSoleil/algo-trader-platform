@@ -23,7 +23,8 @@ STOCK_COLS = ["timestamp", "open", "high", "low", "close", "volume"]
 OPTION_COLS = [
     "underlying", "symbol", "expiry", "strike", "option_type",
     "last_price", "bid", "ask", "volume", "open_interest",
-    "iv", "delta", "gamma", "theta", "vega", "timestamp",
+    "iv", "delta", "gamma", "theta", "vega",
+    "vanna", "charm", "is_tradeable", "timestamp",
 ]
 
 
@@ -239,7 +240,8 @@ async def _load_daily_options(symbol: str, as_of: date) -> pd.DataFrame:
             text(
                 "SELECT underlying, symbol, expiry, strike, option_type, "
                 "last_price, bid, ask, volume, open_interest, iv, "
-                "delta, gamma, theta, vega, snapshot_date "
+                "delta, gamma, theta, vega, "
+                "vanna, charm, is_tradeable, snapshot_date "
                 "FROM option_daily "
                 "WHERE underlying = :symbol AND snapshot_date = :date"
             ),
@@ -269,14 +271,25 @@ async def _load_intraday_options(symbol: str, as_of: date) -> pd.DataFrame:
         symbol=symbol,
         source="option_5min_snapshots",
     )
+    # Dedup: take only the latest snapshot per contract (symbol) to avoid
+    # returning multiple intraday rows for the same contract.
     async with get_timescale_session() as session:
         result = await session.execute(
             text(
+                "WITH ranked AS ( "
+                "  SELECT underlying, symbol, expiry, strike, option_type, "
+                "    last_price, bid, ask, volume, open_interest, iv, "
+                "    delta, gamma, theta, vega, "
+                "    vanna, charm, is_tradeable, timestamp, "
+                "    ROW_NUMBER() OVER (PARTITION BY symbol ORDER BY timestamp DESC) AS rn "
+                "  FROM option_5min_snapshots "
+                "  WHERE underlying = :symbol AND timestamp::date = :date "
+                ") "
                 "SELECT underlying, symbol, expiry, strike, option_type, "
-                "last_price, bid, ask, volume, open_interest, iv, "
-                "delta, gamma, theta, vega, timestamp "
-                "FROM option_5min_snapshots "
-                "WHERE underlying = :symbol AND timestamp::date = :date"
+                "  last_price, bid, ask, volume, open_interest, iv, "
+                "  delta, gamma, theta, vega, "
+                "  vanna, charm, is_tradeable, timestamp "
+                "FROM ranked WHERE rn = 1"
             ),
             {"symbol": symbol, "date": as_of},
         )
