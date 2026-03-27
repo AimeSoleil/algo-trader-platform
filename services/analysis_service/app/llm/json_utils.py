@@ -14,7 +14,10 @@ Typical LLM quirks handled:
 from __future__ import annotations
 
 import json
+import logging
 import re
+
+logger = logging.getLogger("json_utils")
 
 
 # ── Public API ────────────────────────────────────────────────────────
@@ -65,7 +68,18 @@ def parse_llm_json(text: str) -> dict:
     call instead of raw ``json.loads``.  Internally delegates to
     ``extract_json_str`` for cleaning, then ``json.loads`` for parsing.
     """
-    return json.loads(extract_json_str(text))
+    cleaned = extract_json_str(text)
+    try:
+        return json.loads(cleaned)
+    except json.JSONDecodeError:
+        # Log the first 200 chars of both raw and cleaned for debugging
+        logger.warning(
+            "parse_llm_json: json.loads failed after cleanup. "
+            "raw[:200]=%r cleaned[:200]=%r",
+            text[:200],
+            cleaned[:200],
+        )
+        raise
 
 
 # ── Internal helpers ──────────────────────────────────────────────────
