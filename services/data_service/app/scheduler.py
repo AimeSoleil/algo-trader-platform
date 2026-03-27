@@ -66,7 +66,7 @@ async def _capture_intraday(state: SchedulerState) -> None:
         logger.info("scheduler.intraday_resumed", reason="market_open")
         state.outside_market_logged = False
 
-    symbols = state.settings.watchlist
+    symbols = state.settings.common.watchlist
     intraday_cfg = state.settings.data_service.intraday
     captured = 0
 
@@ -135,7 +135,7 @@ def start_data_scheduler(cache: MarketHoursCache, settings: Settings) -> None:
     )
 
     _scheduler = AsyncIOScheduler(
-        timezone=settings.trading.timezone,
+        timezone=settings.common.timezone,
     )
     _register_intraday_job()
     _scheduler.start()

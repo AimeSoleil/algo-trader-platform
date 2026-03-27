@@ -91,7 +91,7 @@ class DataQualityConfig:
         if settings is None:
             return cls()
 
-        dq = getattr(settings, "data_quality", None)
+        dq = getattr(settings.common, "data_quality", None)
         if dq is None:
             return cls()
 

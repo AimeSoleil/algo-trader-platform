@@ -28,14 +28,14 @@ async def lifespan(app: FastAPI):
     logger.debug(
         "data_service.logging_config_snapshot",
         service_name="data_service",
-        log_level=settings.logging.level,
-        log_format=settings.logging.format,
-        to_file=settings.logging.to_file,
-        rotate_mode=settings.logging.file_rotate_mode,
+        log_level=settings.common.logging.level,
+        log_format=settings.common.logging.format,
+        to_file=settings.common.logging.to_file,
+        rotate_mode=settings.common.logging.file_rotate_mode,
     )
     logger.info(
         "data_service.starting",
-        watchlist=settings.watchlist,
+        watchlist=settings.common.watchlist,
     )
 
     start_data_scheduler(cache, settings)

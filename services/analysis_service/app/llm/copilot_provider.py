@@ -78,11 +78,11 @@ class CopilotProvider(LLMProviderBase):
 
     def __init__(self):
         settings = get_settings()
-        self.cli_path = _resolve_cli_path(settings.llm.copilot.cli_path)
-        self.github_token = settings.llm.copilot.github_token
-        self.model = settings.llm.copilot.model
-        self.request_timeout = settings.llm.copilot.request_timeout_seconds
-        reasoning_effort = settings.llm.copilot.reasoning_effort.lower()
+        self.cli_path = _resolve_cli_path(settings.analysis_service.llm.copilot.cli_path)
+        self.github_token = settings.analysis_service.llm.copilot.github_token
+        self.model = settings.analysis_service.llm.copilot.model
+        self.request_timeout = settings.analysis_service.llm.copilot.request_timeout_seconds
+        reasoning_effort = settings.analysis_service.llm.copilot.reasoning_effort.lower()
         if reasoning_effort not in {"low", "medium", "high", "xhigh"}:
             reasoning_effort = "medium"
         self.reasoning_effort = reasoning_effort
@@ -133,9 +133,9 @@ class CopilotProvider(LLMProviderBase):
         from shared.metrics import llm_request_duration, llm_retries_total
 
         settings = get_settings()
-        max_retries = settings.llm.max_retries
-        backoff_base = settings.llm.backoff_base_seconds
-        backoff_max = settings.llm.backoff_max_seconds
+        max_retries = settings.analysis_service.llm.max_retries
+        backoff_base = settings.analysis_service.llm.backoff_base_seconds
+        backoff_max = settings.analysis_service.llm.backoff_max_seconds
 
         client = await self._get_client()
         prompt = build_blueprint_prompt(

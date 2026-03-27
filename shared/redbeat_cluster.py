@@ -4,7 +4,7 @@
 ``redis.StrictRedis`` client which cannot follow ``MOVED`` redirections
 in a Redis Cluster.  This module provides a thin subclass that replaces
 the RedBeat Redis connection with a ``redis.cluster.RedisCluster``
-client when ``settings.redis.cluster_enabled`` is ``True``.
+client when ``settings.infra.redis.cluster_enabled`` is ``True``.
 
 It also makes ``tick()`` resilient to transient ``LockNotOwnedError``
 exceptions — a common occurrence in Redis Cluster due to master
@@ -38,7 +38,7 @@ def _get_cluster_client() -> RedisCluster:
         settings = get_settings()
         nodes = [
             ClusterNode(host=n["host"], port=int(n["port"]))
-            for n in settings.redis.cluster_nodes
+            for n in settings.infra.redis.cluster_nodes
         ]
         _cluster_client = RedisCluster(
             startup_nodes=nodes,
@@ -76,13 +76,13 @@ class ClusterRedBeatScheduler(RedBeatScheduler):
 
     def setup_schedule(self):
         settings = get_settings()
-        if settings.redis.cluster_enabled:
+        if settings.infra.redis.cluster_enabled:
             _ensure_cluster_redis(self.app)
         super().setup_schedule()
 
     def update_schedule(self, schedule):
         settings = get_settings()
-        if settings.redis.cluster_enabled:
+        if settings.infra.redis.cluster_enabled:
             _ensure_cluster_redis(self.app)
         super().update_schedule(schedule)
 

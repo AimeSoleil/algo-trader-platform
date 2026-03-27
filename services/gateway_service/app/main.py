@@ -51,10 +51,10 @@ async def lifespan(_app: FastAPI):
     logger.debug(
         "gateway.logging_config_snapshot",
         service_name="gateway",
-        log_level=settings.logging.level,
-        log_format=settings.logging.format,
-        to_file=settings.logging.to_file,
-        rotate_mode=settings.logging.file_rotate_mode,
+        log_level=settings.common.logging.level,
+        log_format=settings.common.logging.format,
+        to_file=settings.common.logging.to_file,
+        rotate_mode=settings.common.logging.file_rotate_mode,
     )
 
     _http_client = httpx.AsyncClient(timeout=30.0)

@@ -22,10 +22,10 @@ async def lifespan(app: FastAPI):
     logger.debug(
         "analysis_service.logging_config_snapshot",
         service_name="analysis_service",
-        log_level=settings.logging.level,
-        log_format=settings.logging.format,
-        to_file=settings.logging.to_file,
-        rotate_mode=settings.logging.file_rotate_mode,
+        log_level=settings.common.logging.level,
+        log_format=settings.common.logging.format,
+        to_file=settings.common.logging.to_file,
+        rotate_mode=settings.common.logging.file_rotate_mode,
     )
     logger.info("analysis_service.starting")
     yield

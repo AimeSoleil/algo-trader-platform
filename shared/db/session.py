@@ -52,7 +52,7 @@ def get_timescale_engine() -> AsyncEngine:
     if _timescale_engine is None:
         settings = get_settings()
         _timescale_engine = create_async_engine(
-            settings.database.timescale_url,
+            settings.infra.database.timescale_url,
             echo=False,
             pool_size=10,
             max_overflow=20,
@@ -74,7 +74,7 @@ def get_postgres_engine() -> AsyncEngine:
     if _postgres_engine is None:
         settings = get_settings()
         _postgres_engine = create_async_engine(
-            settings.database.postgres_url,
+            settings.infra.database.postgres_url,
             echo=False,
             pool_size=5,
             max_overflow=10,

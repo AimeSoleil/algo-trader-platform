@@ -3,59 +3,94 @@
 # ═══════════════════════════════════════════════════════════
 
 
-# ── Infrastructure — 基础设施连接 ────────────────────────────
+# ── Common — 跨服务共用配置 ─────────────────────────────────
 
-database:
-  timescale_url: "postgresql+asyncpg://trader:trader_dev@localhost:5432/algo_trader"
-  postgres_url: "postgresql+asyncpg://trader:trader_dev@localhost:5433/algo_trader_biz"
+common:
+  timezone: "America/New_York"
 
-redis:
-  url: "redis://localhost:6379/0"             # standalone fallback
-  cluster_enabled: true
-  cluster_nodes:
-    - host: "127.0.0.1"
-      port: 6380
-    - host: "127.0.0.1"
-      port: 6381
-    - host: "127.0.0.1"
-      port: 6382
+  market_hours:
+    start: "09:30"
+    end: "16:00"
 
-rabbitmq:
-  url: "amqp://trader:trader_dev@localhost:5672//"
+  watchlist:
+    - "AAPL"
+    - "MSFT"
+    - "NVDA"
+    - "TSLA"
+    - "SPY"
+    - "QQQ"
+    - "IWM"
+    - "TLT"
+    - "^VIX"
+    - "AMZN"
+    - "META"
+    - "GOOGL"
+    - "AMD"
 
-minio:
-  endpoint: "localhost:9000"
-  access_key: "minioadmin"
-  secret_key: "minioadmin"
-  secure: false
+  data_quality:
+    # ── 评分权重（三项之和 = 1.0）──
+    weight_stock: 0.5              # 股票数据覆盖率占比
+    weight_option: 0.3             # 期权数据覆盖率占比
+    weight_degradation: 0.2        # 无降级指标奖励
+    # ── 满分参考行数 ──
+    stock_full_bars: 260           # ≈ 1 年交易日
+    option_full_rows: 200
+    # ── 执行门控阈值 ──
+    skip_threshold: 0.3            # score < 此值 → 完全跳过执行
+    reduce_threshold: 0.7          # score < 此值 → 仓位缩减
+    reduce_factor: 0.5             # 缩减比例（0.5 = 减半）
+
+  schedule:
+    blueprint_load_time: "09:20"       # 每日 9:20 加载当天的策略蓝图（盘前准备）
+    batch_flush_time: "18:30"          # 18:30 批量 flush 当日交易数据
+    backfill_time: "19:00"             # 19:00 开始执行盘后数据 backfill
+    signal_compute_time: "19:30"       # 19:30 计算交易信号
+    blueprint_generate_time: "20:00"   # 20:00 生成明天的策略蓝图
+
+  logging:
+    level: "INFO"
+    format: "json"                     # json / console
+    to_console: true
+    to_file: true
+    file_path: "logs/algo-trader.log"
+    file_rotate_mode: "time"           # time / size / none
+    file_max_bytes: 104857600
+    file_rotate: true
+    file_rotate_when: "midnight"
+    file_rotate_interval: 1
+    file_backup_count: 14
+    file_rotate_utc: false
 
 
-# ── Broker — 交易通道 ───────────────────────────────────────
+# ── Infra — 基础设施连接 ────────────────────────────────────
 
-broker:
-  type: "paper"                      # paper | futu
-  paper:
-    initial_cash: 100000.0
-  futu:
-    host: "127.0.0.1"
-    port: 11111
-    trader_id: ""
-    trd_env: "SIMULATE"              # SIMULATE | REAL
-    market: "US"
+infra:
+  database:
+    timescale_url: "postgresql+asyncpg://trader:trader_dev@localhost:5432/algo_trader"
+    postgres_url: "postgresql+asyncpg://trader:trader_dev@localhost:5433/algo_trader_biz"
+
+  redis:
+    url: "redis://localhost:6379/0"             # standalone fallback
+    cluster_enabled: true
+    cluster_nodes:
+      - host: "127.0.0.1"
+        port: 6380
+      - host: "127.0.0.1"
+        port: 6381
+      - host: "127.0.0.1"
+        port: 6382
+
+  rabbitmq:
+    url: "amqp://trader:trader_dev@localhost:5672//"
 
 
-# ── Services — 各服务业务配置 ────────────────────────────────
+# ── Data Service — 数据采集与过滤 ───────────────────────────
 
 data_service:
   # ── 数据源选择 ──
   providers:
     stock: "yfinance"                  # stock bar provider: yfinance | ...
     options: "yfinance"                # option chain provider: yfinance | ...
-
-  # ── 交易时段 ──
-  market_hours:
-    start: "09:30"
-    end: "16:00"
 
   # ── 盘中采集 ──
   intraday:
@@ -97,14 +132,21 @@ data_service:
     #     min_volume: 0
     #     max_price_change_pct: 50.0
 
-option_strategy:
-  lookback_days: 252                 # iv_percentile 滚动窗口（交易日）
-  high_quantile: 0.7                 # iv_percentile >= 70 → 高波动区间
-  low_quantile: 0.3                  # iv_percentile <= 30 → 低波动区间
+
+# ── Signal Service — 信号计算与策略过滤 ─────────────────────
 
 signal_service:
   # ── IV 历史回溯 ──
   iv_lookback_days: 252              # 用于 IV Rank / IV Percentile 的历史窗口（交易日）
+
+  # ── 期权策略参数 ──
+  option_strategy:
+    lookback_days: 252                 # iv_percentile 滚动窗口（交易日）
+    high_quantile: 0.7                 # iv_percentile >= 70 → 高波动区间
+    low_quantile: 0.3                  # iv_percentile <= 30 → 低波动区间
+
+  # ── 跨资产基准（用于 beta / correlation 计算）──
+  cross_asset_benchmarks: ["SPY", "QQQ", "IWM", "TLT"]
 
   # ── 信号计算过滤器（按资产类型组织）──
   filters:
@@ -122,98 +164,54 @@ signal_service:
     #   trading:
     #     min_avg_volume_20d: 100000
 
-llm:
-  provider: "copilot"                 # openai / copilot
-  openai:
-    api_key: ""                       # or env: LLM__OPENAI__API_KEY
-    model: "claude-opus-4.6"
-    temperature: 0.1
-    max_tokens: 8192
-    request_timeout_seconds: 600
-  copilot:
-    cli_path: "copilot"
-    github_token: ""                  # or env: LLM__COPILOT__GITHUB_TOKEN
-    model: "claude-opus-4.6"
-    reasoning_effort: "medium"        # low / medium / high
-    request_timeout_seconds: 600
-  cache_enabled: true
-  cache_ttl: 3600
-  skill_dir: ""
-  agentic_mode: true                    # true = multi-agent pipeline, false = legacy chunk-split
-  max_critic_revisions: 2               # Synthesizer↔Critic revision rounds
-  chunk_size: 5                        # max symbols per LLM chunk (excl. benchmarks)
-  max_concurrent_chunks: 3             # max parallel LLM calls for large watchlists
-  benchmark_symbols: ["SPY", "QQQ"]    # injected into every chunk for market context
+
+# ── Analysis Service — LLM 分析引擎 ────────────────────────
+
+analysis_service:
+  llm:
+    provider: "copilot"                 # openai / copilot
+    openai:
+      api_key: ""                       # or env: ANALYSIS_SERVICE__LLM__OPENAI__API_KEY
+      model: "claude-opus-4.6"
+      temperature: 0.1
+      max_tokens: 8192
+      request_timeout_seconds: 600
+    copilot:
+      cli_path: "copilot"
+      github_token: ""                  # or env: ANALYSIS_SERVICE__LLM__COPILOT__GITHUB_TOKEN
+      model: "claude-opus-4.6"
+      reasoning_effort: "medium"        # low / medium / high
+      request_timeout_seconds: 600
+    cache_enabled: true
+    cache_ttl: 3600
+    skill_dir: ""
+    agentic_mode: true                    # true = multi-agent pipeline, false = legacy chunk-split
+    max_critic_revisions: 2               # Synthesizer↔Critic revision rounds
+    chunk_size: 5                        # max symbols per LLM chunk (excl. benchmarks)
+    max_concurrent_chunks: 3             # max parallel LLM calls for large watchlists
+    benchmark_symbols: ["SPY", "QQQ"]    # injected into every chunk for market context
 
 
-# ── Trading — 交易执行与风控 ─────────────────────────────────
+# ── Trade Service — 交易执行与风控 ──────────────────────────
 
-trading:
-  timezone: "America/New_York"
-  execution_interval: 300            # 执行检查间隔（秒）= 5分钟
+trade_service:
+  execution_interval: 300              # 执行检查间隔（秒）= 5分钟
 
-risk:
-  stop_loss:
-    enabled: true
-    check_interval_seconds: 60
-    portfolio_loss_limit: 2000.0
-    position_loss_limit: 500.0
-    cooldown_seconds: 60
+  broker:
+    type: "paper"                      # paper | futu
+    paper:
+      initial_cash: 100000.0
+    futu:
+      host: "127.0.0.1"
+      port: 11111
+      trader_id: ""
+      trd_env: "SIMULATE"              # SIMULATE | REAL
+      market: "US"
 
-data_quality:
-  # ── 评分权重（三项之和 = 1.0）──
-  weight_stock: 0.5              # 股票数据覆盖率占比
-  weight_option: 0.3             # 期权数据覆盖率占比
-  weight_degradation: 0.2        # 无降级指标奖励
-  # ── 满分参考行数 ──
-  stock_full_bars: 260           # ≈ 1 年交易日
-  option_full_rows: 200
-  # ── 执行门控阈值 ──
-  skip_threshold: 0.3            # score < 此值 → 完全跳过执行
-  reduce_threshold: 0.7          # score < 此值 → 仓位缩减
-  reduce_factor: 0.5             # 缩减比例（0.5 = 减半）
-
-schedule:
-  blueprint_load_time: "09:20"       # 每日 9:20 加载当天的策略蓝图（盘前准备）
-  market_open: "09:30"               # 9:30 市场开盘，开始执行策略
-  market_close: "16:00"              # 16:00 市场收盘，停止交易
-  batch_flush_time: "18:30"          # 18:30 批量 flush 当日交易数据
-  backfill_time: "19:00"             # 19:00 开始执行盘后数据 backfill
-  signal_compute_time: "19:30"       # 19:30 计算交易信号
-  blueprint_generate_time: "20:00"   # 20:00 生成明天的策略蓝图
-
-# ── Cross-asset benchmarks for multi-factor signal model ──
-cross_asset_benchmarks: ["SPY", "QQQ", "IWM", "TLT"]
-environment_symbols: ["^VIX"]  # market regime indicators (not traded)
-
-watchlist:
-  - "AAPL"
-  - "MSFT"
-  - "NVDA"
-  - "TSLA"
-  - "SPY"
-  - "QQQ"
-  - "IWM"
-  - "TLT"
-  - "^VIX"
-  - "AMZN"
-  - "META"
-  - "GOOGL"
-  - "AMD"
-
-
-# ── Observability — 可观测性 ─────────────────────────────────
-
-logging:
-  level: "INFO"
-  format: "json"                     # json / console
-  to_console: true
-  to_file: true
-  file_path: "logs/algo-trader.log"
-  file_rotate_mode: "time"           # time / size / none
-  file_max_bytes: 104857600
-  file_rotate: true
-  file_rotate_when: "midnight"
-  file_rotate_interval: 1
-  file_backup_count: 14
-  file_rotate_utc: false
+  risk:
+    stop_loss:
+      enabled: true
+      check_interval_seconds: 60
+      portfolio_loss_limit: 2000.0
+      position_loss_limit: 500.0
+      cooldown_seconds: 60

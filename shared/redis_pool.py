@@ -36,7 +36,7 @@ def get_redis() -> RedisClient:
     Lazily initialises on first call.  Thread-/task-safe for asyncio
     because both Redis and RedisCluster handle concurrency internally.
 
-    When ``settings.redis.cluster_enabled`` is ``True``, returns a
+    When ``settings.infra.redis.cluster_enabled`` is ``True``, returns a
     ``RedisCluster`` backed by the configured seed nodes.  Otherwise
     returns a plain ``Redis`` backed by a ``ConnectionPool``.
     """
@@ -46,10 +46,10 @@ def get_redis() -> RedisClient:
 
     settings = get_settings()
 
-    if settings.redis.cluster_enabled:
+    if settings.infra.redis.cluster_enabled:
         nodes = [
             ClusterNode(host=n["host"], port=int(n["port"]))
-            for n in settings.redis.cluster_nodes
+            for n in settings.infra.redis.cluster_nodes
         ]
         cluster_kwargs: dict[str, object] = {
             "startup_nodes": nodes,
@@ -66,7 +66,7 @@ def get_redis() -> RedisClient:
         )
     else:
         _pool = ConnectionPool.from_url(
-            settings.redis.url,
+            settings.infra.redis.url,
             decode_responses=True,
             max_connections=20,
         )

@@ -75,7 +75,7 @@ async def _detect_and_backfill_async(trading_date_str: str | None = None) -> dic
         log_event="task_context",
         stage="start",
         trading_date=str(td),
-        symbols=len(settings.watchlist),
+        symbols=len(settings.common.watchlist),
         daily_lookback_start=str(lookback_start),
     )
 
@@ -89,7 +89,7 @@ async def _detect_and_backfill_async(trading_date_str: str | None = None) -> dic
         "option_5min_gaps": 0,
     }
 
-    for symbol in settings.watchlist:
+    for symbol in settings.common.watchlist:
         symbol_started = perf_counter()
         logger.debug(
             "backfill.detect.symbol_started",
@@ -224,7 +224,7 @@ async def _check_historical_async() -> dict:
         log_event="task_context",
         stage="start",
         trading_date=str(today),
-        symbols=len(settings.watchlist),
+        symbols=len(settings.common.watchlist),
     )
     result = {
         "stock_daily_gaps": 0,
@@ -235,7 +235,7 @@ async def _check_historical_async() -> dict:
 
     # stock_daily: 检查过去 90 天
     daily_start = today - timedelta(days=90)
-    for symbol in settings.watchlist:
+    for symbol in settings.common.watchlist:
         symbol_daily_filled = 0
         sd_gaps = await detect_stock_daily_gaps(symbol, daily_start, today)
         result["stock_daily_gaps"] += len(sd_gaps)
@@ -256,7 +256,7 @@ async def _check_historical_async() -> dict:
 
     # stock_1min: 检查最近 7 天（yfinance 限制）
     min_start = today - timedelta(days=_MAX_1MIN_LOOKBACK)
-    for symbol in settings.watchlist:
+    for symbol in settings.common.watchlist:
         symbol_1min_gaps = 0
         symbol_1min_filled = 0
         check_date = min_start

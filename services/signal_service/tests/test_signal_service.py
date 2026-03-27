@@ -109,8 +109,8 @@ def make_option_df(
 
 def _mock_settings() -> MagicMock:
     s = MagicMock()
-    s.option_strategy.high_quantile = 0.7
-    s.option_strategy.low_quantile = 0.3
+    s.signal_service.option_strategy.high_quantile = 0.7
+    s.signal_service.option_strategy.low_quantile = 0.3
     return s
 
 

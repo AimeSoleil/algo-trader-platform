@@ -390,8 +390,8 @@ async def trigger_collection(req: CollectRequest):
 
     today = today_trading()
     settings = get_settings()
-    mkt_start = settings.data_service.market_hours.start
-    mkt_end = settings.data_service.market_hours.end
+    mkt_start = settings.common.market_hours.start
+    mkt_end = settings.common.market_hours.end
 
     # ── Future check ──
     if req.end_date > today:
@@ -467,7 +467,7 @@ async def trigger_collection(req: CollectRequest):
 
     # Expand "WATCHLIST" keyword → merge with configured watchlist symbols
     if "WATCHLIST" in symbols:
-        settings_watchlist = settings.watchlist
+        settings_watchlist = settings.common.watchlist
         symbols = list(dict.fromkeys(
             s for s in (symbols + settings_watchlist) if s != "WATCHLIST"
         ))
@@ -533,7 +533,7 @@ async def trigger_post_market_collect(req: PostMarketCollectRequest | None = Non
     省略 trading_date 时默认取当天。
     """
     settings = get_settings()
-    mkt_end = settings.data_service.market_hours.end
+    mkt_end = settings.common.market_hours.end
 
     td = (req.trading_date if req and req.trading_date else None) or today_trading()
     td_str = td.isoformat()

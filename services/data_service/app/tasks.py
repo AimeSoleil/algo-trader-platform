@@ -64,7 +64,7 @@ async def _capture_post_market_async(trading_date_str: str | None = None) -> dic
 
     settings = get_settings()
     stock_fetcher = get_stock_fetcher()
-    symbols = settings.watchlist
+    symbols = settings.common.watchlist
     td = date.fromisoformat(trading_date_str) if trading_date_str else today_trading()
     started = perf_counter()
     logger.debug(

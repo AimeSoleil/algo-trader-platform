@@ -31,12 +31,12 @@ async def lifespan(app: FastAPI):
     logger.debug(
         "trade_service.logging_config_snapshot",
         service_name="trade_service",
-        log_level=settings.logging.level,
-        log_format=settings.logging.format,
-        to_file=settings.logging.to_file,
-        rotate_mode=settings.logging.file_rotate_mode,
+        log_level=settings.common.logging.level,
+        log_format=settings.common.logging.format,
+        to_file=settings.common.logging.to_file,
+        rotate_mode=settings.common.logging.file_rotate_mode,
     )
-    logger.info("trade_service.starting", execution_interval=settings.trading.execution_interval)
+    logger.info("trade_service.starting", execution_interval=settings.trade_service.execution_interval)
 
     await _startup_broker()
 

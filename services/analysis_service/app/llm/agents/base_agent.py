@@ -151,9 +151,9 @@ class AnalysisAgent(ABC):
         user_prompt = self._build_user_prompt(filtered, context)
 
         settings = get_settings()
-        max_retries = settings.llm.max_retries
-        backoff_base = settings.llm.backoff_base_seconds
-        backoff_max = settings.llm.backoff_max_seconds
+        max_retries = settings.analysis_service.llm.max_retries
+        backoff_base = settings.analysis_service.llm.backoff_base_seconds
+        backoff_max = settings.analysis_service.llm.backoff_max_seconds
 
         last_exc: Exception | None = None
         for attempt in range(max_retries):
@@ -163,7 +163,7 @@ class AnalysisAgent(ABC):
                 result = await provider.generate(
                     instructions=self.system_prompt,
                     user_prompt=user_prompt,
-                    temperature=settings.llm.openai.temperature,
+                    temperature=settings.analysis_service.llm.openai.temperature,
                     max_tokens=4096,
                 )
 

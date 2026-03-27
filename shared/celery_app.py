@@ -26,19 +26,19 @@ def create_celery_app() -> Celery:
     # Cluster mode: use custom backend that wraps RedisCluster.
     # All DBs merge to 0; isolation via key prefix.
     # Standalone: DB 1 for results, DB 2 for RedBeat.
-    if settings.redis.cluster_enabled and settings.redis.cluster_nodes:
-        _first = settings.redis.cluster_nodes[0]
+    if settings.infra.redis.cluster_enabled and settings.infra.redis.cluster_nodes:
+        _first = settings.infra.redis.cluster_nodes[0]
         redis_base = f"redis://{_first['host']}:{_first['port']}"
         backend_url = "shared.redis_cluster_backend.RedisClusterBackend"
         redbeat_url = f"{redis_base}/0"
     else:
-        redis_base = settings.redis.url.rsplit("/", 1)[0]
+        redis_base = settings.infra.redis.url.rsplit("/", 1)[0]
         backend_url = f"{redis_base}/1"
         redbeat_url = f"{redis_base}/2"
 
     app = Celery(
         "algo_trader",
-        broker=settings.rabbitmq.url,
+        broker=settings.infra.rabbitmq.url,
         backend=backend_url,
         include=[
             "services.data_service.app.tasks",
@@ -54,7 +54,7 @@ def create_celery_app() -> Celery:
         task_serializer="json",
         accept_content=["json"],
         result_serializer="json",
-        timezone=settings.trading.timezone,
+        timezone=settings.common.timezone,
         enable_utc=True,
         task_track_started=True,
         task_acks_late=True,
@@ -78,7 +78,7 @@ def create_celery_app() -> Celery:
         # cluster-aware client; see shared/redbeat_cluster.py.
         beat_scheduler=(
             "shared.redbeat_cluster.ClusterRedBeatScheduler"
-            if settings.redis.cluster_enabled
+            if settings.infra.redis.cluster_enabled
             else "redbeat.RedBeatScheduler"
         ),
         redbeat_redis_url=redbeat_url,
@@ -98,8 +98,8 @@ def create_celery_app() -> Celery:
     # Beat only triggers the pipeline entry point; the chain handles ordering.
 
     # Parse schedule times from config
-    _flush_h, _flush_m = map(int, settings.schedule.batch_flush_time.split(":"))
-    _backfill_h, _backfill_m = map(int, settings.schedule.backfill_time.split(":"))
+    _flush_h, _flush_m = map(int, settings.common.schedule.batch_flush_time.split(":"))
+    _backfill_h, _backfill_m = map(int, settings.common.schedule.backfill_time.split(":"))
 
     app.conf.beat_schedule = {
         # ── 盘后流水线入口 ──

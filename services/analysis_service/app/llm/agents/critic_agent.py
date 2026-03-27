@@ -57,9 +57,9 @@ class CriticAgent:
 
         prompt = self._build_prompt(blueprint_json, agent_outputs, signals_summary)
 
-        max_retries = settings.llm.max_retries
-        backoff_base = settings.llm.backoff_base_seconds
-        backoff_max = settings.llm.backoff_max_seconds
+        max_retries = settings.analysis_service.llm.max_retries
+        backoff_base = settings.analysis_service.llm.backoff_base_seconds
+        backoff_max = settings.analysis_service.llm.backoff_max_seconds
 
         last_exc: Exception | None = None
         for attempt in range(max_retries):

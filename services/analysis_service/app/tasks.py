@@ -221,7 +221,7 @@ async def _generate_blueprint_async(trading_date_str: str | None = None) -> dict
         log_event="task_context",
         stage="start",
         trading_date=str(td),
-        symbols=len(settings.watchlist),
+        symbols=len(settings.common.watchlist),
     )
 
     # 1) Read all signal features from DB

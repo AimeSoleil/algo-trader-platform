@@ -57,14 +57,14 @@ class LLMAdapter:
 
     def __init__(self):
         settings = get_settings()
-        self.primary_name = settings.llm.provider
+        self.primary_name = settings.analysis_service.llm.provider
         self._primary: LLMProviderBase | None = None
         self._secondary: LLMProviderBase | None = None
 
         # Chunking config
-        self._chunk_size = settings.llm.chunk_size
-        self._max_concurrent = settings.llm.max_concurrent_chunks
-        self._benchmark_symbols = settings.llm.benchmark_symbols
+        self._chunk_size = settings.analysis_service.llm.chunk_size
+        self._max_concurrent = settings.analysis_service.llm.max_concurrent_chunks
+        self._benchmark_symbols = settings.analysis_service.llm.benchmark_symbols
 
         # Global concurrency limiter (shared across all invocations)
         self._semaphore = asyncio.Semaphore(self._max_concurrent)
@@ -73,7 +73,7 @@ class LLMAdapter:
         self._circuit: dict[str, _CircuitBreaker] = {}
 
         # Agentic mode
-        self._agentic_mode = settings.llm.agentic_mode
+        self._agentic_mode = settings.analysis_service.llm.agentic_mode
         self._orchestrator = None  # lazy-init
 
     def _create_provider(self, name: str) -> LLMProviderBase:
@@ -115,8 +115,8 @@ class LLMAdapter:
         if provider_name not in self._circuit:
             settings = get_settings()
             self._circuit[provider_name] = _CircuitBreaker(
-                threshold=settings.llm.circuit_breaker_threshold,
-                cooldown=settings.llm.circuit_breaker_cooldown_seconds,
+                threshold=settings.analysis_service.llm.circuit_breaker_threshold,
+                cooldown=settings.analysis_service.llm.circuit_breaker_cooldown_seconds,
             )
         return self._circuit[provider_name]
 

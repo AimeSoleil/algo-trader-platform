@@ -36,8 +36,8 @@ def generate_signal(
     settings = get_settings()
 
     iv_pct = option_indicators.iv_percentile
-    high_thr = settings.option_strategy.high_quantile * 100  # e.g. 70.0
-    low_thr  = settings.option_strategy.low_quantile  * 100  # e.g. 30.0
+    high_thr = settings.signal_service.option_strategy.high_quantile * 100  # e.g. 70.0
+    low_thr  = settings.signal_service.option_strategy.low_quantile  * 100  # e.g. 30.0
     if iv_pct >= high_thr:
         vol_regime = "high"
     elif iv_pct <= low_thr:

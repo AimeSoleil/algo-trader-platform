@@ -67,13 +67,13 @@ class TestAdapterRouting:
 
         with patch("services.analysis_service.app.llm.adapter.get_settings") as mock_settings:
             settings = MagicMock()
-            settings.llm.provider = "openai"
-            settings.llm.chunk_size = 5
-            settings.llm.max_concurrent_chunks = 3
-            settings.llm.benchmark_symbols = ["SPY"]
-            settings.llm.agentic_mode = True
-            settings.llm.circuit_breaker_threshold = 5
-            settings.llm.circuit_breaker_cooldown_seconds = 60
+            settings.analysis_service.llm.provider = "openai"
+            settings.analysis_service.llm.chunk_size = 5
+            settings.analysis_service.llm.max_concurrent_chunks = 3
+            settings.analysis_service.llm.benchmark_symbols = ["SPY"]
+            settings.analysis_service.llm.agentic_mode = True
+            settings.analysis_service.llm.circuit_breaker_threshold = 5
+            settings.analysis_service.llm.circuit_breaker_cooldown_seconds = 60
             mock_settings.return_value = settings
 
             from services.analysis_service.app.llm.adapter import LLMAdapter
@@ -97,13 +97,13 @@ class TestAdapterRouting:
 
         with patch("services.analysis_service.app.llm.adapter.get_settings") as mock_settings:
             settings = MagicMock()
-            settings.llm.provider = "openai"
-            settings.llm.chunk_size = 5
-            settings.llm.max_concurrent_chunks = 3
-            settings.llm.benchmark_symbols = ["SPY"]
-            settings.llm.agentic_mode = True
-            settings.llm.circuit_breaker_threshold = 5
-            settings.llm.circuit_breaker_cooldown_seconds = 60
+            settings.analysis_service.llm.provider = "openai"
+            settings.analysis_service.llm.chunk_size = 5
+            settings.analysis_service.llm.max_concurrent_chunks = 3
+            settings.analysis_service.llm.benchmark_symbols = ["SPY"]
+            settings.analysis_service.llm.agentic_mode = True
+            settings.analysis_service.llm.circuit_breaker_threshold = 5
+            settings.analysis_service.llm.circuit_breaker_cooldown_seconds = 60
             mock_settings.return_value = settings
 
             from services.analysis_service.app.llm.adapter import LLMAdapter

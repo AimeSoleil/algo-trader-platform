@@ -84,7 +84,7 @@ async def _compute_daily_signals(
 
     settings = get_settings()
     td = date.fromisoformat(trading_date_str) if trading_date_str else today_trading()
-    target_symbols = [s.upper() for s in symbols] if symbols else settings.watchlist
+    target_symbols = [s.upper() for s in symbols] if symbols else settings.common.watchlist
     started = perf_counter()
     logger.debug(
         "signal_compute.context",
@@ -100,7 +100,7 @@ async def _compute_daily_signals(
 
     # ── Pre-load benchmark returns & VIX (once) ─────────────
     benchmark_returns = await load_benchmark_returns(
-        settings.cross_asset_benchmarks, td,
+        settings.signal_service.cross_asset_benchmarks, td,
     )
     vix_bars = await load_vix_bars(td)
 
@@ -109,7 +109,7 @@ async def _compute_daily_signals(
         "signal_compute.benchmarks_preloaded",
         log_event="db_read",
         stage="preload",
-        benchmarks_requested=settings.cross_asset_benchmarks,
+        benchmarks_requested=settings.signal_service.cross_asset_benchmarks,
         benchmarks_loaded=loaded_benchmarks,
         vix_bars=len(vix_bars),
     )
@@ -236,7 +236,7 @@ async def _compute_daily_signals(
         log_event="task_summary",
         stage="completed",
         trading_date=str(td),
-        symbols_total=len(settings.watchlist),
+        symbols_total=len(settings.common.watchlist),
         symbols_computed=result["symbols_computed"],
         errors=len(result["errors"]),
         duration_ms=round((perf_counter() - started) * 1000, 2),

@@ -30,7 +30,7 @@ def _get_cluster_client() -> RedisCluster:
         settings = get_settings()
         nodes = [
             ClusterNode(host=n["host"], port=int(n["port"]))
-            for n in settings.redis.cluster_nodes
+            for n in settings.infra.redis.cluster_nodes
         ]
         _cluster_client = RedisCluster(
             startup_nodes=nodes,

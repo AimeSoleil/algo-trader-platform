@@ -119,7 +119,7 @@ async def _evaluation_tick(runtime_state: ExecutionRuntimeState) -> None:
         stage="scheduler",
         paused=runtime_state.paused,
         trading_date=str(runtime_state.loaded_trading_date),
-        symbols=len(settings.watchlist),
+        symbols=len(settings.common.watchlist),
     )
     if runtime_state.paused:
         runtime_state.last_tick_at = now_utc()
@@ -138,7 +138,7 @@ async def _evaluation_tick(runtime_state: ExecutionRuntimeState) -> None:
             broker=broker,
         )
 
-        for symbol in settings.watchlist:
+        for symbol in settings.common.watchlist:
             quote_key = f"market:quote:{symbol}"
             quote = await redis_client.hgetall(quote_key)
             if not quote:
@@ -170,7 +170,7 @@ async def _evaluation_tick(runtime_state: ExecutionRuntimeState) -> None:
             log_event="tick_context",
             stage="evaluation",
             trading_date=str(runtime_state.loaded_trading_date),
-            symbols_total=len(settings.watchlist),
+            symbols_total=len(settings.common.watchlist),
             quotes_found=quotes_found,
             symbols_evaluated=symbols_evaluated,
             duration_ms=round((perf_counter() - tick_started) * 1000, 2),
@@ -210,15 +210,15 @@ def start_execution_scheduler(runtime_state: ExecutionRuntimeState) -> None:
         "execution.scheduler_starting",
         log_event="scheduler_start",
         stage="startup",
-        interval_seconds=settings.trading.execution_interval,
-        timezone=settings.trading.timezone,
-        symbols=len(settings.watchlist),
+        interval_seconds=settings.trade_service.execution_interval,
+        timezone=settings.common.timezone,
+        symbols=len(settings.common.watchlist),
         trading_date=str(runtime_state.loaded_trading_date),
     )
-    _scheduler = AsyncIOScheduler(timezone=settings.trading.timezone)
+    _scheduler = AsyncIOScheduler(timezone=settings.common.timezone)
     _scheduler.add_job(
         _evaluation_tick,
-        trigger=IntervalTrigger(seconds=settings.trading.execution_interval),
+        trigger=IntervalTrigger(seconds=settings.trade_service.execution_interval),
         args=[runtime_state],
         id="execution_tick",
         name="blueprint_execution_tick",
@@ -227,7 +227,7 @@ def start_execution_scheduler(runtime_state: ExecutionRuntimeState) -> None:
         max_instances=1,
     )
     _scheduler.start()
-    logger.info("execution.scheduler_started", interval=settings.trading.execution_interval)
+    logger.info("execution.scheduler_started", interval=settings.trade_service.execution_interval)
 
 
 def stop_execution_scheduler() -> None:

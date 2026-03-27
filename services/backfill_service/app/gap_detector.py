@@ -21,11 +21,11 @@ logger = get_logger("gap_detector")
 
 
 def _market_open() -> time:
-    return parse_hhmm(get_settings().data_service.market_hours.start)
+    return parse_hhmm(get_settings().common.market_hours.start)
 
 
 def _market_close() -> time:
-    return parse_hhmm(get_settings().data_service.market_hours.end)
+    return parse_hhmm(get_settings().common.market_hours.end)
 
 
 # ── 辅助函数 ───────────────────────────────────────────────

@@ -4,7 +4,7 @@ Usage::
 
     from services.trade_service.app.broker import create_broker
 
-    broker = create_broker()           # uses settings.broker.type
+    broker = create_broker()           # uses settings.trade_service.broker.type
     await broker.connect()
 """
 from __future__ import annotations
@@ -20,16 +20,16 @@ logger = get_logger("broker_factory")
 def create_broker() -> BrokerInterface:
     """Instantiate the configured broker adapter.
 
-    Reads ``settings.broker.type`` to decide which implementation to return.
+    Reads ``settings.trade_service.broker.type`` to decide which implementation to return.
     Defaults to ``"paper"`` if not configured.
     """
     settings = get_settings()
-    broker_type = settings.broker.type.lower()
+    broker_type = settings.trade_service.broker.type.lower()
 
     if broker_type == "futu":
         from services.trade_service.app.broker.futu import FutuBroker
 
-        futu_cfg = settings.broker.futu
+        futu_cfg = settings.trade_service.broker.futu
         broker = FutuBroker(
             host=futu_cfg.host,
             port=futu_cfg.port,
@@ -40,7 +40,7 @@ def create_broker() -> BrokerInterface:
         logger.info("broker_factory.created", broker="futu", host=futu_cfg.host, port=futu_cfg.port)
         return broker
 
-    paper_cfg = settings.broker.paper
+    paper_cfg = settings.trade_service.broker.paper
     from services.trade_service.app.broker.paper import PaperBroker
 
     broker = PaperBroker(initial_cash=paper_cfg.initial_cash)

@@ -2,7 +2,7 @@
 
 Thin wrapper around ``AsyncOpenAI`` that satisfies the
 ``AgentLLMProvider`` protocol.  Used by the Orchestrator when
-``settings.llm.provider == "openai"`` and as the default fallback
+``settings.analysis_service.llm.provider == "openai"`` and as the default fallback
 for standalone agent testing.
 """
 from __future__ import annotations
@@ -19,9 +19,9 @@ class OpenAIAgentProvider:
 
     def __init__(self) -> None:
         settings = get_settings()
-        self._client = AsyncOpenAI(api_key=settings.llm.openai.api_key)
-        self._model = settings.llm.openai.model
-        self._timeout = settings.llm.openai.request_timeout_seconds
+        self._client = AsyncOpenAI(api_key=settings.analysis_service.llm.openai.api_key)
+        self._model = settings.analysis_service.llm.openai.model
+        self._timeout = settings.analysis_service.llm.openai.request_timeout_seconds
 
     @property
     def name(self) -> str:  # noqa: D401
@@ -41,7 +41,7 @@ class OpenAIAgentProvider:
             instructions=instructions,
             input=user_prompt,
             text={"format": {"type": "json_object"}},
-            temperature=temperature if temperature is not None else settings.llm.openai.temperature,
+            temperature=temperature if temperature is not None else settings.analysis_service.llm.openai.temperature,
             max_output_tokens=max_tokens or 4096,
             timeout=self._timeout,
         )

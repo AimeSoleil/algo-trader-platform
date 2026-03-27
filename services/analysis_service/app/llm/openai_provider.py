@@ -119,11 +119,11 @@ def _build_hybrid_instructions() -> str:
 class OpenAIProvider(LLMProviderBase):
     def __init__(self):
         settings = get_settings()
-        self.client = AsyncOpenAI(api_key=settings.llm.openai.api_key)
-        self.model = settings.llm.openai.model
-        self.temperature = settings.llm.openai.temperature
-        self.max_tokens = settings.llm.openai.max_tokens
-        self.request_timeout = settings.llm.openai.request_timeout_seconds
+        self.client = AsyncOpenAI(api_key=settings.analysis_service.llm.openai.api_key)
+        self.model = settings.analysis_service.llm.openai.model
+        self.temperature = settings.analysis_service.llm.openai.temperature
+        self.max_tokens = settings.analysis_service.llm.openai.max_tokens
+        self.request_timeout = settings.analysis_service.llm.openai.request_timeout_seconds
 
         # Pre-build the skill bundle once
         self._skill_bundle = _build_skill_bundle()
@@ -152,9 +152,9 @@ class OpenAIProvider(LLMProviderBase):
         )
 
         settings = get_settings()
-        max_retries = settings.llm.max_retries
-        backoff_base = settings.llm.backoff_base_seconds
-        backoff_max = settings.llm.backoff_max_seconds
+        max_retries = settings.analysis_service.llm.max_retries
+        backoff_base = settings.analysis_service.llm.backoff_base_seconds
+        backoff_max = settings.analysis_service.llm.backoff_max_seconds
 
         prompt = build_blueprint_prompt(
             signal_features, current_positions, previous_execution,

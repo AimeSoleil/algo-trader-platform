@@ -1,7 +1,7 @@
 """统一结构化日志配置
 
 All timestamps — both structlog and stdlib (including Celery worker output) —
-are rendered in the configured ``trading.timezone`` (default America/New_York).
+are rendered in the configured ``common.timezone`` (default America/New_York).
 """
 from __future__ import annotations
 
@@ -56,14 +56,14 @@ def _make_tz_timestamper(tz: ZoneInfo):
 
 def _build_file_handler(settings) -> logging.Handler | None:
     """Create a rotating file handler from config, or None if file logging is off."""
-    if not settings.logging.to_file:
+    if not settings.common.logging.to_file:
         return None
 
-    log_file_path = Path(settings.logging.file_path)
+    log_file_path = Path(settings.common.logging.file_path)
     log_file_path.parent.mkdir(parents=True, exist_ok=True)
-    mode = settings.logging.file_rotate_mode.lower()
+    mode = settings.common.logging.file_rotate_mode.lower()
 
-    if not settings.logging.file_rotate and mode == "time":
+    if not settings.common.logging.file_rotate and mode == "time":
         mode = "none"
     if mode not in {"time", "size", "none"}:
         mode = "time"
@@ -71,17 +71,17 @@ def _build_file_handler(settings) -> logging.Handler | None:
     if mode == "time":
         return TimedRotatingFileHandler(
             filename=log_file_path,
-            when=settings.logging.file_rotate_when,
-            interval=settings.logging.file_rotate_interval,
-            backupCount=settings.logging.file_backup_count,
+            when=settings.common.logging.file_rotate_when,
+            interval=settings.common.logging.file_rotate_interval,
+            backupCount=settings.common.logging.file_backup_count,
             encoding="utf-8",
-            utc=settings.logging.file_rotate_utc,
+            utc=settings.common.logging.file_rotate_utc,
         )
     if mode == "size":
         return RotatingFileHandler(
             filename=log_file_path,
-            maxBytes=settings.logging.file_max_bytes,
-            backupCount=settings.logging.file_backup_count,
+            maxBytes=settings.common.logging.file_max_bytes,
+            backupCount=settings.common.logging.file_backup_count,
             encoding="utf-8",
         )
     return logging.FileHandler(log_file_path, encoding="utf-8")
@@ -93,8 +93,8 @@ def _build_file_handler(settings) -> logging.Handler | None:
 def setup_logging(service_name: str = "algo-trader") -> None:
     """初始化 structlog 结构化日志（FastAPI services 在 startup 中调用）"""
     settings = get_settings()
-    log_level = getattr(logging, settings.logging.level.upper(), logging.INFO)
-    log_tz = ZoneInfo(settings.trading.timezone)
+    log_level = getattr(logging, settings.common.logging.level.upper(), logging.INFO)
+    log_tz = ZoneInfo(settings.common.timezone)
 
     formatter = _TZFormatter(
         fmt="%(asctime)s [%(levelname)s] %(message)s",
@@ -103,7 +103,7 @@ def setup_logging(service_name: str = "algo-trader") -> None:
 
     handlers: list[logging.Handler] = []
 
-    if settings.logging.to_console:
+    if settings.common.logging.to_console:
         h = logging.StreamHandler(sys.stdout)
         h.setFormatter(formatter)
         handlers.append(h)
@@ -131,7 +131,7 @@ def setup_logging(service_name: str = "algo-trader") -> None:
 def _setup_structlog(settings, log_level: int, log_tz: ZoneInfo) -> None:
     """Configure structlog processors and filtering level."""
     # Choose structlog renderer
-    if settings.logging.format == "json":
+    if settings.common.logging.format == "json":
         renderer = structlog.processors.JSONRenderer()
     else:
         renderer = structlog.dev.ConsoleRenderer()
@@ -167,7 +167,7 @@ def setup_celery_logging(**kwargs) -> None:
     that ``--loglevel=DEBUG`` always works even if the config says INFO.
     """
     settings = get_settings()
-    log_tz = ZoneInfo(settings.trading.timezone)
+    log_tz = ZoneInfo(settings.common.timezone)
     formatter = _TZFormatter(
         fmt="%(asctime)s [%(levelname)s] %(message)s",
         tz=log_tz,
@@ -176,7 +176,7 @@ def setup_celery_logging(**kwargs) -> None:
     # Celery passes its --loglevel as the ``loglevel`` kwarg (int).
     # Honour whichever is more verbose (lower numeric value).
     celery_level: int | None = kwargs.get("loglevel")
-    config_level = getattr(logging, settings.logging.level.upper(), logging.INFO)
+    config_level = getattr(logging, settings.common.logging.level.upper(), logging.INFO)
     effective_level = min(celery_level, config_level) if celery_level is not None else config_level
 
     root = logging.getLogger()

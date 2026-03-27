@@ -34,7 +34,7 @@ def _trading_tz() -> ZoneInfo:
     """从配置读取交易时区（懒加载 + 缓存）。"""
     from shared.config import get_settings
 
-    return ZoneInfo(get_settings().trading.timezone)
+    return ZoneInfo(get_settings().common.timezone)
 
 
 def market_tz() -> ZoneInfo:
@@ -112,8 +112,8 @@ def is_market_open() -> bool:
         return False
 
     settings = get_settings()
-    start = parse_hhmm(settings.data_service.market_hours.start)
-    end = parse_hhmm(settings.data_service.market_hours.end)
+    start = parse_hhmm(settings.common.market_hours.start)
+    end = parse_hhmm(settings.common.market_hours.end)
     now_t = now.time().replace(second=0, microsecond=0)
     return start <= now_t <= end
 
@@ -123,7 +123,7 @@ def before_market_open() -> bool:
     from shared.config import get_settings
 
     now = now_market()
-    open_t = parse_hhmm(get_settings().data_service.market_hours.start)
+    open_t = parse_hhmm(get_settings().common.market_hours.start)
     return now.time() < open_t
 
 
@@ -137,7 +137,7 @@ def after_market_close() -> bool:
     now = now_market()
     if now.weekday() >= 5:
         return True
-    close_t = parse_hhmm(get_settings().data_service.market_hours.end)
+    close_t = parse_hhmm(get_settings().common.market_hours.end)
     return now.time() > close_t
 
 

@@ -70,7 +70,7 @@ async def run_stop_loss_checks(
     broker: BrokerInterface,
 ) -> None:
     settings = get_settings()
-    stop_loss = settings.risk.stop_loss
+    stop_loss = settings.trade_service.risk.stop_loss
     now = now_utc()
 
     if not stop_loss.enabled:

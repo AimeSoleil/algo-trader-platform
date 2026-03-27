@@ -2,7 +2,7 @@
 
 Thin wrapper around the Copilot SDK that satisfies the
 ``AgentLLMProvider`` protocol.  Used by the Orchestrator when
-``settings.llm.provider == "copilot"``.
+``settings.analysis_service.llm.provider == "copilot"``.
 
 Unlike the legacy ``CopilotProvider`` (which mounts skill_directories),
 this agent-level wrapper only sends instructions + user_prompt and
@@ -44,9 +44,9 @@ class CopilotAgentProvider:
 
     def __init__(self) -> None:
         settings = get_settings()
-        self._model = settings.llm.copilot.model
-        self._reasoning_effort = settings.llm.copilot.reasoning_effort
-        self._timeout = settings.llm.copilot.request_timeout_seconds
+        self._model = settings.analysis_service.llm.copilot.model
+        self._reasoning_effort = settings.analysis_service.llm.copilot.reasoning_effort
+        self._timeout = settings.analysis_service.llm.copilot.request_timeout_seconds
         self._client = None
         self._on_permission_request = None
 
@@ -62,11 +62,11 @@ class CopilotAgentProvider:
 
             settings = get_settings()
             config = {
-                "cli_path": _resolve_cli_path(settings.llm.copilot.cli_path),
+                "cli_path": _resolve_cli_path(settings.analysis_service.llm.copilot.cli_path),
                 "auto_start": True,
             }
-            if settings.llm.copilot.github_token:
-                config["github_token"] = settings.llm.copilot.github_token
+            if settings.analysis_service.llm.copilot.github_token:
+                config["github_token"] = settings.analysis_service.llm.copilot.github_token
             else:
                 config["use_logged_in_user"] = True
 

@@ -3,7 +3,7 @@
 Coordinates 6 specialist agents → Synthesizer → Critic in a structured
 pipeline, replacing the old chunk-split-merge approach.
 
-The Orchestrator creates the LLM provider based on ``settings.llm.provider``
+The Orchestrator creates the LLM provider based on ``settings.analysis_service.llm.provider``
 and injects it into every agent — no agent hardcodes which LLM to call.
 
 Flow:
@@ -45,10 +45,10 @@ def _create_agent_provider(provider_name: str | None = None) -> AgentLLMProvider
     Parameters
     ----------
     provider_name:
-        ``"openai"`` or ``"copilot"``.  Defaults to ``settings.llm.provider``.
+        ``"openai"`` or ``"copilot"``.  Defaults to ``settings.analysis_service.llm.provider``.
     """
     if provider_name is None:
-        provider_name = get_settings().llm.provider
+        provider_name = get_settings().analysis_service.llm.provider
 
     if provider_name == "copilot":
         from services.analysis_service.app.llm.agents._copilot_agent_provider import (
