@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from datetime import date
 from time import perf_counter
 
@@ -267,7 +268,7 @@ async def _write_signal(symbol: str, td: date, features) -> None:
                 "symbol": symbol,
                 "date": td,
                 "computed_at": features.computed_at,
-                "features_json": features.model_dump(mode="json"),
+                "features_json": json.dumps(features.model_dump(mode="json")),
             },
         )
         logger.debug(
