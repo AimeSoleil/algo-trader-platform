@@ -525,6 +525,49 @@ class PostMarketCollectResponse(BaseModel):
     message: str = ""
 
 
+class FlushOption5mRequest(BaseModel):
+    """Trigger option 5-min parquet → DB flush only."""
+    trading_date: date | None = None
+
+
+class FlushOption5mResponse(BaseModel):
+    task_id: str
+    status: str = "queued"
+    trading_date: str
+    message: str = ""
+
+
+@router.post("/data/collect/flush-option-5m", status_code=202, response_model=FlushOption5mResponse)
+async def trigger_flush_option_5m(req: FlushOption5mRequest | None = None):
+    """手动触发 option 5-min parquet 缓存 → option_5min_snapshots 入库。
+
+    仅执行 batch_flush_to_db，不采集 bars 也不聚合 daily。
+    省略 trading_date 时默认取当天。
+    """
+    td = (req.trading_date if req and req.trading_date else None) or today_trading()
+    td_str = td.isoformat()
+    today = today_trading()
+
+    if td > today:
+        raise HTTPException(
+            status_code=422,
+            detail={"error": "trading_date cannot be in the future"},
+        )
+
+    task = celery_app.send_task(
+        "data_service.tasks.batch_flush_to_db",
+        args=[td_str],
+        queue="data",
+    )
+
+    return FlushOption5mResponse(
+        task_id=task.id,
+        status="queued",
+        trading_date=td_str,
+        message=f"Option 5-min parquet flush queued for {td_str}",
+    )
+
+
 @router.post("/data/collect/post-market", status_code=202, response_model=PostMarketCollectResponse)
 async def trigger_post_market_collect(req: PostMarketCollectRequest | None = None):
     """手动触发盘后数据采集：1m bars + daily bars + flush 5m option parquet + aggregate。
