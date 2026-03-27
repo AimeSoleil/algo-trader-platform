@@ -374,7 +374,7 @@ async def list_option_dates(symbol: str):
 # ── Manual collection endpoints ────────────────────────────
 
 
-@router.post("/collect/stock", status_code=202, response_model=CollectResponse)
+@router.post("/data/collect/stock", status_code=202, response_model=CollectResponse)
 async def trigger_collection(req: CollectRequest):
     """Trigger manual stock data collection for specific symbols and date range.
 
@@ -490,7 +490,7 @@ async def trigger_collection(req: CollectRequest):
     )
 
 
-@router.get("/collect/{task_id}")
+@router.get("/data/collect/{task_id}")
 async def get_collection_status(task_id: str):
     """Poll the status of a manual collection task."""
     result = AsyncResult(task_id, app=celery_app)
@@ -525,7 +525,7 @@ class PostMarketCollectResponse(BaseModel):
     message: str = ""
 
 
-@router.post("/collect/post-market", status_code=202, response_model=PostMarketCollectResponse)
+@router.post("/data/collect/post-market", status_code=202, response_model=PostMarketCollectResponse)
 async def trigger_post_market_collect(req: PostMarketCollectRequest | None = None):
     """手动触发盘后数据采集：1m bars + daily bars + flush 5m option parquet + aggregate。
 
