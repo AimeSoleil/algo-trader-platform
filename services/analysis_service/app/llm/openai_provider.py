@@ -191,7 +191,8 @@ class OpenAIProvider(LLMProviderBase):
                 )
 
                 content = response.output_text
-                blueprint_data = json.loads(content)
+                from services.analysis_service.app.llm.json_utils import parse_llm_json
+                blueprint_data = parse_llm_json(content)
 
                 # Add metadata
                 blueprint_data["trading_date"] = _next_trading_day().isoformat()
@@ -219,8 +220,8 @@ class OpenAIProvider(LLMProviderBase):
                 )
                 return blueprint
 
-            except (json.JSONDecodeError, ValidationError) as e:
-                # Parse / validation errors — retrying won't help
+            except (json.JSONDecodeError, ValidationError, ValueError) as e:
+                last_exc = e
                 llm_retries_total.labels(provider="openai", error_type="parse").inc()
                 logger.warning(
                     "openai.parse_error",
@@ -228,7 +229,14 @@ class OpenAIProvider(LLMProviderBase):
                     error=str(e),
                     error_type=type(e).__name__,
                 )
-                raise  # fail fast
+                if attempt < max_retries - 1:
+                    delay = min(
+                        backoff_base * (2 ** attempt) + random.uniform(0, 1),
+                        backoff_max,
+                    )
+                    await asyncio.sleep(delay)
+                    continue
+                raise
 
             except Exception as e:
                 last_exc = e

@@ -26,6 +26,8 @@ from shared.config import get_settings
 from shared.metrics import llm_request_duration, llm_retries_total, llm_tokens_total
 from shared.utils import get_logger
 
+from services.analysis_service.app.llm.json_utils import parse_llm_json
+
 logger = get_logger("analysis_agent")
 
 
@@ -185,7 +187,7 @@ class AnalysisAgent(ABC):
                     max_tokens=4096,
                 )
 
-                data = json.loads(result.content)
+                data = parse_llm_json(result.content)
                 parsed = self.output_model.model_validate(data)
 
                 status = "ok"
@@ -204,7 +206,8 @@ class AnalysisAgent(ABC):
                 )
                 return parsed
 
-            except (json.JSONDecodeError, ValidationError) as e:
+            except (json.JSONDecodeError, ValidationError, ValueError) as e:
+                last_exc = e
                 llm_retries_total.labels(
                     provider=provider.name, error_type="parse",
                 ).inc()
@@ -214,6 +217,13 @@ class AnalysisAgent(ABC):
                     attempt=attempt + 1,
                     error=str(e),
                 )
+                if attempt < max_retries - 1:
+                    delay = min(
+                        backoff_base * (2 ** attempt) + random.uniform(0, 1),
+                        backoff_max,
+                    )
+                    await asyncio.sleep(delay)
+                    continue
                 raise
 
             except Exception as e:
@@ -286,8 +296,9 @@ class AnalysisAgent(ABC):
         parts.append(
             "\n## Task\n"
             "Analyze each symbol using the rules in your instructions. "
-            "Output ONLY valid JSON matching the expected schema. "
-            "No markdown fences, no extra text."
+            "Output ONLY valid standard JSON matching the expected schema. "
+            "Use double-quoted keys and string values (RFC 8259). "
+            "No single quotes, no trailing commas, no markdown fences, no extra text."
         )
 
         return "\n\n".join(parts)

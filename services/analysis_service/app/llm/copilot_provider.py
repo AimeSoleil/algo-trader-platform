@@ -13,6 +13,7 @@ from shared.models.signal import SignalFeatures
 from shared.utils import get_logger, now_utc, next_trading_day as _next_trading_day
 
 from services.analysis_service.app.llm.base import LLMProviderBase
+from services.analysis_service.app.llm.json_utils import parse_llm_json
 from services.analysis_service.app.llm.prompts import SYSTEM_PROMPT, build_blueprint_prompt
 
 logger = get_logger("copilot_provider")
@@ -52,31 +53,17 @@ def _build_structured_prompt(user_prompt: str) -> str:
         "</system>\n\n"
         "<user>\n"
         f"{user_prompt}\n\n"
-        "Final output: return ONLY one valid JSON object, no markdown fences and no extra text.\n"
+        "Final output: return ONLY one valid JSON object using "
+        "double-quoted keys and string values (RFC 8259). "
+        "No single quotes, no trailing commas, no markdown fences, "
+        "no extra text.\n"
         "</user>"
     )
 
 
-def _parse_blueprint_json(response_text: str) -> dict:
-    """Parse JSON robustly from Copilot responses.
-
-    Handles plain JSON, markdown code fences, and noisy wrappers.
-    """
-    text = response_text.strip()
-    if text.startswith("```"):
-        text = text.split("\n", 1)[1]
-        text = text.rsplit("```", 1)[0]
-
-    try:
-        return json.loads(text)
-    except json.JSONDecodeError:
-        pass
-
-    match = re.search(r"\{[\s\S]*\}", text)
-    if not match:
-        raise ValueError("No JSON object found in Copilot response")
-
-    return json.loads(match.group(0))
+# _parse_blueprint_json is replaced by the shared parse_llm_json
+# from json_utils — kept as a thin alias for any external callers.
+_parse_blueprint_json = parse_llm_json
 
 class CopilotProvider(LLMProviderBase):
     """Copilot SDK provider with native skill mounting.
@@ -233,6 +220,7 @@ class CopilotProvider(LLMProviderBase):
                 return blueprint
 
             except (json.JSONDecodeError, ValidationError) as e:
+                last_exc = e
                 llm_retries_total.labels(provider="copilot", error_type="parse").inc()
                 logger.warning(
                     "copilot.parse_error",
@@ -240,6 +228,13 @@ class CopilotProvider(LLMProviderBase):
                     error=str(e),
                     error_type=type(e).__name__,
                 )
+                if attempt < max_retries - 1:
+                    delay = min(
+                        backoff_base * (2 ** attempt) + random.uniform(0, 1),
+                        backoff_max,
+                    )
+                    await asyncio.sleep(delay)
+                    continue
                 raise
 
             except Exception as e:

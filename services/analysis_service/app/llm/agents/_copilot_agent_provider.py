@@ -11,13 +11,11 @@ agent's ``system_prompt``.
 """
 from __future__ import annotations
 
-import json
-import re
-
 from shared.config import get_settings
 from shared.utils import get_logger
 
 from services.analysis_service.app.llm.agents.base_agent import LLMResult
+from services.analysis_service.app.llm.json_utils import extract_json_str
 
 logger = get_logger("copilot_agent_provider")
 
@@ -30,23 +28,6 @@ _REASONING_EFFORT_SUPPORTED_PREFIXES: tuple[str, ...] = (
     "o3",
     "o4",
 )
-
-
-def _extract_json(text: str) -> str:
-    """Strip markdown fences / noise and return the JSON body."""
-    text = text.strip()
-    if text.startswith("```"):
-        text = text.split("\n", 1)[1]
-        text = text.rsplit("```", 1)[0]
-    try:
-        json.loads(text)
-        return text
-    except json.JSONDecodeError:
-        pass
-    match = re.search(r"\{[\s\S]*\}", text)
-    if not match:
-        raise ValueError("No JSON object found in Copilot response")
-    return match.group(0)
 
 
 class CopilotAgentProvider:
@@ -127,8 +108,10 @@ class CopilotAgentProvider:
         full_prompt = (
             f"<system>\n{instructions}\n</system>\n\n"
             f"<user>\n{user_prompt}\n\n"
-            "Final output: return ONLY one valid JSON object, "
-            "no markdown fences and no extra text.\n</user>"
+            "Final output: return ONLY one valid JSON object using "
+            "double-quoted keys and string values (RFC 8259). "
+            "No single quotes, no trailing commas, no markdown fences, "
+            "no extra text.\n</user>"
         )
 
         result = await session.send_and_wait(
@@ -140,9 +123,11 @@ class CopilotAgentProvider:
             result.content if hasattr(result, "content") else str(result)
         )
 
-        # Copilot SDK doesn't expose token counts
+        # Copilot SDK doesn't expose token counts.
+        # Use shared extract_json_str to strip fences / noise before
+        # returning to the consumer; final json.loads happens upstream.
         return LLMResult(
-            content=_extract_json(response_text),
+            content=extract_json_str(response_text),
             input_tokens=0,
             output_tokens=0,
             total_tokens=0,

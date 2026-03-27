@@ -18,6 +18,7 @@ from shared.metrics import llm_request_duration, llm_retries_total, llm_tokens_t
 from shared.utils import get_logger
 
 from services.analysis_service.app.llm.agents.base_agent import AgentLLMProvider, _default_provider
+from services.analysis_service.app.llm.json_utils import parse_llm_json
 from services.analysis_service.app.llm.agents.models import CriticVerdict
 
 logger = get_logger("critic_agent")
@@ -73,7 +74,7 @@ class CriticAgent:
                     max_tokens=4096,
                 )
 
-                data = json.loads(result.content)
+                data = parse_llm_json(result.content)
                 verdict = CriticVerdict.model_validate(data)
 
                 status = "ok"
@@ -93,9 +94,14 @@ class CriticAgent:
                 )
                 return verdict
 
-            except (json.JSONDecodeError, ValidationError) as e:
+            except (json.JSONDecodeError, ValidationError, ValueError) as e:
+                last_exc = e
                 llm_retries_total.labels(provider=provider.name, error_type="parse").inc()
                 logger.warning("critic.parse_error", provider=provider.name, attempt=attempt + 1, error=str(e))
+                if attempt < max_retries - 1:
+                    delay = min(backoff_base * (2 ** attempt) + random.uniform(0, 1), backoff_max)
+                    await asyncio.sleep(delay)
+                    continue
                 raise
 
             except Exception as e:

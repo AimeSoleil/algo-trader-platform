@@ -26,7 +26,9 @@ follow the workflow, load references based on the market context in the data, \
 and produce a next-day Trading Blueprint.
 
 Rules:
-1. Output ONLY valid JSON — no markdown fences, no comments, no extra text.
+1. Output ONLY valid, standard JSON — no markdown fences, no comments, no extra text.
+   Use double-quoted keys and string values. Do NOT use single quotes, trailing commas,
+   or language-specific literals like True/False/None.
 2. Every condition must be mechanically evaluable with concrete numeric thresholds.
 3. Every option leg must be fully defined (expiry, strike, option_type, side, quantity).
 4. Every symbol_plan MUST include at least one stop-loss exit condition.
