@@ -256,6 +256,7 @@ async def _generate_blueprint_async(trading_date_str: str | None = None) -> dict
     blueprint = await _run_blueprint_pipeline(signal_features, td)
 
     _annotate_blueprint_quality(blueprint, signal_features)
+    blueprint = blueprint.model_copy(update={"id": blueprint.id})
 
     # 5) Write to DB (UPSERT)
     async with get_postgres_session() as session:
@@ -447,6 +448,7 @@ async def _manual_analyze_async(task, symbol: str, trading_date_str: str | None 
     # 5) Write to DB with status='manual'
     import uuid as _uuid
     manual_id = f"manual-{symbol.lower()}-{_uuid.uuid4().hex[:8]}"
+    blueprint = blueprint.model_copy(update={"id": manual_id})
     async with get_postgres_session() as session:
         logger.debug(
             "manual_analyze.db_write_started",
