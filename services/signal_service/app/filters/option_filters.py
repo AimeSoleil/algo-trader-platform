@@ -94,8 +94,12 @@ def apply_trading_filter(
 
     # DTE filter
     if "expiry" in df.columns:
-        now_date = pd.Timestamp.utcnow().normalize()
-        dte = (pd.to_datetime(df["expiry"], errors="coerce") - now_date).dt.days
+        now_date = pd.Timestamp.today().normalize()  # tz-naive
+        expiry_ts = pd.to_datetime(df["expiry"], errors="coerce")
+        # Strip tz if the column came back tz-aware (e.g. timestamptz from PG)
+        if expiry_ts.dt.tz is not None:
+            expiry_ts = expiry_ts.dt.tz_convert(None)
+        dte = (expiry_ts - now_date).dt.days
         mask &= dte.fillna(0) >= cfg.min_dte
         mask &= dte.fillna(9999) <= cfg.max_dte
 

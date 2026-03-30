@@ -333,8 +333,11 @@ def _compute_greek_aggregations(option_data: pd.DataFrame) -> dict:
     if "charm" in option_data.columns and option_data["charm"].notna().any() and (option_data["charm"] != 0).any():
         charm = float((option_data["charm"].fillna(0).astype(float) * weighted_oi).sum() / total_oi)
     else:
-        now_ts = pd.Timestamp.utcnow().tz_localize(None)
-        expiry_days = (pd.to_datetime(option_data["expiry"], errors="coerce") - now_ts).dt.days.clip(lower=1)
+        now_ts = pd.Timestamp.today()  # tz-naive; avoid tz-aware/tz-naive mismatch
+        expiry_ts = pd.to_datetime(option_data["expiry"], errors="coerce")
+        if expiry_ts.dt.tz is not None:
+            expiry_ts = expiry_ts.dt.tz_convert(None)
+        expiry_days = (expiry_ts - now_ts).dt.days.clip(lower=1)
         charm = float(
             (option_data["delta"].fillna(0).astype(float)
              / expiry_days.fillna(1).astype(float) * weighted_oi).sum() / total_oi
