@@ -124,7 +124,7 @@ curl "http://localhost:8000/trade/api/v1/blueprint/status?trading_date=2026-03-1
 | Data Service | `services/data_service` | 盘中采集与双层缓存、盘后批量入库 |
 | Backfill Service | `services/backfill_service` | 缺口检测、冷启动历史回填 |
 | Signal Service | `services/signal_service` | 盘后批量指标计算与信号生成 |
-| Analysis Service | `services/analysis_service` | LLM 蓝图生成（OpenAI / Copilot，自动回退） |
+| Analysis Service | `services/analysis_service` | LLM 蓝图生成（Agentic 多智能体编排） |
 | Trade Service | `services/trade_service` | 蓝图加载、规则评估、止损风控、持仓快照、绩效查询 |
 | Gateway Service | `services/gateway_service` | 聚合文档与服务反向代理入口 |
 
@@ -157,7 +157,7 @@ curl http://localhost:8000/metrics
 
 ## LLM 配置
 
-系统支持 **OpenAI** 和 **Copilot SDK** 两种 LLM provider，互为回退。在 `config/config.yaml` 的 `llm` 段按 provider 独立配置：
+系统支持在 `config/config.yaml` 中配置 LLM provider（当前分析链路使用 agentic 多智能体编排）：
 
 ```yaml
 llm:
@@ -181,8 +181,8 @@ llm:
   skill_dir: ""                 # 留空自动解析
 ```
 
-- `provider` 决定主 provider；失败时自动回退到另一个。
-- OpenAI 支持 `model` / `temperature` / `max_tokens`；Copilot SDK 支持 `model` / `reasoning_effort`。
+- `provider` 指定当前启用的 provider。
+- Copilot SDK 常用配置：`model` / `reasoning_effort`。
 
 ## 技术栈
 

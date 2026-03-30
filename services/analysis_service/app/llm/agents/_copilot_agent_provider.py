@@ -11,6 +11,9 @@ agent's ``system_prompt``.
 """
 from __future__ import annotations
 
+import shutil
+from pathlib import Path
+
 from shared.config import get_settings
 from shared.utils import get_logger
 
@@ -28,6 +31,18 @@ _REASONING_EFFORT_SUPPORTED_PREFIXES: tuple[str, ...] = (
     "o3",
     "o4",
 )
+
+
+def _resolve_cli_path(configured_cli: str) -> str:
+    """Resolve configured Copilot CLI to an executable path when possible."""
+    cli = configured_cli.strip() if configured_cli else "copilot"
+    if Path(cli).is_absolute() or "/" in cli:
+        return cli
+
+    resolved = shutil.which(cli)
+    if resolved:
+        return resolved
+    return cli
 
 
 class CopilotAgentProvider:
@@ -49,7 +64,6 @@ class CopilotAgentProvider:
         """Lazy-init the CopilotClient."""
         if self._client is None:
             from copilot import CopilotClient, PermissionHandler
-            from services.analysis_service.app.llm.copilot_provider import _resolve_cli_path
 
             settings = get_settings()
             config = {

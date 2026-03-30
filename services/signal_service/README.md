@@ -100,11 +100,11 @@ curl http://localhost:8002/api/v1/signals/compute/<task_id>
 
 **Stock（股票行情）：**
 1. 优先查询 `stock_daily`（日线），最多 260 天
-2. 若无日线数据，fallback 到 `stock_1min_bars`（1 分钟），按天聚合为 OHLCV（要求每天 ≥30 条）
+2. 若无日线数据，则切换到 `stock_1min_bars`（1 分钟），按天聚合为 OHLCV（要求每天 ≥30 条）
 
 **Options（期权链）：**
 1. 优先查询 `option_daily`（日快照）
-2. 若无日快照，fallback 到 `option_5min_snapshots`（5 分钟盘中快照）
+2. 若无日快照，则切换到 `option_5min_snapshots`（5 分钟盘中快照）
 
 > **注意：** 无论 `bar_type` 值如何，所有技术指标（均线、布林带等）均基于日级别 OHLCV 计算；
 > `bar_type` 标记的是数据**来源**，供下游策略判断数据粒度与质量。

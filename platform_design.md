@@ -28,7 +28,7 @@
 | Data Service | `services/data_service` | 行情采集、缓存与盘后入库 |
 | Backfill Service | `services/backfill_service` | 缺口检测与历史回填 |
 | Signal Service | `services/signal_service` | 指标与信号计算 |
-| Analysis Service | `services/analysis_service` | LLM 蓝图生成与回退 |
+| Analysis Service | `services/analysis_service` | LLM 蓝图生成（Agentic 多智能体） |
 | Trade Service | `services/trade_service` | 执行调度、止损风控、持仓与绩效 |
 | Gateway Service | `services/gateway_service` | API 聚合与反向代理 |
 
@@ -183,7 +183,7 @@ risk:
 
 ### 7.2 仓位来源优先级
 1. broker 实时仓位（优先）
-2. trade portfolio 聚合仓位（回退）
+2. trade portfolio 聚合仓位（兜底来源）
 
 ### 7.3 审计
 - 风控触发与订单结果写入 `execution_events`。

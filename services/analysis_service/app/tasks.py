@@ -274,9 +274,13 @@ async def _generate_blueprint_async(trading_date_str: str | None = None) -> dict
                 "VALUES (:id, :trading_date, :generated_at, :model_provider, "
                 " :model_version, :blueprint_json, :reasoning_json, 'pending') "
                 "ON CONFLICT (trading_date) DO UPDATE SET "
-                "blueprint_json = :blueprint_json, reasoning_json = :reasoning_json, "
-                "generated_at = :generated_at, "
-                "model_provider = :model_provider, model_version = :model_version, status = 'pending'"
+                "  id               = EXCLUDED.id, "
+                "  generated_at     = EXCLUDED.generated_at, "
+                "  model_provider   = EXCLUDED.model_provider, "
+                "  model_version    = EXCLUDED.model_version, "
+                "  blueprint_json   = EXCLUDED.blueprint_json, "
+                "  reasoning_json   = EXCLUDED.reasoning_json, "
+                "  status           = 'pending'"
             ),
             {
                 "id": blueprint.id,
@@ -458,7 +462,15 @@ async def _manual_analyze_async(task, symbol: str, trading_date_str: str | None 
                 "(id, trading_date, generated_at, model_provider, model_version, "
                 " blueprint_json, reasoning_json, status) "
                 "VALUES (:id, :trading_date, :generated_at, :model_provider, "
-                " :model_version, :blueprint_json, :reasoning_json, 'manual')"
+                " :model_version, :blueprint_json, :reasoning_json, 'manual') "
+                "ON CONFLICT (trading_date) DO UPDATE SET "
+                "  id               = EXCLUDED.id, "
+                "  generated_at     = EXCLUDED.generated_at, "
+                "  model_provider   = EXCLUDED.model_provider, "
+                "  model_version    = EXCLUDED.model_version, "
+                "  blueprint_json   = EXCLUDED.blueprint_json, "
+                "  reasoning_json   = EXCLUDED.reasoning_json, "
+                "  status           = 'manual'"
             ),
             {
                 "id": manual_id,
