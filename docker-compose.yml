@@ -162,8 +162,8 @@ services:
         echo 'Resetting all nodes...'
         for pair in "algo_redis_1 6380" "algo_redis_2 6381" "algo_redis_3 6382"; do
           set -- $$pair
-          redis-cli -h $$1 -p $$2 FLUSHALL || true
           redis-cli -h $$1 -p $$2 CLUSTER RESET HARD || true
+          redis-cli -h $$1 -p $$2 FLUSHALL || true
         done
         sleep 2
 
