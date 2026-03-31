@@ -151,9 +151,21 @@ services:
         done
 
         if redis-cli -h algo_redis_1 -p 6380 cluster info | grep -q 'cluster_state:ok'; then
-          echo 'Cluster already healthy ✓'
-          exit 0
+          SLOTS=$$(redis-cli -h algo_redis_1 -p 6380 cluster info | grep cluster_slots_assigned | tr -d '\r' | cut -d: -f2)
+          if [ "$$SLOTS" = "16384" ]; then
+            echo 'Cluster already healthy ✓'
+            exit 0
+          fi
+          echo "Cluster state:ok but only $$SLOTS slots — resetting..."
         fi
+
+        echo 'Resetting all nodes...'
+        for pair in "algo_redis_1 6380" "algo_redis_2 6381" "algo_redis_3 6382"; do
+          set -- $$pair
+          redis-cli -h $$1 -p $$2 FLUSHALL || true
+          redis-cli -h $$1 -p $$2 CLUSTER RESET HARD || true
+        done
+        sleep 2
 
         redis-cli --cluster create \
           algo_redis_1:6380 \
