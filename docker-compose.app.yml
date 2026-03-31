@@ -112,4 +112,3 @@ services:
 
 networks:
   algo_trader_net:
-    external: true
