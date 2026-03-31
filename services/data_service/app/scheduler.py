@@ -126,13 +126,17 @@ def start_data_scheduler(cache: MarketHoursCache, settings: Settings) -> None:
         cache=cache,
     )
 
-    # Retention policy 无论模式都应用
-    asyncio.create_task(
-        apply_intraday_retention(
-            settings.data_service.intraday.retention_days.stock_1min,
-            settings.data_service.intraday.retention_days.option_5min,
-        )
-    )
+    # Retention policy 无论模式都应用（失败不阻塞启动）
+    async def _apply_retention_safe() -> None:
+        try:
+            await apply_intraday_retention(
+                settings.data_service.intraday.retention_days.stock_1min,
+                settings.data_service.intraday.retention_days.option_5min,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("scheduler.retention_skipped", reason=str(exc))
+
+    asyncio.create_task(_apply_retention_safe())
 
     _scheduler = AsyncIOScheduler(
         timezone=settings.common.timezone,

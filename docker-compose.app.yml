@@ -21,7 +21,7 @@ services:
       CACHE_DIR: /tmp/algo_trader_cache
       PYTHONPATH: /app
     ports:
-      - "8001"
+      - "0.0.0.0:8001:8001"
     depends_on:
       timescaledb:
         condition: service_healthy
@@ -43,7 +43,7 @@ services:
     environment:
       PYTHONPATH: /app
     ports:
-      - "8002"
+      - "0.0.0.0:8002:8002"
     depends_on:
       timescaledb:
         condition: service_healthy
@@ -65,7 +65,7 @@ services:
     environment:
       PYTHONPATH: /app
     ports:
-      - "8003"
+      - "0.0.0.0:8003:8003"
     depends_on:
       postgres:
         condition: service_healthy
@@ -85,7 +85,7 @@ services:
     environment:
       PYTHONPATH: /app
     ports:
-      - "8004"
+      - "0.0.0.0:8004:8004"
     depends_on:
       data_service:
         condition: service_started
@@ -106,7 +106,7 @@ services:
     environment:
       PYTHONPATH: /app
     ports:
-      - "8000:8000"
+      - "0.0.0.0:8000:8000"
     networks:
       - algo_trader_net
 
