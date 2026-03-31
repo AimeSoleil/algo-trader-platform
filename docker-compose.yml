@@ -26,7 +26,10 @@ services:
     volumes:
       - timescaledb_data:/var/lib/postgresql/data
     networks:
-      - algo_trader_net
+      algo_trader_net:
+        aliases:
+          - timescaledb
+          - algo_timescaledb
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U trader -d algo_trader"]
       interval: 10s
@@ -46,7 +49,10 @@ services:
     volumes:
       - postgres_data:/var/lib/postgresql/data
     networks:
-      - algo_trader_net
+      algo_trader_net:
+        aliases:
+          - postgres
+          - algo_postgres
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U trader -d algo_trader_biz"]
       interval: 10s
@@ -67,7 +73,10 @@ services:
       - ./config/redis.conf:/usr/local/etc/redis/redis.conf:ro
     command: ["redis-server", "/usr/local/etc/redis/redis.conf", "--port", "6380"]
     networks:
-      - algo_trader_net
+      algo_trader_net:
+        aliases:
+          - redis-node-1
+          - algo_redis_1
     healthcheck:
       test: ["CMD", "redis-cli", "-p", "6380", "ping"]
       interval: 10s
@@ -85,7 +94,10 @@ services:
       - ./config/redis.conf:/usr/local/etc/redis/redis.conf:ro
     command: ["redis-server", "/usr/local/etc/redis/redis.conf", "--port", "6381"]
     networks:
-      - algo_trader_net
+      algo_trader_net:
+        aliases:
+          - redis-node-2
+          - algo_redis_2
     healthcheck:
       test: ["CMD", "redis-cli", "-p", "6381", "ping"]
       interval: 10s
@@ -103,7 +115,10 @@ services:
       - ./config/redis.conf:/usr/local/etc/redis/redis.conf:ro
     command: ["redis-server", "/usr/local/etc/redis/redis.conf", "--port", "6382"]
     networks:
-      - algo_trader_net
+      algo_trader_net:
+        aliases:
+          - redis-node-3
+          - algo_redis_3
     healthcheck:
       test: ["CMD", "redis-cli", "-p", "6382", "ping"]
       interval: 10s
@@ -127,28 +142,28 @@ services:
       - |
         echo 'Waiting for nodes...'
         for i in 1 2 3 4 5 6 7 8 9 10; do
-          if redis-cli -h redis-node-1 -p 6380 ping >/dev/null 2>&1 \
-            && redis-cli -h redis-node-2 -p 6381 ping >/dev/null 2>&1 \
-            && redis-cli -h redis-node-3 -p 6382 ping >/dev/null 2>&1; then
+          if redis-cli -h algo_redis_1 -p 6380 ping >/dev/null 2>&1 \
+            && redis-cli -h algo_redis_2 -p 6381 ping >/dev/null 2>&1 \
+            && redis-cli -h algo_redis_3 -p 6382 ping >/dev/null 2>&1; then
             break
           fi
           sleep 1
         done
 
-        if redis-cli -h redis-node-1 -p 6380 cluster info | grep -q 'cluster_state:ok'; then
+        if redis-cli -h algo_redis_1 -p 6380 cluster info | grep -q 'cluster_state:ok'; then
           echo 'Cluster already healthy ✓'
           exit 0
         fi
 
         redis-cli --cluster create \
-          redis-node-1:6380 \
-          redis-node-2:6381 \
-          redis-node-3:6382 \
+          algo_redis_1:6380 \
+          algo_redis_2:6381 \
+          algo_redis_3:6382 \
           --cluster-replicas 0 \
           --cluster-yes || true
 
         for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do
-          INFO=$$(redis-cli -h redis-node-1 -p 6380 cluster info || true)
+          INFO=$$(redis-cli -h algo_redis_1 -p 6380 cluster info || true)
           echo "$$INFO"
           if echo "$$INFO" | grep -q 'cluster_state:ok' \
             && echo "$$INFO" | grep -q 'cluster_slots_assigned:16384'; then
@@ -161,7 +176,10 @@ services:
         echo 'Cluster failed to reach healthy state' >&2
         exit 1
     networks:
-      - algo_trader_net
+      algo_trader_net:
+        aliases:
+          - redis-cluster-init
+          - algo_redis_init
     restart: "no"
 
   # ── Message Broker ─────────────────────────────────────────
@@ -178,7 +196,10 @@ services:
     volumes:
       - rabbitmq_data:/var/lib/rabbitmq
     networks:
-      - algo_trader_net
+      algo_trader_net:
+        aliases:
+          - rabbitmq
+          - algo_rabbitmq
     healthcheck:
       test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
       interval: 10s
@@ -201,7 +222,10 @@ services:
     volumes:
       - minio_data:/data
     networks:
-      - algo_trader_net
+      algo_trader_net:
+        aliases:
+          - minio
+          - algo_minio
 
   # ── Observability ──────────────────────────────────────────
 
@@ -214,7 +238,10 @@ services:
       - ./config/prometheus.yml:/etc/prometheus/prometheus.yml:ro
       - prometheus_data:/prometheus
     networks:
-      - algo_trader_net
+      algo_trader_net:
+        aliases:
+          - prometheus
+          - algo_prometheus
     command:
       - "--config.file=/etc/prometheus/prometheus.yml"
       - "--storage.tsdb.retention.time=30d"
@@ -232,7 +259,10 @@ services:
     depends_on:
       - prometheus
     networks:
-      - algo_trader_net
+      algo_trader_net:
+        aliases:
+          - grafana
+          - algo_grafana
 
 networks:
   algo_trader_net:
