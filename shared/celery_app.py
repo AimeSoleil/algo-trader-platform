@@ -23,18 +23,10 @@ def create_celery_app() -> Celery:
     settings = get_settings()
 
     # ── Redis URL construction ──────────────────────────────
-    # Cluster mode: use custom backend that wraps RedisCluster.
-    # All DBs merge to 0; isolation via key prefix.
-    # Standalone: DB 1 for results, DB 2 for RedBeat.
-    if settings.infra.redis.cluster_enabled and settings.infra.redis.cluster_nodes:
-        _first = settings.infra.redis.cluster_nodes[0]
-        redis_base = f"redis://{_first['host']}:{_first['port']}"
-        backend_url = "shared.redis_cluster_backend.RedisClusterBackend"
-        redbeat_url = f"{redis_base}/0"
-    else:
-        redis_base = settings.infra.redis.url.rsplit("/", 1)[0]
-        backend_url = f"{redis_base}/1"
-        redbeat_url = f"{redis_base}/2"
+    # DB 1 for results, DB 2 for RedBeat.
+    redis_base = settings.infra.redis.url.rsplit("/", 1)[0]
+    backend_url = f"{redis_base}/1"
+    redbeat_url = f"{redis_base}/2"
 
     app = Celery(
         "algo_trader",
@@ -60,8 +52,6 @@ def create_celery_app() -> Celery:
         task_acks_late=True,
         worker_prefetch_multiplier=1,
         worker_max_memory_per_child=500_000,  # 500 MB — 超出后自动重启 worker 子进程
-        # Key prefix for result backend (isolates Celery keys in cluster mode)
-        result_backend_transport_options={"global_keyprefix": "celery:result:"},
         # Task routes — each service handles its own tasks
         task_routes={
             "data_service.tasks.*": {"queue": "data"},
@@ -73,16 +63,9 @@ def create_celery_app() -> Celery:
         # Replaces the default file-based beat scheduler so that
         # multiple celery-beat replicas can co-exist safely (only
         # one holds the Redis lock at a time).
-        #
-        # In Redis Cluster mode we use a thin subclass that injects a
-        # cluster-aware client; see shared/redbeat_cluster.py.
-        beat_scheduler=(
-            "shared.redbeat_cluster.ClusterRedBeatScheduler"
-            if settings.infra.redis.cluster_enabled
-            else "redbeat.RedBeatScheduler"
-        ),
+        beat_scheduler="redbeat.RedBeatScheduler",
         redbeat_redis_url=redbeat_url,
-        redbeat_key_prefix="redbeat:",          # namespace RedBeat keys (cluster-safe)
+        redbeat_key_prefix="redbeat:",
         redbeat_lock_timeout=300,  # seconds before a dead beat loses the lock
     )
 

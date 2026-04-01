@@ -6,7 +6,7 @@
 
 已完成阶段 0/1 骨架搭建（可启动、可扩展）：
 
-- 基础设施：TimescaleDB、PostgreSQL、Redis、RabbitMQ、MinIO、Prometheus、Grafana
+- 基础设施：TimescaleDB、PostgreSQL、Redis（单实例）、RabbitMQ、MinIO、Prometheus、Grafana
 - 共享层：Pydantic 模型、配置系统、双数据库会话、Celery 共享实例
 - 服务层：Data / Backfill / Signal / Analysis / Trade / Gateway
 - 可观测性：各服务内置 Prometheus `/metrics`，配套 Prometheus + Grafana
@@ -35,7 +35,7 @@ uv run python -m scripts.seed_watchlist
 ./scripts/run_workers.sh --with-flower  # 含 Flower 监控面板
 
 # 6b) 或使用 Docker 部署 workers（生产推荐）
-docker compose --profile worker up -d
+docker compose -f docker-compose.yml -f docker-compose.worker.yml up -d
 ```
 
 ### 开发模式：服务按需逐个启动
@@ -48,13 +48,13 @@ docker compose up -d
 docker compose up -d data_service
 
 # 启动全部应用服务（data/signal/analysis/trade/gateway）
-docker compose --profile app up -d
+docker compose -f docker-compose.yml -f docker-compose.app.yml up -d
 
 # 启动 Celery workers + beat + Flower（进程监控、自动重启、健康检查）
-docker compose --profile worker up -d
+docker compose -f docker-compose.yml -f docker-compose.worker.yml up -d
 
 # 启动全栈（应用 + Workers）
-docker compose --profile app --profile worker up -d
+docker compose -f docker-compose.yml -f docker-compose.app.yml -f docker-compose.worker.yml up -d
 
 # 查看所有容器状态
 docker compose ps

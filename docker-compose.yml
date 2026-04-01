@@ -60,139 +60,27 @@ services:
       retries: 5
       start_period: 30s
 
-  # ── Redis Cluster (3 masters, 0 replicas) ──────────────────
+  # ── Redis ───────────────────────────────────────────────────
 
-  redis-node-1:
+  redis:
     image: redis:7-alpine
-    container_name: algo_redis_1
+    container_name: algo_redis
     ports:
-      - "6380:6380"
-      - "16380:16380"
+      - "6379:6379"
     volumes:
-      - redis_data_1:/data
+      - redis_data:/data
       - ./config/redis.conf:/usr/local/etc/redis/redis.conf:ro
-    command: ["redis-server", "/usr/local/etc/redis/redis.conf", "--port", "6380"]
+    command: ["redis-server", "/usr/local/etc/redis/redis.conf", "--port", "6379"]
     networks:
       algo_trader_net:
         aliases:
-          - redis-node-1
-          - algo_redis_1
+          - redis
+          - algo_redis
     healthcheck:
-      test: ["CMD", "redis-cli", "-p", "6380", "ping"]
+      test: ["CMD", "redis-cli", "-p", "6379", "ping"]
       interval: 10s
       timeout: 5s
       retries: 5
-
-  redis-node-2:
-    image: redis:7-alpine
-    container_name: algo_redis_2
-    ports:
-      - "6381:6381"
-      - "16381:16381"
-    volumes:
-      - redis_data_2:/data
-      - ./config/redis.conf:/usr/local/etc/redis/redis.conf:ro
-    command: ["redis-server", "/usr/local/etc/redis/redis.conf", "--port", "6381"]
-    networks:
-      algo_trader_net:
-        aliases:
-          - redis-node-2
-          - algo_redis_2
-    healthcheck:
-      test: ["CMD", "redis-cli", "-p", "6381", "ping"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-
-  redis-node-3:
-    image: redis:7-alpine
-    container_name: algo_redis_3
-    ports:
-      - "6382:6382"
-      - "16382:16382"
-    volumes:
-      - redis_data_3:/data
-      - ./config/redis.conf:/usr/local/etc/redis/redis.conf:ro
-    command: ["redis-server", "/usr/local/etc/redis/redis.conf", "--port", "6382"]
-    networks:
-      algo_trader_net:
-        aliases:
-          - redis-node-3
-          - algo_redis_3
-    healthcheck:
-      test: ["CMD", "redis-cli", "-p", "6382", "ping"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-
-  redis-cluster-init:
-    image: redis:7-alpine
-    container_name: algo_redis_init
-    depends_on:
-      redis-node-1:
-        condition: service_healthy
-      redis-node-2:
-        condition: service_healthy
-      redis-node-3:
-        condition: service_healthy
-    command:
-      - /bin/sh
-      - -eu
-      - -c
-      - |
-        echo 'Waiting for nodes...'
-        for i in 1 2 3 4 5 6 7 8 9 10; do
-          if redis-cli -h algo_redis_1 -p 6380 ping >/dev/null 2>&1 \
-            && redis-cli -h algo_redis_2 -p 6381 ping >/dev/null 2>&1 \
-            && redis-cli -h algo_redis_3 -p 6382 ping >/dev/null 2>&1; then
-            break
-          fi
-          sleep 1
-        done
-
-        if redis-cli -h algo_redis_1 -p 6380 cluster info | grep -q 'cluster_state:ok'; then
-          SLOTS=$$(redis-cli -h algo_redis_1 -p 6380 cluster info | grep cluster_slots_assigned | tr -d '\r' | cut -d: -f2)
-          if [ "$$SLOTS" = "16384" ]; then
-            echo 'Cluster already healthy ✓'
-            exit 0
-          fi
-          echo "Cluster state:ok but only $$SLOTS slots — resetting..."
-        fi
-
-        echo 'Resetting all nodes...'
-        for pair in "algo_redis_1 6380" "algo_redis_2 6381" "algo_redis_3 6382"; do
-          set -- $$pair
-          redis-cli -h $$1 -p $$2 CLUSTER RESET HARD || true
-          redis-cli -h $$1 -p $$2 FLUSHALL || true
-        done
-        sleep 2
-
-        redis-cli --cluster create \
-          algo_redis_1:6380 \
-          algo_redis_2:6381 \
-          algo_redis_3:6382 \
-          --cluster-replicas 0 \
-          --cluster-yes || true
-
-        for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do
-          INFO=$$(redis-cli -h algo_redis_1 -p 6380 cluster info || true)
-          echo "$$INFO"
-          if echo "$$INFO" | grep -q 'cluster_state:ok' \
-            && echo "$$INFO" | grep -q 'cluster_slots_assigned:16384'; then
-            echo 'Cluster ready ✓'
-            exit 0
-          fi
-          sleep 2
-        done
-
-        echo 'Cluster failed to reach healthy state' >&2
-        exit 1
-    networks:
-      algo_trader_net:
-        aliases:
-          - redis-cluster-init
-          - algo_redis_init
-    restart: "no"
 
   # ── Message Broker ─────────────────────────────────────────
 
@@ -283,9 +171,7 @@ networks:
 volumes:
   timescaledb_data:
   postgres_data:
-  redis_data_1:
-  redis_data_2:
-  redis_data_3:
+  redis_data:
   rabbitmq_data:
   minio_data:
   prometheus_data:

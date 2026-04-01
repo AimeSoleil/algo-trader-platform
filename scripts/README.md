@@ -81,23 +81,23 @@ uv run celery -A shared.celery_app.celery_app beat --loglevel=INFO
 
 ## 4) Production: Docker-based Celery workers
 
-For production deployment, use Docker Compose with the `worker` profile:
+For production deployment, use Docker Compose with the worker overlay file:
 
 ```bash
 # Start all Celery workers + beat + Flower
-docker compose --profile worker up -d
+docker compose -f docker-compose.yml -f docker-compose.worker.yml up -d
 
 # Start full stack (infrastructure + API services + workers)
-docker compose --profile app --profile worker up -d
+docker compose -f docker-compose.yml -f docker-compose.app.yml -f docker-compose.worker.yml up -d
 
 # Check status
-docker compose --profile worker ps
+docker compose -f docker-compose.yml -f docker-compose.worker.yml ps
 
 # View logs
 docker compose logs -f celery-data celery-signal
 
 # Scale a specific worker
-docker compose --profile worker up -d --scale celery-data=2
+docker compose -f docker-compose.yml -f docker-compose.worker.yml up -d --scale celery-data=2
 
 # Restart a specific worker
 docker compose restart celery-signal
@@ -112,7 +112,7 @@ docker compose restart celery-signal
 
 - `init_db` and `seed_watchlist` are idempotent and safe to run repeatedly.
 - **Local dev**: Use `run_workers.sh` — no Docker needed for workers.
-- **Production**: Use `docker compose --profile worker up -d` — automatic restart, healthchecks, log aggregation.
+- **Production**: Use `docker compose -f docker-compose.yml -f docker-compose.worker.yml up -d` — automatic restart, healthchecks, log aggregation.
 - Stop local workers with `Ctrl+C` (graceful two-phase shutdown).
 - Recommended: configure `logrotate` for `logs/celery-*.log` in long-running local setups.
 

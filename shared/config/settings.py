@@ -17,11 +17,6 @@ class DatabaseSettings(BaseSettings):
 
 class RedisSettings(BaseSettings):
     url: str = "redis://localhost:6379/0"
-    cluster_enabled: bool = False
-    cluster_nodes: list[dict] = Field(
-        default_factory=list,
-        description='e.g. [{"host": "redis-node-1", "port": 6380}]',
-    )
     lock_ttl_default: int = 300
     lock_retry_interval: float = 0.5
 

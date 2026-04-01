@@ -28,8 +28,8 @@ services:
         condition: service_healthy
       postgres:
         condition: service_healthy
-      redis-cluster-init:
-        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
       rabbitmq:
         condition: service_healthy
     healthcheck:
@@ -56,8 +56,8 @@ services:
         condition: service_healthy
       postgres:
         condition: service_healthy
-      redis-cluster-init:
-        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
       rabbitmq:
         condition: service_healthy
     healthcheck:
@@ -84,8 +84,8 @@ services:
         condition: service_healthy
       postgres:
         condition: service_healthy
-      redis-cluster-init:
-        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
       rabbitmq:
         condition: service_healthy
     healthcheck:
@@ -110,8 +110,8 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
-      redis-cluster-init:
-        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
       rabbitmq:
         condition: service_healthy
     healthcheck:
@@ -127,9 +127,7 @@ services:
     build:
       context: .
       dockerfile: services/celery_worker/Dockerfile
-    # Scheduler class is selected in shared/celery_app.py based on Redis mode:
-    # - standalone: redbeat.RedBeatScheduler
-    # - cluster:    shared.redbeat_cluster.ClusterRedBeatScheduler
+    # Scheduler: redbeat.RedBeatScheduler (configured in shared/celery_app.py)
     command: beat --loglevel=INFO --pidfile=/tmp/celerybeat.pid
     env_file:
       - .env
@@ -139,8 +137,8 @@ services:
     depends_on:
       rabbitmq:
         condition: service_healthy
-      redis-cluster-init:
-        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
     healthcheck:
       test: ["CMD-SHELL", "test -f /tmp/celerybeat.pid && kill -0 $(cat /tmp/celerybeat.pid)"]
       interval: 30s
