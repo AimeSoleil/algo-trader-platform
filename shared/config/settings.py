@@ -3,10 +3,38 @@ from __future__ import annotations
 
 from functools import lru_cache
 from pathlib import Path
+from typing import Any, ClassVar
 
 import yaml
 from pydantic import Field
-from pydantic_settings import BaseSettings
+from pydantic_settings import BaseSettings, PydanticBaseSettingsSource
+
+
+def _default_yaml_path() -> Path:
+    return Path(__file__).resolve().parents[2] / "config" / "config.yaml"
+
+
+def _load_yaml_data(yaml_path: Path) -> dict[str, Any]:
+    if not yaml_path.exists():
+        return {}
+
+    with yaml_path.open(encoding="utf-8") as file:
+        return yaml.safe_load(file) or {}
+
+
+class YamlSettingsSource(PydanticBaseSettingsSource):
+    """Load settings from config.yaml as a low-priority fallback source."""
+
+    def __init__(self, settings_cls: type[BaseSettings], yaml_path: Path) -> None:
+        super().__init__(settings_cls)
+        self.yaml_path = yaml_path
+
+    def get_field_value(self, field: Any, field_name: str) -> tuple[Any, str, bool]:
+        data = self()
+        return data.get(field_name), field_name, False
+
+    def __call__(self) -> dict[str, Any]:
+        return _load_yaml_data(self.yaml_path)
 
 
 # ── Infrastructure ───────────────────────────────────────────
@@ -262,6 +290,7 @@ class TradeServiceSettings(BaseSettings):
 class Settings(BaseSettings):
     """Root settings — assembles all sub-settings"""
     model_config = {"env_prefix": "", "env_nested_delimiter": "__"}
+    _yaml_path: ClassVar[Path] = _default_yaml_path()
 
     common: CommonSettings = Field(default_factory=CommonSettings)
     infra: InfraSettings = Field(default_factory=InfraSettings)
@@ -271,18 +300,28 @@ class Settings(BaseSettings):
     trade_service: TradeServiceSettings = Field(default_factory=TradeServiceSettings)
 
     @classmethod
+    def settings_customise_sources(
+        cls,
+        settings_cls: type[BaseSettings],
+        init_settings: PydanticBaseSettingsSource,
+        env_settings: PydanticBaseSettingsSource,
+        dotenv_settings: PydanticBaseSettingsSource,
+        file_secret_settings: PydanticBaseSettingsSource,
+    ) -> tuple[PydanticBaseSettingsSource, ...]:
+        yaml_settings = YamlSettingsSource(settings_cls, cls._yaml_path)
+        return (
+            init_settings,
+            env_settings,
+            dotenv_settings,
+            yaml_settings,
+            file_secret_settings,
+        )
+
+    @classmethod
     def from_yaml(cls, yaml_path: str | Path | None = None) -> Settings:
         """从 config.yaml 加载，环境变量覆盖"""
-        if yaml_path is None:
-            yaml_path = Path(__file__).resolve().parents[2] / "config" / "config.yaml"
-
-        yaml_path = Path(yaml_path)
-        yaml_data = {}
-        if yaml_path.exists():
-            with open(yaml_path) as f:
-                yaml_data = yaml.safe_load(f) or {}
-
-        return cls(**yaml_data)
+        cls._yaml_path = Path(yaml_path) if yaml_path is not None else _default_yaml_path()
+        return cls()
 
 
 @lru_cache
