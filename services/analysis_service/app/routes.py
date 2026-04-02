@@ -47,10 +47,9 @@ async def get_blueprint(
 
 
 class AnalyzeRequest(BaseModel):
-    symbols: list[str] = Field(
+    symbols: list[str] | str = Field(
         ...,
-        min_length=1,
-        description="Ticker symbols to analyze, e.g. ['AAPL', 'MSFT']",
+        description="Ticker symbols to analyze, either ['AAPL', 'MSFT'] or 'AAPL,MSFT'",
     )
     signal_date: str | None = Field(
         None,
@@ -79,9 +78,15 @@ async def trigger_analysis(req: AnalyzeRequest):
     Returns task_ids that can be polled via GET /analyze/{task_id}.
     Signal features for the symbols must already exist in the DB.
     """
-    clean_symbols = list(dict.fromkeys(s.strip().upper() for s in req.symbols if s.strip()))
+    raw_symbols = req.symbols
+    if isinstance(raw_symbols, str):
+        symbol_items = [s.strip() for s in raw_symbols.split(",")]
+    else:
+        symbol_items = [s.strip() for s in raw_symbols]
+
+    clean_symbols = list(dict.fromkeys(s.upper() for s in symbol_items if s))
     if not clean_symbols:
-        raise HTTPException(status_code=422, detail="symbols list must not be empty")
+        raise HTTPException(status_code=422, detail="symbols must not be empty")
 
     task_ids: list[dict] = []
     for symbol in clean_symbols:

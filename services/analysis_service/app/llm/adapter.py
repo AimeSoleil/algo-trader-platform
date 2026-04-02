@@ -124,7 +124,7 @@ class LLMAdapter:
             max_tokens=max_tokens,
         )
 
-        blueprint = parse_llm_json(result.content, LLMTradingBlueprint)
+        blueprint = LLMTradingBlueprint(**parse_llm_json(result.content))
 
         # Fill in provider metadata
         blueprint = blueprint.model_copy(update={
