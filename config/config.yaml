@@ -24,9 +24,15 @@ common:
       - "AMD"
       - "SPY"
       - "QQQ"
-    for_benchmark:
+    for_trade_benchmark:
       - "SPY"
       - "QQQ"
+    for_signal_benchmark:
+      - "SPY"
+      - "QQQ"
+      - "IWM"
+      - "TLT"
+      - "^VIX"
 
   data_quality:                    # Signal Service and Trade Service 共用数据质量评分参数
     # ── 评分权重（三项之和 = 1.0）──
@@ -164,9 +170,6 @@ signal_service:
     lookback_days: 252                 # iv_percentile 滚动窗口（交易日）
     high_quantile: 0.7                 # iv_percentile >= 70 → 高波动区间
     low_quantile: 0.3                  # iv_percentile <= 30 → 低波动区间
-
-  # ── 跨资产基准（用于 beta / correlation 计算）──
-  cross_asset_benchmarks: ["SPY", "QQQ", "IWM", "TLT", "^VIX"]
 
   # ── 信号计算过滤器（按资产类型组织）──
   filters:

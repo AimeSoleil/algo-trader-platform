@@ -306,7 +306,7 @@ def _build_task_section(*, is_chunk: bool = False, signal_date: date | None = No
     from shared.config import get_settings
     target_date = _next_trading_day(from_date=signal_date)
     if is_chunk:
-        benchmark_str = ", ".join(get_settings().common.watchlist.for_benchmark)
+        benchmark_str = ", ".join(get_settings().common.watchlist.for_trade_benchmark)
         return (
             f"## Task\n\n"
             f"Generate a Trading Blueprint for **{target_date}**.\n\n"

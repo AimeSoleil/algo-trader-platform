@@ -125,27 +125,42 @@ class LoggingSettings(BaseSettings):
     file_rotate_utc: bool = False
 
 class WatchlistSettings(BaseSettings):
-    """Structured watchlist — trade targets vs benchmark context symbols.
+    """Structured watchlist with three symbol categories.
 
-    ``for_trade``   — symbols we generate trading blueprints for.
-    ``for_benchmark`` — symbols injected into every LLM chunk for market
-                       context (data is collected, but no blueprint plans
-                       are generated unless also in *for_trade*).
+    ``for_trade``  — symbols we collect data for AND generate trading
+                     blueprints for.  If a symbol also appears in
+                     *for_trade_benchmark* it is still treated as a
+                     trade target (deduplication during analysis).
+    ``for_trade_benchmark`` — injected into every LLM analysis chunk
+                     for market context.  Plans are NOT generated for
+                     these unless they also appear in *for_trade*.
+    ``for_signal_benchmark`` — used by the signal service for beta /
+                     correlation computation.  Data is collected but
+                     no blueprints are generated.
 
-    Use the ``.all`` property to get the deduplicated union for data
-    collection, signal computation, and backfill.
+    Use ``.all`` to get the deduplicated union across all three lists
+    (for data collection, backfill, and maintenance).
     """
     for_trade: list[str] = Field(
-        default_factory=lambda: ["AAPL", "MSFT", "NVDA", "TSLA"],
+        default_factory=lambda: [
+            "AAPL", "MSFT", "NVDA", "TSLA",
+            "AMZN", "META", "GOOGL", "AMD",
+            "SPY", "QQQ",
+        ],
     )
-    for_benchmark: list[str] = Field(
+    for_trade_benchmark: list[str] = Field(
         default_factory=lambda: ["SPY", "QQQ"],
+    )
+    for_signal_benchmark: list[str] = Field(
+        default_factory=lambda: ["SPY", "QQQ", "IWM", "TLT", "^VIX"],
     )
 
     @property
     def all(self) -> list[str]:
-        """Deduplicated union of for_trade + for_benchmark (order-preserving)."""
-        return list(dict.fromkeys(self.for_trade + self.for_benchmark))
+        """Deduplicated union of all three lists (order-preserving)."""
+        return list(dict.fromkeys(
+            self.for_trade + self.for_trade_benchmark + self.for_signal_benchmark
+        ))
 
 
 class CommonSettings(BaseSettings):
@@ -263,10 +278,6 @@ class SignalServiceSettings(BaseSettings):
     """signal_service 顶级配置."""
     iv_lookback_days: int = 252
     option_strategy: OptionStrategySettings = Field(default_factory=OptionStrategySettings)
-    cross_asset_benchmarks: list[str] = Field(
-        default_factory=lambda: ["SPY", "QQQ", "IWM", "TLT"],
-        description="ETF benchmarks used for beta / correlation computation",
-    )
     filters: SignalServiceFilterSettings = Field(default_factory=SignalServiceFilterSettings)
 
 

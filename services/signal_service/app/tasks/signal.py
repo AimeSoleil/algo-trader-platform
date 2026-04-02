@@ -79,7 +79,7 @@ async def _compute_daily_signals(
 
     # ── Pre-load benchmark returns & VIX (once) ─────────────
     benchmark_returns = await load_benchmark_returns(
-        settings.signal_service.cross_asset_benchmarks, td,
+        settings.common.watchlist.for_signal_benchmark, td,
     )
     vix_bars = await load_vix_bars(td)
 
@@ -88,7 +88,7 @@ async def _compute_daily_signals(
         "signal_compute.benchmarks_preloaded",
         log_event="db_read",
         stage="preload",
-        benchmarks_requested=settings.signal_service.cross_asset_benchmarks,
+        benchmarks_requested=settings.common.watchlist.for_signal_benchmark,
         benchmarks_loaded=loaded_benchmarks,
         vix_bars=len(vix_bars),
     )

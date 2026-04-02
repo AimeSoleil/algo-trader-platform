@@ -123,8 +123,11 @@ class AgentOrchestrator:
         settings = get_settings()
         chunk_size = settings.analysis_service.llm.orchestrator_chunk_size
         max_parallel = settings.analysis_service.llm.orchestrator_max_parallel
-        benchmark_syms = set(
-            s.upper() for s in settings.common.watchlist.for_benchmark
+        trade_benchmark_syms = set(
+            s.upper() for s in settings.common.watchlist.for_trade_benchmark
+        )
+        trade_syms = set(
+            s.upper() for s in settings.common.watchlist.for_trade
         )
 
         logger.info(
@@ -134,9 +137,17 @@ class AgentOrchestrator:
             chunk_size=chunk_size,
         )
 
-        # ── Split into benchmark vs non-benchmark ──
-        benchmark_features = [sf for sf in signal_features if sf.symbol.upper() in benchmark_syms]
-        trade_features = [sf for sf in signal_features if sf.symbol.upper() not in benchmark_syms]
+        # ── Split: trade targets vs benchmark-only ──
+        # A symbol in both for_trade AND for_trade_benchmark is a trade target.
+        benchmark_only_features = [
+            sf for sf in signal_features
+            if sf.symbol.upper() in trade_benchmark_syms
+            and sf.symbol.upper() not in trade_syms
+        ]
+        trade_features = [
+            sf for sf in signal_features
+            if sf.symbol.upper() in trade_syms
+        ]
 
         # ── Decide: single pass vs chunked ──
         if len(trade_features) <= chunk_size:
@@ -149,16 +160,16 @@ class AgentOrchestrator:
                 signal_date=signal_date,
             )
         else:
-            # Chunk trade symbols, inject benchmarks into each chunk
+            # Chunk trade symbols, inject benchmark-only into each chunk
             chunks: list[list[SignalFeatures]] = []
             for i in range(0, len(trade_features), chunk_size):
-                chunk = benchmark_features + trade_features[i : i + chunk_size]
+                chunk = benchmark_only_features + trade_features[i : i + chunk_size]
                 chunks.append(chunk)
 
             logger.info(
                 "orchestrator.chunking",
                 total_symbols=len(signal_features),
-                benchmark_symbols=len(benchmark_features),
+                benchmark_only_symbols=len(benchmark_only_features),
                 trade_symbols=len(trade_features),
                 chunks=len(chunks),
                 chunk_size=chunk_size,
