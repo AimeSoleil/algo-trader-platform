@@ -10,5 +10,4 @@ dependencies = [
     "celery[redis]",
     "redis[hiredis]",
     "apscheduler>=3.10",
-    "grpcio",
 ]

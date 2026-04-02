@@ -520,6 +520,8 @@ class TestGenerateSignal:
         self,
         iv_percentile: float = 50.0,
         bar_type: str = "unknown",
+        stock_indicators: StockIndicators | None = None,
+        option_indicators: OptionIndicators | None = None,
     ) -> SignalFeatures:
         with patch(
             "services.signal_service.app.signal_generator.get_settings",
@@ -536,8 +538,8 @@ class TestGenerateSignal:
                 close_price=100.0,
                 daily_return=0.01,
                 volume=50000,
-                option_indicators=OptionIndicators(iv_percentile=iv_percentile),
-                stock_indicators=StockIndicators(),
+                option_indicators=option_indicators or OptionIndicators(iv_percentile=iv_percentile),
+                stock_indicators=stock_indicators or StockIndicators(),
                 cross_asset_indicators=CrossAssetIndicators(),
                 bar_type=bar_type,
             )
@@ -577,3 +579,30 @@ class TestGenerateSignal:
         assert sig.close_price == 100.0
         assert sig.volume == 50000
         assert sig.daily_return == 0.01
+
+    def test_degraded_indicators_namespaced_for_stock_and_option(self):
+        sig = self._make_signal(
+            stock_indicators=StockIndicators(degraded_indicators=["all", "ema_50"]),
+            option_indicators=OptionIndicators(
+                iv_percentile=50.0,
+                degraded_indicators=["all", "iv_rank"],
+            ),
+        )
+
+        assert "stock:all" in sig.data_quality.degraded_indicators
+        assert "option:all" in sig.data_quality.degraded_indicators
+        assert "stock:ema_50" in sig.data_quality.degraded_indicators
+        assert "option:iv_rank" in sig.data_quality.degraded_indicators
+        assert "all" not in sig.data_quality.degraded_indicators
+
+    def test_degraded_indicators_keep_existing_prefixed_values(self):
+        sig = self._make_signal(
+            stock_indicators=StockIndicators(degraded_indicators=["stock:all"]),
+            option_indicators=OptionIndicators(
+                iv_percentile=50.0,
+                degraded_indicators=["option:all"],
+            ),
+        )
+
+        assert sig.data_quality.degraded_indicators.count("stock:all") == 1
+        assert sig.data_quality.degraded_indicators.count("option:all") == 1

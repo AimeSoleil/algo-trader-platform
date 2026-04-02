@@ -12,8 +12,6 @@ dependencies = [
     "redis[hiredis]",
     "celery[redis]",
     "flower",
-    "grpcio",
-    "grpcio-tools",
     "protobuf",
     "fastapi",
     "uvicorn[standard]",

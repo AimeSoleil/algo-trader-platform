@@ -7,7 +7,6 @@ dependencies = [
     "algo-trader-shared",
     "fastapi",
     "uvicorn[standard]",
-    "grpcio",
     "pandas>=2.0",
     "numpy",
     "scipy",

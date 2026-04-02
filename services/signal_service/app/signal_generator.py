@@ -19,6 +19,24 @@ from shared.utils import get_logger, now_utc, today_trading
 logger = get_logger("signal_generator")
 
 
+def _namespace_degraded_indicators(indicators: list[str], source: str) -> list[str]:
+    """Attach source namespace to degraded indicators.
+
+    This disambiguates generic entries like "all" from stock vs option
+    pipelines (e.g. "stock:all" and "option:all").
+    """
+    namespaced: list[str] = []
+    prefix = f"{source}:"
+    for name in indicators:
+        if not name:
+            continue
+        if name.startswith("stock:") or name.startswith("option:"):
+            namespaced.append(name)
+        else:
+            namespaced.append(f"{prefix}{name}")
+    return namespaced
+
+
 def generate_signal(
     symbol: str,
     close_price: float,
@@ -46,11 +64,16 @@ def generate_signal(
         vol_regime = "normal"
 
     # ── Build data quality annotation ──
-    # 合并股票 + 期权降级指标列表
-    all_degraded = (
-        stock_indicators.degraded_indicators
-        + option_indicators.degraded_indicators
+    # 合并股票 + 期权降级指标列表，并区分来源（stock/option）。
+    stock_degraded = _namespace_degraded_indicators(
+        stock_indicators.degraded_indicators,
+        "stock",
     )
+    option_degraded = _namespace_degraded_indicators(
+        option_indicators.degraded_indicators,
+        "option",
+    )
+    all_degraded = list(dict.fromkeys(stock_degraded + option_degraded))
     # 使用集中化的质量评估模块（权重可通过 config.yaml 调节）
     dq_cfg = DataQualityConfig.from_settings(settings)
     warnings = build_quality_warnings(stock_bar_count, option_row_count)

@@ -3,12 +3,8 @@
 面向期权交易的量化微服务平台，采用“盘后智能 + 盘中机械执行”模式：盘后批量计算特征并生成次日交易蓝图，盘中仅按蓝图条件执行。
 
 ## 当前实现状态
-
-已完成阶段 0/1 骨架搭建（可启动、可扩展）：
-
-- 基础设施：TimescaleDB、PostgreSQL、Redis（单实例）、RabbitMQ、MinIO、Prometheus、Grafana
-- 共享层：Pydantic 模型、配置系统、双数据库会话、Celery 共享实例
 - 服务层：Data / Backfill / Signal / Analysis / Trade / Gateway
+## 系统架构
 - 可观测性：各服务内置 Prometheus `/metrics`，配套 Prometheus + Grafana
 - 运维脚本：数据库初始化、watchlist 种子、Celery worker 启动脚本
 
@@ -190,7 +186,7 @@ llm:
 ## 技术栈
 
 - Python 3.11+
-- FastAPI + gRPC
+- FastAPI
 - SQLAlchemy Async + Pydantic v2
 - Celery + RabbitMQ + Redis
 - TimescaleDB（时序）+ PostgreSQL（业务）

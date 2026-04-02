@@ -7,8 +7,6 @@ dependencies = [
     "algo-trader-shared",
     "fastapi",
     "uvicorn[standard]",
-    "grpcio",
-    "grpcio-tools",
     "yfinance>=0.2",
     "py-vollib>=1.0.1",
     "pandas>=2.0",
