@@ -18,6 +18,7 @@ from time import perf_counter
 from typing import Any
 
 from shared.config import get_settings
+from shared.data_quality import should_circuit_break_analysis
 from shared.metrics import llm_request_duration
 from shared.models.blueprint import LLMTradingBlueprint
 from shared.models.signal import SignalFeatures
@@ -148,6 +149,34 @@ class AgentOrchestrator:
             sf for sf in signal_features
             if sf.symbol.upper() in trade_syms
         ]
+
+        # ── Circuit-break: drop symbols with both stock + option fully degraded ──
+        circuit_broken = [
+            sf for sf in trade_features
+            if should_circuit_break_analysis(sf.data_quality.degraded_indicators)
+        ]
+        if circuit_broken:
+            broken_syms = [sf.symbol for sf in circuit_broken]
+            logger.warning(
+                "orchestrator.circuit_break",
+                symbols=broken_syms,
+                reason="both stock:all and option:all degraded — skipping LLM analysis",
+            )
+            trade_features = [
+                sf for sf in trade_features
+                if not should_circuit_break_analysis(sf.data_quality.degraded_indicators)
+            ]
+            # Also remove from the full signal_features list for single-pass path
+            signal_features = [
+                sf for sf in signal_features
+                if not should_circuit_break_analysis(sf.data_quality.degraded_indicators)
+            ]
+
+        if not trade_features:
+            logger.warning("orchestrator.no_trade_features", reason="all trade symbols circuit-broken or empty")
+            # Return an empty blueprint
+            from shared.models.blueprint import LLMTradingBlueprint
+            return LLMTradingBlueprint(symbol_plans=[])
 
         # ── Decide: single pass vs chunked ──
         if len(trade_features) <= chunk_size:

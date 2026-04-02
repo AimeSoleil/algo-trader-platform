@@ -145,3 +145,93 @@ class TestSignalStructure:
         assert expected_sections.issubset(set(data.keys())), (
             f"Missing sections: {expected_sections - set(data.keys())}"
         )
+
+
+# ---------------------------------------------------------------------------
+# Degraded-indicator section exclusion
+# ---------------------------------------------------------------------------
+
+
+class TestDegradedSectionExclusion:
+    """Verify _serialize_one_signal excludes sections for fully-degraded categories."""
+
+    def _parse_json(self, sf: SignalFeatures) -> dict:
+        from services.analysis_service.app.llm.prompts import _serialize_one_signal
+
+        text = _serialize_one_signal(sf)
+        return json.loads(text.split("\n", 1)[1])
+
+    def test_stock_all_degraded_excludes_stock_sections(self):
+        si = StockIndicators(adx_14=25.0, rsi_14=55.0, vwap=185.0, cmf_20=0.1, hv_20d=0.25)
+        oi = OptionIndicators(iv_rank=0.5, current_iv=0.3, pcr_volume=0.8)
+        sf = _make_signal_features(
+            stock_indicators=si,
+            option_indicators=oi,
+            cross_asset_indicators=CrossAssetIndicators(spy_beta=1.1),
+            data_quality=DataQuality(
+                complete=False, score=0.3,
+                degraded_indicators=["stock:all"],
+            ),
+        )
+        data = self._parse_json(sf)
+
+        # Stock sections should be absent
+        assert "stock_trend" not in data
+        assert "stock_vol" not in data
+        assert "stock_flow" not in data
+        # Option + cross-asset sections should remain
+        assert "option_vol_surface" in data
+        assert "cross_asset" in data
+        # data_quality should note excluded categories
+        assert data["data_quality"]["excluded_categories"] == ["stock"]
+
+    def test_option_all_degraded_excludes_option_sections(self):
+        si = StockIndicators(adx_14=25.0, rsi_14=55.0, vwap=185.0, cmf_20=0.1, hv_20d=0.25)
+        oi = OptionIndicators(iv_rank=0.5, current_iv=0.3, pcr_volume=0.8)
+        sf = _make_signal_features(
+            stock_indicators=si,
+            option_indicators=oi,
+            cross_asset_indicators=CrossAssetIndicators(spy_beta=1.1),
+            data_quality=DataQuality(
+                complete=False, score=0.4,
+                degraded_indicators=["option:all"],
+            ),
+        )
+        data = self._parse_json(sf)
+
+        # Option sections should be absent
+        assert "option_vol_surface" not in data
+        assert "option_greeks" not in data
+        assert "option_chain" not in data
+        assert "option_spreads" not in data
+        # Stock sections should remain
+        assert "stock_trend" in data
+        assert data["data_quality"]["excluded_categories"] == ["option"]
+
+    def test_no_degradation_keeps_all_sections(self):
+        si = StockIndicators(adx_14=25.0, rsi_14=55.0, vwap=185.0, cmf_20=0.1, hv_20d=0.25)
+        oi = OptionIndicators(iv_rank=0.5, current_iv=0.3, pcr_volume=0.8)
+        sf = _make_signal_features(
+            stock_indicators=si,
+            option_indicators=oi,
+            cross_asset_indicators=CrossAssetIndicators(spy_beta=1.1),
+        )
+        data = self._parse_json(sf)
+
+        assert "stock_trend" in data
+        assert "option_vol_surface" in data
+        assert "data_quality" not in data  # complete=True, no section added
+
+    def test_partial_degradation_keeps_all_sections(self):
+        si = StockIndicators(adx_14=25.0, rsi_14=55.0)
+        sf = _make_signal_features(
+            stock_indicators=si,
+            data_quality=DataQuality(
+                complete=False, score=0.7,
+                degraded_indicators=["stock:ema_50", "option:iv_rank"],
+            ),
+        )
+        data = self._parse_json(sf)
+
+        # Partial degradation should NOT exclude sections
+        assert "stock_trend" in data

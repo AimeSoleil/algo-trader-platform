@@ -11,6 +11,7 @@ import json
 from datetime import date
 from typing import Any
 
+from shared.data_quality import is_option_all_degraded, is_stock_all_degraded
 from shared.models.signal import SignalFeatures
 from shared.utils import today_trading
 
@@ -238,15 +239,30 @@ def _serialize_one_signal(sf: SignalFeatures) -> str:
         "cross_asset": _prune_defaults(cross_asset),
     }
 
+    # ── Exclude sections for fully-degraded data categories ──
+    degraded = sf.data_quality.degraded_indicators
+    excluded_categories: list[str] = []
+    if is_stock_all_degraded(degraded):
+        for key in ("stock_trend", "stock_vol", "stock_flow"):
+            data.pop(key, None)
+        excluded_categories.append("stock")
+    if is_option_all_degraded(degraded):
+        for key in ("option_vol_surface", "option_greeks", "option_chain", "option_spreads"):
+            data.pop(key, None)
+        excluded_categories.append("option")
+
     data = {k: v for k, v in data.items() if v}
 
     if not sf.data_quality.complete:
-        data["data_quality"] = {
+        dq_info: dict[str, Any] = {
             "complete": False,
             "score": round(sf.data_quality.score, 4),
             "warnings": sf.data_quality.warnings,
             "degraded_indicators": sf.data_quality.degraded_indicators,
         }
+        if excluded_categories:
+            dq_info["excluded_categories"] = excluded_categories
+        data["data_quality"] = dq_info
 
     compact = json.dumps(data, separators=(',', ':'), ensure_ascii=False)
     return f"### {sf.symbol}\n{compact}"

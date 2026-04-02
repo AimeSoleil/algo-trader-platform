@@ -184,16 +184,15 @@ def build_quality_warnings(
     warnings: list[str] = []
 
     if stock_bar_count == 0:
-        warnings.append("无股票数据")
+        warnings.append("No stock data")
     elif stock_bar_count < STOCK_MIN_BARS:
-        warnings.append(f"股票数据不足: {stock_bar_count} 行 (<{STOCK_MIN_BARS} 最低要求)")
+        warnings.append(f"Insufficient stock data: {stock_bar_count} rows (<{STOCK_MIN_BARS} minimum)")
     elif stock_bar_count < STOCK_WARN_BARS:
-        warnings.append(f"股票数据偏少: {stock_bar_count} 行 (<{STOCK_WARN_BARS} 完整要求)")
-
+        warnings.append(f"Stock data is low: {stock_bar_count} rows (<{STOCK_WARN_BARS} full)")
     if option_row_count == 0:
-        warnings.append("无期权数据，期权指标均为默认值")
+        warnings.append("No option data, all option indicators are default")
     elif option_row_count < OPTION_MIN_ROWS:
-        warnings.append(f"期权链数据偏少: {option_row_count} 行")
+        warnings.append(f"Insufficient option chain data: {option_row_count} rows (<{OPTION_MIN_ROWS} minimum)")
 
     return warnings
 
@@ -240,3 +239,27 @@ def apply_quality_gate(
 
     # 质量合格 → 原样执行
     return False, max_position_size
+
+
+# ═══════════════════════════════════════════════════════════
+# 分析阶段 — Analysis Service 调用
+# ═══════════════════════════════════════════════════════════
+
+# 命名空间前缀常量
+_STOCK_ALL = "stock:all"
+_OPTION_ALL = "option:all"
+
+
+def is_stock_all_degraded(degraded_indicators: list[str]) -> bool:
+    """股票指标是否全部降级（``stock:all``）。"""
+    return _STOCK_ALL in degraded_indicators
+
+
+def is_option_all_degraded(degraded_indicators: list[str]) -> bool:
+    """期权指标是否全部降级（``option:all``）。"""
+    return _OPTION_ALL in degraded_indicators
+
+
+def should_circuit_break_analysis(degraded_indicators: list[str]) -> bool:
+    """股票 + 期权指标同时全部降级时应熔断，跳过 LLM 分析。"""
+    return is_stock_all_degraded(degraded_indicators) and is_option_all_degraded(degraded_indicators)
