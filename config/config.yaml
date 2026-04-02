@@ -13,21 +13,22 @@ common:
     end: "16:00"
 
   watchlist:
-    - "AAPL"
-    - "MSFT"
-    - "NVDA"
-    - "TSLA"
-    - "SPY"
-    - "QQQ"
-    - "IWM"
-    - "TLT"
-    - "^VIX"
-    - "AMZN"
-    - "META"
-    - "GOOGL"
-    - "AMD"
+    for_trade:
+      - "AAPL"
+      - "MSFT"
+      - "NVDA"
+      - "TSLA"
+      - "AMZN"
+      - "META"
+      - "GOOGL"
+      - "AMD"
+      - "SPY"
+      - "QQQ"
+    for_benchmark:
+      - "SPY"
+      - "QQQ"
 
-  data_quality:
+  data_quality:                    # Signal Service and Trade Service 共用数据质量评分参数
     # ── 评分权重（三项之和 = 1.0）──
     weight_stock: 0.5              # 股票数据覆盖率占比
     weight_option: 0.3             # 期权数据覆盖率占比
@@ -39,13 +40,6 @@ common:
     skip_threshold: 0.3            # score < 此值 → 完全跳过执行
     reduce_threshold: 0.7          # score < 此值 → 仓位缩减
     reduce_factor: 0.5             # 缩减比例（0.5 = 减半）
-
-  schedule:
-    blueprint_load_time: "09:20"       # 每日 9:20 加载当天的策略蓝图（盘前准备）
-    batch_flush_time: "18:30"          # 18:30 批量 flush 当日交易数据
-    backfill_time: "19:00"             # 19:00 开始执行盘后数据 backfill
-    signal_compute_time: "19:30"       # 19:30 计算交易信号
-    blueprint_generate_time: "20:00"   # 20:00 生成明天的策略蓝图
 
   logging:
     level: "INFO"
@@ -60,6 +54,23 @@ common:
     file_rotate_interval: 1
     file_backup_count: 14
     file_rotate_utc: false
+
+  # ── Celery 通用运行时 (所有 worker 共享) ──
+  celery:
+    prefetch_multiplier: 1             # 每次从 broker 预取的任务数（1 = 严格公平调度）
+    max_memory_per_child: 500000       # KB — 子进程超出后自动重启（500 MB）
+    task_acks_late: true               # true = 任务完成后才 ack（崩溃时可重投递）
+    task_track_started: true           # true = 任务开始执行即标记 STARTED 状态
+    concurrency: 0                     # worker 并发数（0 = Celery 默认，即 CPU 核数）
+
+  beat:
+    redbeat_lock_timeout: 300          # RedBeat 分布式锁超时秒数
+
+  flower:
+    port: 5555
+    basic_auth_user: "admin"
+    basic_auth_password: "changeme"
+    persistent: true
 
 
 # ── Infra — 基础设施连接 ────────────────────────────────────
@@ -76,6 +87,19 @@ infra:
   rabbitmq:
     url: "amqp://trader:trader_dev@localhost:5672//"
 
+  minio:
+    endpoint: "localhost:9000"
+    access_key: "minioadmin"
+    secret_key: "minioadmin"
+    secure: false
+
+  prometheus:
+    url: "http://localhost:9090"
+    scrape_interval: 15                    # seconds
+
+  grafana:
+    url: "http://localhost:3300"
+
 
 # ── Data Service — 数据采集与过滤 ───────────────────────────
 
@@ -85,16 +109,10 @@ data_service:
     stock: "yfinance"                  # stock bar provider: yfinance | ...
     options: "yfinance"                # option chain provider: yfinance | ...
 
-  # ── 盘中采集 ──
-  intraday:
-    capture_every_minutes: 5
-    retention_days:
-      stock_1min: 90                   # 盘中 1m bars 热存储保留天数
-      option_5min: 60                  # 盘中 option snapshots 保留天数
-
-  # ── 期权采集专属 ──
-  options:
-    max_days_to_expiry: 730            # 跳过超过此天数的远期到期日（~2年）
+  # ── 数据保留策略 ──
+  retention_days:
+    stock_1min: 90                     # 盘中 1m bars 热存储保留天数
+    option_5min: 60                    # 盘中 option snapshots 保留天数
 
   # ── 采集器韧性（provider 无关）──
   resilience:
@@ -110,7 +128,7 @@ data_service:
       # Stage 1: 数据清洁 — 仅剔除坏数据，不影响 IV smile / skew
       cleaning:
         max_iv: 5.0                    # IV > 5.0 (500%) 视为垃圾数据
-        # DTE 过滤由 option_fetcher 的到期日循环处理（data_service.options.max_days_to_expiry）
+        max_days_to_expiry: 730        # 跳过超过此天数的远期到期日（~2年）
       # Stage 2: 可交易标记 — 不剔除，只标记 is_tradeable
       tradeable_marking:
         min_volume: 10                 # 日成交 < 10 → 不可交易
@@ -124,6 +142,15 @@ data_service:
     #   cleaning:
     #     min_volume: 0
     #     max_price_change_pct: 50.0
+
+  # ── Data Worker 配置 ──
+  worker:
+    schedule:
+      options_capture_every_minutes: 5     # 盘中期权链采集间隔（分钟）
+      post_market_pipeline_time: "18:30"   # 盘后流水线触发（data→backfill→signal→blueprint）
+    pipeline:
+      chunk_size: 5                         # 每个 chunked stage 的 symbol 分块大小
+      stop_after: "compute_daily_signals"  # 流水线执行到此步为止（含），后续步骤跳过
 
 
 # ── Signal Service — 信号计算与策略过滤 ─────────────────────
@@ -139,7 +166,7 @@ signal_service:
     low_quantile: 0.3                  # iv_percentile <= 30 → 低波动区间
 
   # ── 跨资产基准（用于 beta / correlation 计算）──
-  cross_asset_benchmarks: ["SPY", "QQQ", "IWM", "TLT"]
+  cross_asset_benchmarks: ["SPY", "QQQ", "IWM", "TLT", "^VIX"]
 
   # ── 信号计算过滤器（按资产类型组织）──
   filters:
@@ -178,17 +205,16 @@ analysis_service:
     cache_enabled: true
     cache_ttl: 3600
     skill_dir: ""
-    agentic_mode: true                    # true = multi-agent pipeline, false = legacy chunk-split
     max_critic_revisions: 2               # Synthesizer↔Critic revision rounds
-    chunk_size: 5                        # max symbols per LLM chunk (excl. benchmarks)
-    max_concurrent_chunks: 3             # max parallel LLM calls for large watchlists
-    benchmark_symbols: ["SPY", "QQQ"]    # injected into every chunk for market context
+    orchestrator_chunk_size: 5            # max non-benchmark symbols per LLM chunk
+    orchestrator_max_parallel: 2          # max parallel chunk pipelines
 
 
 # ── Trade Service — 交易执行与风控 ──────────────────────────
 
 trade_service:
   execution_interval: 300              # 执行检查间隔（秒）= 5分钟
+  trade_start_time: "09:20"            # 盘前加载蓝图 + 启动执行 tick
 
   broker:
     type: "paper"                      # paper | futu

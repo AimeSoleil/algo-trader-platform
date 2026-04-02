@@ -254,8 +254,8 @@ async def create_hypertables() -> None:
 
 async def apply_retention_policies() -> None:
     settings = get_settings()
-    stock_days = settings.data_service.intraday.retention_days.stock_1min
-    option_days = settings.data_service.intraday.retention_days.option_5min
+    stock_days = settings.data_service.retention_days.stock_1min
+    option_days = settings.data_service.retention_days.option_5min
 
     print(f"[init_db] 应用 retention policy: stock_1min={stock_days}d option_5min={option_days}d")
     engine = get_timescale_engine()

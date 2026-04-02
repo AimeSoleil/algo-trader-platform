@@ -35,7 +35,7 @@ DO UPDATE SET
 
 async def main() -> None:
     settings = get_settings()
-    symbols = sorted({symbol.strip().upper() for symbol in settings.common.watchlist if symbol and symbol.strip()})
+    symbols = sorted({symbol.strip().upper() for symbol in settings.common.watchlist.all if symbol and symbol.strip()})
 
     print("[seed_watchlist] 开始同步 watchlist_symbols")
     print(f"[seed_watchlist] 配置中读取到 {len(symbols)} 个 symbol")

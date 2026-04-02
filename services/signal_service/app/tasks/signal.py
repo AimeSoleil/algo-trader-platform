@@ -1,12 +1,4 @@
-"""Signal Service — Celery 盘后批量计算任务
-
-职责：纯编排层 — 加载数据、调用指标计算模块、写入 DB/缓存。
-所有计算逻辑已拆分至：
-  • data_loaders.py   — 市场数据加载（stock bars, option chain）
-  • cross_asset.py    — 跨资产指标（SPY beta, IV correlation 等）
-  • indicators/       — 股票 & 期权技术指标
-  • signal_generator.py — SignalFeatures 组装
-"""
+"""Signal computation — batch daily signal features."""
 from __future__ import annotations
 
 import asyncio
@@ -16,27 +8,13 @@ from time import perf_counter
 
 from sqlalchemy import text
 
+from shared.async_bridge import run_async
 from shared.celery_app import celery_app
 from shared.config import get_settings
 from shared.db.session import get_postgres_session
 from shared.utils import get_logger, resolve_trading_date_arg, today_trading
 
 logger = get_logger("signal_tasks")
-
-
-# ── Celery ↔ asyncio bridge ───────────────────────────────
-
-def _run_async(coro):
-    """Run an async coroutine safely — works whether or not an event loop exists."""
-    try:
-        loop = asyncio.get_running_loop()
-    except RuntimeError:
-        loop = None
-    if loop and loop.is_running():
-        import concurrent.futures
-        with concurrent.futures.ThreadPoolExecutor() as pool:
-            return pool.submit(asyncio.run, coro).result()
-    return asyncio.run(coro)
 
 
 # ── Public Celery task ─────────────────────────────────────
@@ -60,7 +38,7 @@ def compute_daily_signals(
         symbols=symbols,
         retry=getattr(self.request, "retries", 0),
     )
-    return _run_async(_compute_daily_signals(resolved_trading_date, symbols=symbols))
+    return run_async(_compute_daily_signals(resolved_trading_date, symbols=symbols))
 
 
 # ── Async orchestrator ─────────────────────────────────────
@@ -85,7 +63,7 @@ async def _compute_daily_signals(
 
     settings = get_settings()
     td = date.fromisoformat(trading_date_str) if trading_date_str else today_trading()
-    target_symbols = [s.upper() for s in symbols] if symbols else settings.common.watchlist
+    target_symbols = [s.upper() for s in symbols] if symbols else settings.common.watchlist.all
     started = perf_counter()
     logger.debug(
         "signal_compute.context",
@@ -237,13 +215,49 @@ async def _compute_daily_signals(
         log_event="task_summary",
         stage="completed",
         trading_date=str(td),
-        symbols_total=len(settings.common.watchlist),
+        symbols_total=len(settings.common.watchlist.all),
         symbols_computed=result["symbols_computed"],
         errors=len(result["errors"]),
         duration_ms=round((perf_counter() - started) * 1000, 2),
     )
     logger.info("signal_compute.batch_completed", **result)
     return result
+
+
+# ── Pipeline chunk task ────────────────────────────────────
+
+
+@celery_app.task(
+    name="signal_service.tasks.compute_signals_chunk",
+    bind=True,
+    max_retries=2,
+    queue="signal",
+)
+def compute_signals_chunk(
+    self,
+    symbols: list[str],
+    trading_date: str,
+) -> dict:
+    """Pipeline chunk task: 计算一组 symbols 的每日信号特征。
+
+    Called from the post-market pipeline via
+    ``chord(group([compute_signals_chunk(c1), ...]))``
+    to enable parallel signal computation across symbol subsets.
+    """
+    logger.debug(
+        "signal_compute_chunk.start",
+        log_event="task_start",
+        stage="entry",
+        task_id=getattr(self.request, "id", None),
+        trading_date=trading_date,
+        symbols=len(symbols),
+        retry=getattr(self.request, "retries", 0),
+    )
+    try:
+        return run_async(_compute_daily_signals(trading_date, symbols=symbols))
+    except Exception as exc:
+        logger.error("signal_compute_chunk.failed", error=str(exc))
+        raise self.retry(exc=exc, countdown=60) from exc
 
 
 # ── DB write helper ────────────────────────────────────────

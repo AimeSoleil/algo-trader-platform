@@ -5,9 +5,17 @@
 # Usage (always combined with base):
 #   docker compose -f docker-compose.yml -f docker-compose.worker.yml up -d
 #
-# Scale workers per queue:
+# Scale workers per queue (chunk tasks auto-distribute across instances):
 #   docker compose -f docker-compose.yml -f docker-compose.worker.yml up -d \
 #     --scale celery-data=2 --scale celery-signal=2
+#
+# ── Recommended concurrency (2-CPU / 100-symbol / IO-bound) ──
+#   celery-data:     -c 4   (IO-heavy fetches;  2 CPU × 2 overcommit)
+#   celery-backfill: -c 2   (light DB queries)
+#   celery-signal:   -c 4   (CPU+IO mix;        2 CPU × 2 overcommit)
+#   celery-analysis: -c 1   (single LLM call, no intra-task parallelism)
+#
+# With --scale celery-data=2 (each -c 4): 8 total slots → 10 chunks ≈ 2 rounds
 
 services:
 
@@ -15,7 +23,7 @@ services:
     build:
       context: .
       dockerfile: services/celery_worker/Dockerfile
-    command: worker -Q data -n data@%h --loglevel=INFO
+    command: worker -Q data -n data@%h --loglevel=${COMMON__LOGGING__LEVEL:-INFO}
     env_file:
       - .env
     environment:
@@ -45,7 +53,7 @@ services:
     build:
       context: .
       dockerfile: services/celery_worker/Dockerfile
-    command: worker -Q backfill -n backfill@%h --loglevel=INFO
+    command: worker -Q backfill -n backfill@%h --loglevel=${COMMON__LOGGING__LEVEL:-INFO}
     env_file:
       - .env
     environment:
@@ -73,7 +81,7 @@ services:
     build:
       context: .
       dockerfile: services/celery_worker/Dockerfile
-    command: worker -Q signal -n signal@%h --loglevel=INFO
+    command: worker -Q signal -n signal@%h --loglevel=${COMMON__LOGGING__LEVEL:-INFO}
     env_file:
       - .env
     environment:
@@ -101,7 +109,7 @@ services:
     build:
       context: .
       dockerfile: services/celery_worker/Dockerfile
-    command: worker -Q analysis -n analysis@%h --loglevel=INFO
+    command: worker -Q analysis -n analysis@%h --loglevel=${COMMON__LOGGING__LEVEL:-INFO}
     env_file:
       - .env
     environment:
@@ -128,7 +136,8 @@ services:
       context: .
       dockerfile: services/celery_worker/Dockerfile
     # Scheduler: redbeat.RedBeatScheduler (configured in shared/celery_app.py)
-    command: beat --loglevel=INFO --pidfile=/tmp/celerybeat.pid
+    # CLI loglevel follows COMMON__LOGGING__LEVEL from .env/.env.docker.example.
+    command: beat --loglevel=${COMMON__LOGGING__LEVEL:-INFO} --pidfile=/tmp/celerybeat.pid
     env_file:
       - .env
     environment:

@@ -5,9 +5,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 
-from services.data_service.app.cache import cache
 from services.data_service.app.routes import router
-from services.data_service.app.scheduler import start_data_scheduler, stop_scheduler
 from shared.config import get_settings
 from shared.metrics import setup_metrics
 from shared.redis_pool import close_redis_pool, get_redis
@@ -20,7 +18,7 @@ logger = get_logger("data_service")
 async def lifespan(app: FastAPI):
     """Startup / Shutdown
 
-    - 初始化 scheduler state + APScheduler 盘中采集
+    - 盘中期权链采集由 Celery Beat 周期任务处理（data_service.tasks.capture_intraday_options）
     - 盘后数据采集由 Celery pipeline 处理，不依赖 FastAPI 进程
     """
     setup_logging("data_service")
@@ -35,17 +33,14 @@ async def lifespan(app: FastAPI):
     )
     logger.info(
         "data_service.starting",
-        watchlist=settings.common.watchlist,
+        watchlist=settings.common.watchlist.all,
     )
-
-    start_data_scheduler(cache, settings)
 
     # Eagerly initialise the shared Redis pool (used by distributed locks)
     get_redis()
 
     yield
 
-    stop_scheduler()
     await close_redis_pool()
     logger.info("data_service.stopped")
 

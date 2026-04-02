@@ -12,6 +12,7 @@ from time import perf_counter
 from typing import Any
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from apscheduler.triggers.cron import CronTrigger
 from apscheduler.triggers.interval import IntervalTrigger
 
 from shared.config import get_settings
@@ -119,7 +120,7 @@ async def _evaluation_tick(runtime_state: ExecutionRuntimeState) -> None:
         stage="scheduler",
         paused=runtime_state.paused,
         trading_date=str(runtime_state.loaded_trading_date),
-        symbols=len(settings.common.watchlist),
+        symbols=len(settings.common.watchlist.for_trade),
     )
     if runtime_state.paused:
         runtime_state.last_tick_at = now_utc()
@@ -138,7 +139,7 @@ async def _evaluation_tick(runtime_state: ExecutionRuntimeState) -> None:
             broker=broker,
         )
 
-        for symbol in settings.common.watchlist:
+        for symbol in settings.common.watchlist.for_trade:
             quote_key = f"market:quote:{symbol}"
             quote = await redis_client.hgetall(quote_key)
             if not quote:
@@ -170,7 +171,7 @@ async def _evaluation_tick(runtime_state: ExecutionRuntimeState) -> None:
             log_event="tick_context",
             stage="evaluation",
             trading_date=str(runtime_state.loaded_trading_date),
-            symbols_total=len(settings.common.watchlist),
+            symbols_total=len(settings.common.watchlist.for_trade),
             quotes_found=quotes_found,
             symbols_evaluated=symbols_evaluated,
             duration_ms=round((perf_counter() - tick_started) * 1000, 2),
@@ -203,31 +204,88 @@ async def _shutdown_broker() -> None:
         _broker = None
 
 
+async def _daily_trade_start(runtime_state: ExecutionRuntimeState) -> None:
+    """Daily cron callback: load today's blueprint and start execution tick."""
+    from services.trade_service.app.execution.blueprint_loader import load_blueprint_for_date
+    from shared.utils import today_trading
+
+    td = today_trading()
+    logger.info("execution.daily_trade_start", trading_date=str(td))
+
+    blueprint = await load_blueprint_for_date(td)
+    if not blueprint:
+        logger.warning(
+            "execution.blueprint_not_found",
+            trading_date=str(td),
+            reason="blueprint missing or not pending — tick loop will NOT start",
+        )
+        return
+
+    # Populate runtime state
+    runtime_state.loaded_blueprint_id = str(blueprint["id"])
+    runtime_state.loaded_trading_date = td
+    runtime_state.loaded_blueprint_json = blueprint.get("blueprint_json")
+    runtime_state.status = "active"
+    runtime_state.loaded_at = now_utc()
+
+    logger.info(
+        "execution.blueprint_loaded",
+        trading_date=str(td),
+        blueprint_id=runtime_state.loaded_blueprint_id,
+    )
+
+    # Add interval tick job (if not already running)
+    settings = get_settings()
+    if _scheduler and not _scheduler.get_job("execution_tick"):
+        _scheduler.add_job(
+            _evaluation_tick,
+            trigger=IntervalTrigger(seconds=settings.trade_service.execution_interval),
+            args=[runtime_state],
+            id="execution_tick",
+            name="blueprint_execution_tick",
+            replace_existing=True,
+            coalesce=True,
+            max_instances=1,
+        )
+        logger.info("execution.tick_started", interval=settings.trade_service.execution_interval)
+
+
 def start_execution_scheduler(runtime_state: ExecutionRuntimeState) -> None:
+    """Start APScheduler with a daily cron job at trade_start_time.
+
+    The cron job loads the blueprint and adds the interval tick job.
+    No tick evaluation runs until the blueprint is successfully loaded.
+    """
     global _scheduler
     settings = get_settings()
+    _h, _m = map(int, settings.trade_service.trade_start_time.split(":"))
+
     logger.debug(
         "execution.scheduler_starting",
         log_event="scheduler_start",
         stage="startup",
+        trade_start_time=settings.trade_service.trade_start_time,
         interval_seconds=settings.trade_service.execution_interval,
         timezone=settings.common.timezone,
-        symbols=len(settings.common.watchlist),
-        trading_date=str(runtime_state.loaded_trading_date),
+        symbols=len(settings.common.watchlist.for_trade),
     )
     _scheduler = AsyncIOScheduler(timezone=settings.common.timezone)
     _scheduler.add_job(
-        _evaluation_tick,
-        trigger=IntervalTrigger(seconds=settings.trade_service.execution_interval),
+        _daily_trade_start,
+        trigger=CronTrigger(hour=_h, minute=_m, day_of_week="mon-fri"),
         args=[runtime_state],
-        id="execution_tick",
-        name="blueprint_execution_tick",
+        id="daily_trade_start",
+        name="daily_blueprint_load_and_trade_start",
         replace_existing=True,
         coalesce=True,
         max_instances=1,
     )
     _scheduler.start()
-    logger.info("execution.scheduler_started", interval=settings.trade_service.execution_interval)
+    logger.info(
+        "execution.scheduler_started",
+        trade_start_time=settings.trade_service.trade_start_time,
+        next_fire=str(_scheduler.get_job("daily_trade_start").next_run_time),
+    )
 
 
 def stop_execution_scheduler() -> None:

@@ -39,16 +39,24 @@ uv run python -m scripts.seed_watchlist
 ## 3) Start Celery workers and beat (local development)
 
 ```bash
+# Recommended for local dev
+cp .env.example .env.local
+
 # Basic: start all workers + beat
 bash scripts/run_workers.sh
 
 # With Flower monitoring UI
 bash scripts/run_workers.sh --with-flower
+# or explicitly choose the local env file
+bash scripts/run_workers.sh --env-file .env.local
 # or
 ENABLE_FLOWER=1 bash scripts/run_workers.sh
 # or start beat only
 uv run celery -A shared.celery_app.celery_app beat --loglevel=INFO
 ```
+
+- `run_workers.sh` defaults to `.env.local` when present, otherwise falls back to `.env`.
+- Use `.env.example` as the local-dev template and `.env.docker.example` for Docker deployment.
 
 ### Features
 
@@ -63,6 +71,7 @@ uv run celery -A shared.celery_app.celery_app beat --loglevel=INFO
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `LOG_DIR` | `logs` | Log and PID file directory |
+| `ENV_FILE` | `.env.local -> .env` | Env file loaded by `run_workers.sh` |
 | `RESTART_MAX_BACKOFF` | `60` | Max backoff seconds between restarts |
 | `HEALTH_CHECK_INTERVAL` | `30` | Seconds between health checks |
 | `HEALTH_CHECK_FAILURES` | `3` | Consecutive failures before force kill |

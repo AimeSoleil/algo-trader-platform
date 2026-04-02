@@ -13,6 +13,7 @@
 # Configuration (environment variables):
 #   LOG_DIR                 Log / PID directory          (default: logs)
 #   DAEMON_MODE             Start manager in background  (default: 1)
+#   ENV_FILE                Env file for local dev       (default: .env.local -> .env)
 #   RESTART_MAX_BACKOFF     Max backoff seconds          (default: 60)
 #   HEALTH_CHECK_INTERVAL   Seconds between pings        (default: 30)
 #   HEALTH_CHECK_FAILURES   Consecutive fails before kill (default: 3)
@@ -26,6 +27,7 @@
 #
 # Usage:
 #   ./scripts/run_workers.sh [--with-flower] [--workers=data,signal] [--loglevel DEBUG]
+#   ./scripts/run_workers.sh --env-file .env.local
 #   ./scripts/run_workers.sh --foreground    # keep manager attached to current terminal
 #   ./scripts/run_workers.sh --stop          # stop all workers, beat & flower
 #   ./scripts/run_workers.sh --status        # show manager/workers status
@@ -42,9 +44,13 @@
 ###############################################################################
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+
 # ── Configuration ──────────────────────────────────────────
 LOG_DIR="${LOG_DIR:-logs}"
 DAEMON_MODE="${DAEMON_MODE:-1}"
+ENV_FILE="${ENV_FILE:-}"
 RESTART_MAX_BACKOFF="${RESTART_MAX_BACKOFF:-60}"
 HEALTH_CHECK_INTERVAL="${HEALTH_CHECK_INTERVAL:-30}"
 HEALTH_CHECK_FAILURES="${HEALTH_CHECK_FAILURES:-3}"
@@ -65,6 +71,45 @@ declare -A WORKER_DESC=(
   [signal]="盘后特征计算与信号生成"
   [analysis]="LLM 蓝图生成与分析"
 )
+
+resolve_env_file() {
+  if [[ -n "$ENV_FILE" ]]; then
+    if [[ "$ENV_FILE" = /* ]]; then
+      printf '%s\n' "$ENV_FILE"
+    else
+      printf '%s\n' "$REPO_ROOT/$ENV_FILE"
+    fi
+    return
+  fi
+
+  if [[ -f "$REPO_ROOT/.env.local" ]]; then
+    printf '%s\n' "$REPO_ROOT/.env.local"
+    return
+  fi
+
+  if [[ -f "$REPO_ROOT/.env" ]]; then
+    printf '%s\n' "$REPO_ROOT/.env"
+    return
+  fi
+
+  printf '\n'
+}
+
+load_env_file() {
+  local env_path="$1"
+  [[ -n "$env_path" ]] || return 0
+
+  if [[ ! -f "$env_path" ]]; then
+    echo "[run_workers] 环境文件不存在: $env_path" >&2
+    exit 1
+  fi
+
+  set -a
+  # shellcheck disable=SC1090
+  . "$env_path"
+  set +a
+  ENV_FILE="$env_path"
+}
 
 show_workers() {
   echo "可用 workers:"
@@ -137,6 +182,10 @@ while (( $# > 0 )); do
       WORKERS="${1#--workers=}"; shift ;;
     --workers)
       WORKERS="${2:?'--workers requires a value'}"; shift 2 ;;
+    --env-file=*)
+      ENV_FILE="${1#--env-file=}"; shift ;;
+    --env-file)
+      ENV_FILE="${2:?'--env-file requires a value'}"; shift 2 ;;
     --loglevel=*)
       LOG_LEVEL="${1#--loglevel=}"; shift ;;
     --loglevel)
@@ -206,11 +255,17 @@ while (( $# > 0 )); do
       ;;
     *)
       echo "[run_workers] 未知参数: $1" >&2
-      echo "  用法: ./scripts/run_workers.sh [--workers=data,signal] [--loglevel=DEBUG] [--with-flower] [--foreground] [--stop] [--status]" >&2
+      echo "  用法: ./scripts/run_workers.sh [--workers=data,signal] [--env-file=.env.local] [--loglevel=DEBUG] [--with-flower] [--foreground] [--stop] [--status]" >&2
       exit 1
       ;;
   esac
 done
+
+ENV_FILE="$(resolve_env_file)"
+load_env_file "$ENV_FILE"
+
+# Local dev defaults to the configured common logging level when LOG_LEVEL is not set.
+LOG_LEVEL="${LOG_LEVEL:-${COMMON__LOGGING__LEVEL:-INFO}}"
 
 # foreground mode overrides daemon setting
 if (( FOREGROUND == 1 )); then
@@ -263,8 +318,9 @@ if [[ "$DAEMON_MODE" == "1" ]]; then
     rm -f "$MANAGER_PID_FILE"
   fi
 
-  script_path="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")"
+  script_path="$SCRIPT_DIR/$(basename "${BASH_SOURCE[0]}")"
   LOG_DIR="$LOG_DIR" \
+  ENV_FILE="$ENV_FILE" \
   RESTART_MAX_BACKOFF="$RESTART_MAX_BACKOFF" \
   HEALTH_CHECK_INTERVAL="$HEALTH_CHECK_INTERVAL" \
   HEALTH_CHECK_FAILURES="$HEALTH_CHECK_FAILURES" \
@@ -573,6 +629,7 @@ log main "HEALTH_CHECK_FAILURES=${HEALTH_CHECK_FAILURES}"
 log main "SHUTDOWN_GRACE=${SHUTDOWN_GRACE}s"
 log main "WORKERS=${ACTIVE_WORKERS[*]}"
 log main "LOG_LEVEL=${LOG_LEVEL}"
+[[ -n "$ENV_FILE" ]] && log main "ENV_FILE=${ENV_FILE}"
 log main "ENABLE_FLOWER=${ENABLE_FLOWER}"
 log main "DAEMON_MODE=${DAEMON_MODE}"
 [[ "$ENABLE_FLOWER" == "1" ]] && log main "FLOWER_PORT=${FLOWER_PORT}"

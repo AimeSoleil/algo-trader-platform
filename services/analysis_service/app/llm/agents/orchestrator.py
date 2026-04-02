@@ -36,8 +36,7 @@ from services.analysis_service.app.llm.prompts import _serialize_one_signal
 
 logger = get_logger("agent_orchestrator")
 
-# Maximum revision rounds (Synthesizer ↔ Critic)
-_MAX_REVISIONS = 2
+# Maximum revision rounds now read from config: settings.analysis_service.llm.max_critic_revisions
 
 
 def _create_agent_provider(provider_name: str | None = None) -> AgentLLMProvider:
@@ -121,12 +120,120 @@ class AgentOrchestrator:
             provider = _create_agent_provider()
             self._provider = provider
 
+        settings = get_settings()
+        chunk_size = settings.analysis_service.llm.orchestrator_chunk_size
+        max_parallel = settings.analysis_service.llm.orchestrator_max_parallel
+        benchmark_syms = set(
+            s.upper() for s in settings.common.watchlist.for_benchmark
+        )
+
         logger.info(
             "orchestrator.started",
             symbols=len(signal_features),
             provider=provider.name,
+            chunk_size=chunk_size,
         )
 
+        # ── Split into benchmark vs non-benchmark ──
+        benchmark_features = [sf for sf in signal_features if sf.symbol.upper() in benchmark_syms]
+        trade_features = [sf for sf in signal_features if sf.symbol.upper() not in benchmark_syms]
+
+        # ── Decide: single pass vs chunked ──
+        if len(trade_features) <= chunk_size:
+            # Small enough — run everything in one pass (no chunking overhead)
+            blueprint = await self._generate_single_pass(
+                signal_features=signal_features,
+                current_positions=current_positions,
+                previous_execution=previous_execution,
+                provider=provider,
+                signal_date=signal_date,
+            )
+        else:
+            # Chunk trade symbols, inject benchmarks into each chunk
+            chunks: list[list[SignalFeatures]] = []
+            for i in range(0, len(trade_features), chunk_size):
+                chunk = benchmark_features + trade_features[i : i + chunk_size]
+                chunks.append(chunk)
+
+            logger.info(
+                "orchestrator.chunking",
+                total_symbols=len(signal_features),
+                benchmark_symbols=len(benchmark_features),
+                trade_symbols=len(trade_features),
+                chunks=len(chunks),
+                chunk_size=chunk_size,
+                max_parallel=max_parallel,
+            )
+
+            # Run chunks with concurrency limit
+            sem = asyncio.Semaphore(max_parallel)
+
+            async def _run_chunk(idx: int, chunk_features: list[SignalFeatures]):
+                async with sem:
+                    logger.info("orchestrator.chunk_started", chunk=idx, symbols=len(chunk_features))
+                    return await self._generate_single_pass(
+                        signal_features=chunk_features,
+                        current_positions=current_positions,
+                        previous_execution=previous_execution,
+                        provider=provider,
+                        signal_date=signal_date,
+                        is_chunk=True,
+                    )
+
+            chunk_blueprints = await asyncio.gather(
+                *[_run_chunk(i, c) for i, c in enumerate(chunks)]
+            )
+
+            # Merge: concatenate symbol_plans, combine reasoning_context
+            blueprint = chunk_blueprints[0]
+            for other in chunk_blueprints[1:]:
+                blueprint.symbol_plans.extend(other.symbol_plans)
+
+            # De-duplicate benchmark plans — keep only from first chunk
+            seen_symbols: set[str] = set()
+            deduped_plans = []
+            for plan in blueprint.symbol_plans:
+                sym = plan.underlying.upper()
+                if sym in seen_symbols:
+                    continue
+                seen_symbols.add(sym)
+                deduped_plans.append(plan)
+            blueprint.symbol_plans = deduped_plans
+
+            # Merge reasoning contexts
+            all_contexts = [bp.reasoning_context for bp in chunk_blueprints if bp.reasoning_context]
+            blueprint.reasoning_context = {
+                "pipeline": "agentic_chunked",
+                "provider": provider.name,
+                "chunks": len(chunks),
+                "chunk_contexts": all_contexts,
+            }
+
+            logger.info(
+                "orchestrator.chunks_merged",
+                total_plans=len(blueprint.symbol_plans),
+                chunks=len(chunks),
+            )
+
+        elapsed_ms = round((perf_counter() - started) * 1000, 2)
+        logger.info(
+            "orchestrator.completed",
+            plans=len(blueprint.symbol_plans),
+            elapsed_ms=elapsed_ms,
+        )
+        return blueprint
+
+    async def _generate_single_pass(
+        self,
+        signal_features: list[SignalFeatures],
+        current_positions: dict | None,
+        previous_execution: dict | None,
+        provider: AgentLLMProvider,
+        *,
+        signal_date: date | None = None,
+        is_chunk: bool = False,
+    ) -> LLMTradingBlueprint:
+        """Run the full specialist → synthesizer → critic pipeline on one set of signals."""
         # ── Step 0: Serialize signals once ──
         serialized = self._serialize_signals(signal_features)
         signals_summary = [
@@ -145,6 +252,7 @@ class AgentOrchestrator:
         logger.info(
             "orchestrator.specialists_done",
             agents_succeeded=len(agent_outputs),
+            is_chunk=is_chunk,
         )
 
         # ── Step 2: Synthesize ──
@@ -160,11 +268,13 @@ class AgentOrchestrator:
         logger.info(
             "orchestrator.synthesis_done",
             plans=len(blueprint.symbol_plans),
+            is_chunk=is_chunk,
         )
 
         # ── Step 3: Critic review loop ──
+        max_revisions = get_settings().analysis_service.llm.max_critic_revisions
         critic_history: list[dict] = []
-        for revision in range(_MAX_REVISIONS):
+        for revision in range(max_revisions):
             verdict = await self._critic.review(
                 blueprint_json=blueprint.model_dump(mode="json"),
                 agent_outputs=agent_outputs,
@@ -212,19 +322,13 @@ class AgentOrchestrator:
 
         # ── Attach reasoning context for auditability ──
         blueprint.reasoning_context = {
-            "pipeline": "agentic",
+            "pipeline": "agentic" if not is_chunk else "agentic_chunk",
             "provider": provider.name,
             "signals_summary": signals_summary,
             "agent_outputs": agent_outputs,
             "critic_history": critic_history,
         }
 
-        elapsed_ms = round((perf_counter() - started) * 1000, 2)
-        logger.info(
-            "orchestrator.completed",
-            plans=len(blueprint.symbol_plans),
-            elapsed_ms=elapsed_ms,
-        )
         return blueprint
 
     # ------------------------------------------------------------------

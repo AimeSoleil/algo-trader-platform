@@ -74,3 +74,75 @@ class LLMAdapter:
                 elapsed_ms=elapsed_ms,
             )
             raise
+
+    async def generate_single_symbol(
+        self,
+        signal_features: list[SignalFeatures],
+        current_positions: dict | None = None,
+        previous_execution: dict | None = None,
+        *,
+        signal_date: date | None = None,
+    ) -> LLMTradingBlueprint:
+        """Simplified single-LLM-call path for manual single-symbol analysis.
+
+        Instead of running the full 6-agent → synthesizer → critic pipeline
+        (7-9 LLM calls), this method builds one comprehensive prompt and
+        makes a single LLM call.  Ideal for quick manual checks on one symbol.
+        """
+        from services.analysis_service.app.llm.agents.orchestrator import (
+            _create_agent_provider,
+        )
+        from services.analysis_service.app.llm.json_utils import parse_llm_json
+        from services.analysis_service.app.llm.prompts import (
+            SYSTEM_PROMPT,
+            build_blueprint_prompt,
+        )
+
+        started = perf_counter()
+        provider = _create_agent_provider()
+
+        user_prompt = build_blueprint_prompt(
+            signal_features=signal_features,
+            current_positions=current_positions,
+            previous_execution=previous_execution,
+            signal_date=signal_date,
+        )
+
+        logger.info(
+            "llm_adapter.single_symbol_started",
+            symbols=len(signal_features),
+            provider=provider.name,
+        )
+
+        from shared.config import get_settings
+        settings = get_settings()
+        max_tokens = settings.analysis_service.llm.openai.max_tokens
+
+        result = await provider.generate(
+            instructions=SYSTEM_PROMPT,
+            user_prompt=user_prompt,
+            max_tokens=max_tokens,
+        )
+
+        blueprint = parse_llm_json(result.content, LLMTradingBlueprint)
+
+        # Fill in provider metadata
+        blueprint = blueprint.model_copy(update={
+            "model_provider": provider.name,
+            "reasoning_context": {
+                "pipeline": "single_symbol",
+                "provider": provider.name,
+                "input_tokens": result.input_tokens,
+                "output_tokens": result.output_tokens,
+            },
+        })
+
+        elapsed_ms = round((perf_counter() - started) * 1000, 2)
+        logger.info(
+            "llm_adapter.single_symbol_success",
+            plans=len(blueprint.symbol_plans),
+            input_tokens=result.input_tokens,
+            output_tokens=result.output_tokens,
+            elapsed_ms=elapsed_ms,
+        )
+        return blueprint

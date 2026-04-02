@@ -18,7 +18,6 @@ services:
     env_file:
       - .env
     environment:
-      CACHE_DIR: /tmp/algo_trader_cache
       PYTHONPATH: /app
     ports:
       - "0.0.0.0:8001:8001"

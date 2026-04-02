@@ -2,8 +2,7 @@
 
 Pipeline 顺序:
   1. capture_post_market_data  — 采集 1m bars / daily bar → 直接写 DB
-  2. batch_flush_to_db         — 将盘中 option Parquet 缓存批量入库（仅 intraday 模式）
-  2b. aggregate_option_daily   — 盘中快照聚合 → option_daily + option_iv_daily
+  2. aggregate_option_daily   — 盘中快照聚合 → option_daily + option_iv_daily
   3. detect_and_backfill_gaps  — 缺口检测与回填  (Backfill Service)
   4. compute_daily_signals     — 信号计算          (Signal Service)
   5. generate_daily_blueprint  — 生成交易蓝图      (Analysis Service)
@@ -14,11 +13,13 @@ import asyncio
 from datetime import date, datetime
 from time import perf_counter
 
-from celery import chain as celery_chain
+from celery import chain as celery_chain, chord, group
 
 from shared.celery_app import celery_app
 from shared.config import get_settings
 from shared.db.session import get_timescale_session
+from shared.distributed_lock import distributed_once
+from shared.pipeline import chunk_symbols
 from shared.utils import (
     get_logger,
     previous_trading_day,
@@ -34,41 +35,71 @@ logger = get_logger("data_tasks")
 
 @celery_app.task(
     name="data_service.tasks.capture_post_market_data",
+    queue="data",
+)
+def capture_post_market_data(trading_date: str | None = None) -> str:
+    """盘后采集编排：将 watchlist 分块 → 并行 capture_post_market_chunk → barrier。
+
+    作为 pipeline 的第一阶段，chord 结束后触发下一阶段。
+    """
+    settings = get_settings()
+    td = trading_date or today_trading().isoformat()
+    symbols = settings.common.watchlist.all
+    chunk_size = settings.data_service.worker.pipeline.chunk_size
+    chunks = chunk_symbols(symbols, chunk_size)
+
+    logger.info(
+        "capture_post_market.fan_out",
+        trading_date=td,
+        symbols=len(symbols),
+        chunks=len(chunks),
+        chunk_size=chunk_size,
+    )
+
+    job = group(
+        capture_post_market_chunk.si(chunk, td).set(queue="data")
+        for chunk in chunks
+    )
+    result = job.apply_async()
+    return f"capture_post_market fan-out: {len(chunks)} chunks, group_id={result.id}"
+
+
+@celery_app.task(
+    name="data_service.tasks.capture_post_market_chunk",
     bind=True,
     max_retries=3,
     queue="data",
 )
-def capture_post_market_data(self, trading_date: str | None = None) -> dict:
-    """盘后统一采集：1m bars → stock_1min_bars, daily bar → stock_daily（不含期权）"""
+def capture_post_market_chunk(self, symbols: list[str], trading_date: str) -> dict:
+    """采集一组 symbols 的盘后数据（1m bars + daily bar）→ 写 DB。"""
     logger.debug(
-        "capture_post_market.start",
+        "capture_post_market_chunk.start",
         log_event="task_start",
         stage="entry",
         task_id=getattr(self.request, "id", None),
         trading_date=trading_date,
+        symbols=len(symbols),
         retry=getattr(self.request, "retries", 0),
     )
     try:
-        return asyncio.run(_capture_post_market_async(trading_date))
+        return asyncio.run(_capture_post_market_chunk_async(symbols, trading_date))
     except Exception as exc:
-        logger.error("capture_post_market.failed", error=str(exc))
+        logger.error("capture_post_market_chunk.failed", error=str(exc))
         raise self.retry(exc=exc, countdown=120) from exc
 
 
-async def _capture_post_market_async(trading_date_str: str | None = None) -> dict:
+async def _capture_post_market_chunk_async(symbols: list[str], trading_date_str: str) -> dict:
     from services.data_service.app.fetchers.registry import get_stock_fetcher
     from services.data_service.app.storage import (
         write_intraday_stock,
         write_swing_stock,
     )
 
-    settings = get_settings()
     stock_fetcher = get_stock_fetcher()
-    symbols = settings.common.watchlist
-    td = date.fromisoformat(trading_date_str) if trading_date_str else today_trading()
+    td = date.fromisoformat(trading_date_str)
     started = perf_counter()
     logger.debug(
-        "capture_post_market.context",
+        "capture_post_market_chunk.context",
         log_event="pipeline_context",
         stage="start",
         trading_date=str(td),
@@ -212,112 +243,7 @@ async def _capture_post_market_async(trading_date_str: str | None = None) -> dic
     return result
 
 
-# ── Step 2: 盘中缓存批量入库 ──────────────────────────────
-
-
-@celery_app.task(
-    name="data_service.tasks.batch_flush_to_db",
-    bind=True,
-    max_retries=3,
-    queue="data",
-)
-def batch_flush_to_db(self, trading_date: str | None = None, prev_result=None) -> dict:
-    """将盘中期权链 Parquet 缓存批量写入 option_5min_snapshots（仅 intraday 模式产生数据）"""
-    resolved_trading_date = resolve_trading_date_arg(trading_date, prev_result)
-    logger.debug(
-        "batch_flush.start",
-        log_event="task_start",
-        stage="entry",
-        task_id=getattr(self.request, "id", None),
-        trading_date=trading_date,
-        resolved_trading_date=resolved_trading_date,
-        retry=getattr(self.request, "retries", 0),
-    )
-    try:
-        return asyncio.run(_batch_flush_to_db_async(resolved_trading_date))
-    except Exception as exc:
-        logger.error("batch_flush.failed", error=str(exc))
-        raise self.retry(exc=exc, countdown=60) from exc
-
-
-async def _batch_flush_to_db_async(trading_date_str: str | None = None) -> dict:
-    import pyarrow.parquet as pq
-    from services.data_service.app.cache import MarketHoursCache
-    from services.data_service.app.storage import write_intraday_options
-
-    trading_date = date.fromisoformat(trading_date_str) if trading_date_str else today_trading()
-    started = perf_counter()
-    cache = MarketHoursCache()
-
-    result = {"option_rows": 0}
-
-    parquet_path = cache.get_parquet_path("option", trading_date)
-    if not parquet_path.exists():
-        logger.info("batch_flush.no_option_data", date=str(trading_date))
-        return result
-
-    pf = pq.ParquetFile(str(parquet_path))
-    total_rows = pf.metadata.num_rows
-    logger.debug(
-        "batch_flush.parquet_opened",
-        log_event="cache_read",
-        stage="after_open",
-        trading_date=str(trading_date),
-        total_rows=total_rows,
-    )
-
-    batch_size = 100_000  # 每批读取行数，~~20-30 MB 内存
-    rows_written = 0
-
-    for batch in pf.iter_batches(batch_size=batch_size):
-        chunk_df = batch.to_pandas()
-        if chunk_df.empty:
-            continue
-
-        # Backward compatibility: old Parquet files may lack new columns
-        if "vanna" not in chunk_df.columns:
-            chunk_df["vanna"] = 0.0
-        if "charm" not in chunk_df.columns:
-            chunk_df["charm"] = 0.0
-        if "is_tradeable" not in chunk_df.columns:
-            chunk_df["is_tradeable"] = False
-
-        logger.debug(
-            "batch_flush.chunk_write_start",
-            log_event="db_write",
-            stage="chunk_start",
-            trading_date=str(trading_date),
-            chunk_rows=len(chunk_df),
-            rows_written=rows_written,
-        )
-
-        chunk_dicts = chunk_df.to_dict("records")
-        written = await write_intraday_options(chunk_dicts)
-        rows_written += written
-
-    logger.debug(
-        "batch_flush.db_write_finished",
-        log_event="db_write",
-        stage="after_write",
-        trading_date=str(trading_date),
-        rows=rows_written,
-    )
-
-    result["option_rows"] = rows_written
-    cache.clear_parquet("option", trading_date)
-    logger.debug(
-        "batch_flush.summary",
-        log_event="task_summary",
-        stage="completed",
-        trading_date=str(trading_date),
-        option_rows=result["option_rows"],
-        duration_ms=round((perf_counter() - started) * 1000, 2),
-    )
-    logger.info("batch_flush.success", option_rows=result["option_rows"])
-    return result
-
-
-# ── Step 2b: 盘中快照聚合 → option_daily + option_iv_daily ──
+# ── Step 2: 盘中快照聚合 → option_daily + option_iv_daily ──
 
 
 @celery_app.task(
@@ -329,7 +255,7 @@ async def _batch_flush_to_db_async(trading_date_str: str | None = None) -> dict:
 def aggregate_option_daily(self, trading_date: str | None = None, prev_result=None) -> dict:
     """Aggregate intraday 5-min snapshots into option_daily + option_iv_daily.
 
-    Must run AFTER batch_flush_to_db (snapshots need to be in DB first).
+    Must run AFTER intraday capture (snapshots need to be in DB first).
     If no 5-min snapshots exist for the day, the task is a no-op (returns zero rows).
     """
     resolved_trading_date = resolve_trading_date_arg(trading_date, prev_result)
@@ -392,6 +318,109 @@ async def _aggregate_option_daily_async(trading_date_str: str | None = None) -> 
     return result
 
 
+# ── 流水线步骤注册表（有序）─────────────────────────────────
+
+# Valid stop_after values, in execution order.
+_PIPELINE_STEP_NAMES: list[str] = [
+    "capture_post_market_data",
+    "aggregate_option_daily",
+    "detect_and_backfill_gaps",
+    "compute_daily_signals",
+    "generate_daily_blueprint",
+]
+
+
+@celery_app.task(
+    name="data_service.tasks.stage_barrier",
+    queue="data",
+)
+def stage_barrier(results, stage_name: str, trading_date: str) -> dict:
+    """Chord callback — logs stage completion and forwards trading_date.
+
+    *results* is the list of return values from all chunk tasks in the group.
+    This task is intentionally lightweight and lives on the ``data`` queue.
+    """
+    logger.info(
+        "pipeline.stage_completed",
+        stage=stage_name,
+        trading_date=trading_date,
+        chunks=len(results) if isinstance(results, list) else 1,
+    )
+    return {"stage": stage_name, "trading_date": trading_date}
+
+
+def _build_pipeline_steps(td: str) -> list[tuple[str, object]]:
+    """Return ALL pipeline steps as (name, signature) pairs, in order.
+
+    Chunked stages (capture / backfill / signals) are expressed as
+    ``chord(group([chunk_task, ...]), stage_barrier.s())`` so that all chunks
+    in a stage execute in parallel, and the next stage only starts when all
+    chunks are done.
+
+    Non-chunked stages (flush / aggregate / blueprint) remain single tasks.
+    """
+    settings = get_settings()
+    symbols = settings.common.watchlist.all
+    chunk_size = settings.data_service.worker.pipeline.chunk_size
+    chunks = chunk_symbols(symbols, chunk_size)
+
+    return [
+        (
+            "capture_post_market_data",
+            chord(
+                group(
+                    capture_post_market_chunk.si(chunk, td).set(queue="data")
+                    for chunk in chunks
+                ),
+                stage_barrier.si("capture_post_market_data", td).set(queue="data"),
+            ),
+        ),
+        (
+            "aggregate_option_daily",
+            aggregate_option_daily.si(td).set(queue="data"),
+        ),
+        (
+            "detect_and_backfill_gaps",
+            chord(
+                group(
+                    celery_app.signature(
+                        "backfill_service.tasks.detect_gaps_chunk",
+                        args=[chunk, td],
+                        queue="backfill",
+                        immutable=True,
+                    )
+                    for chunk in chunks
+                ),
+                stage_barrier.si("detect_and_backfill_gaps", td).set(queue="data"),
+            ),
+        ),
+        (
+            "compute_daily_signals",
+            chord(
+                group(
+                    celery_app.signature(
+                        "signal_service.tasks.compute_signals_chunk",
+                        args=[chunk, td],
+                        queue="signal",
+                        immutable=True,
+                    )
+                    for chunk in chunks
+                ),
+                stage_barrier.si("compute_daily_signals", td).set(queue="data"),
+            ),
+        ),
+        (
+            "generate_daily_blueprint",
+            celery_app.signature(
+                "analysis_service.tasks.generate_daily_blueprint",
+                args=[td],
+                queue="analysis",
+                immutable=True,
+            ),
+        ),
+    ]
+
+
 # ── Pipeline 入口 ──────────────────────────────────────────
 
 
@@ -399,50 +428,155 @@ async def _aggregate_option_daily_async(trading_date_str: str | None = None) -> 
 def run_post_market_pipeline(trading_date: str | None = None) -> str:
     """盘后流水线入口（由 Celery Beat 触发）
 
-    Chain: capture → flush → backfill → signals → blueprint
+    Stages with symbol-level work (capture / backfill / signals) are expressed
+    as ``chord(group([chunk_tasks...]), barrier)`` so all chunks in a stage
+    execute in parallel.  Stages without symbol iteration (aggregate /
+    blueprint) run as single tasks.
+
+    The chain is gated by ``data_service.worker.pipeline.stop_after``:
+    all steps up to and including *stop_after* execute; later steps are skipped.
+
+    Valid stop_after values (ordered):
+      capture_post_market_data → aggregate_option_daily
+      → detect_and_backfill_gaps → compute_daily_signals → generate_daily_blueprint
     """
+    settings = get_settings()
+    stop_after = settings.data_service.worker.pipeline.stop_after
     td = trading_date or today_trading().isoformat()
+
+    if stop_after not in _PIPELINE_STEP_NAMES:
+        raise ValueError(
+            f"Invalid stop_after value: {stop_after!r}. "
+            f"Must be one of: {_PIPELINE_STEP_NAMES}"
+        )
+
+    all_steps = _build_pipeline_steps(td)
+    cutoff = _PIPELINE_STEP_NAMES.index(stop_after)
+    included = all_steps[: cutoff + 1]
+    gated_out = [name for name, _ in all_steps[cutoff + 1 :]]
+
     logger.debug(
         "post_market_pipeline.building",
         log_event="pipeline_start",
         stage="compose_chain",
         trading_date=td,
+        stop_after=stop_after,
+        included_steps=[name for name, _ in included],
+        gated_out_steps=gated_out,
     )
+    if gated_out:
+        logger.info(
+            "post_market_pipeline.steps_gated_out",
+            trading_date=td,
+            gated_out=gated_out,
+            stop_after=stop_after,
+        )
 
-    pipeline = celery_chain(
-        capture_post_market_data.si(td).set(queue="data"),
-        batch_flush_to_db.si(td).set(queue="data"),
-        aggregate_option_daily.si(td).set(queue="data"),
-        celery_app.signature(
-            "backfill_service.tasks.detect_and_backfill_gaps",
-            args=[td],
-            queue="backfill",
-            immutable=True,
-        ),
-        celery_app.signature(
-            "signal_service.tasks.compute_daily_signals",
-            args=[td],
-            queue="signal",
-            immutable=True,
-        ),
-        celery_app.signature(
-            "analysis_service.tasks.generate_daily_blueprint",
-            args=[td],
-            queue="analysis",
-            immutable=True,
-        ),
-    )
-
+    # Build the sequential pipeline.
+    # chord objects and plain signatures can be composed via celery_chain.
+    pipeline = celery_chain(*[sig for _, sig in included])
     result = pipeline.apply_async()
-    logger.info("post_market_pipeline.started", trading_date=td, task_id=str(result.id))
-    logger.debug(
-        "post_market_pipeline.dispatched",
-        log_event="pipeline_start",
-        stage="dispatched",
+    logger.info(
+        "post_market_pipeline.started",
         trading_date=td,
         task_id=str(result.id),
+        stop_after=stop_after,
+        steps=len(included),
     )
     return f"Pipeline started: {result.id}"
+
+
+# ── 盘中期权链采集（Celery Worker）─────────────────────────
+
+
+@celery_app.task(
+    name="data_service.tasks.capture_intraday_options",
+    bind=True,
+    max_retries=0,   # fire-and-forget per tick; dropped ticks are acceptable
+    queue="data",
+)
+def capture_intraday_options(self) -> dict:
+    """盘中定时任务：采集期权链快照 → 直接写入 DB (option_5min_snapshots)
+
+    Triggered by Celery Beat via crontab during market hours.
+    Splits watchlist into chunks and dispatches them in parallel via group.
+    Uses @distributed_once to ensure only one data worker per tick runs this
+    orchestrator when celery-data is scaled horizontally.
+    """
+    return asyncio.run(_capture_intraday_orchestrator())
+
+
+@distributed_once("data:intraday_capture", ttl=240, service="data_service")
+async def _capture_intraday_orchestrator() -> dict:
+    from shared.utils import is_market_open
+
+    if not is_market_open():
+        logger.info("capture_intraday.skipped", reason="outside_market_hours")
+        return {"captured": 0, "skipped": True}
+
+    settings = get_settings()
+    symbols = [s for s in settings.common.watchlist.all if not s.startswith("^")]
+    chunk_size = settings.data_service.worker.pipeline.chunk_size
+    chunks = chunk_symbols(symbols, chunk_size)
+
+    logger.info(
+        "capture_intraday.fan_out",
+        symbols=len(symbols),
+        chunks=len(chunks),
+        chunk_size=chunk_size,
+    )
+
+    job = group(
+        capture_intraday_chunk.si(chunk).set(queue="data")
+        for chunk in chunks
+    )
+    # apply_async is sync-safe; we don't await sub-task results
+    job.apply_async()
+    return {"dispatched_chunks": len(chunks), "symbols": len(symbols)}
+
+
+@celery_app.task(
+    name="data_service.tasks.capture_intraday_chunk",
+    bind=True,
+    max_retries=0,
+    queue="data",
+)
+def capture_intraday_chunk(self, symbols: list[str]) -> dict:
+    """盘中采集一组 symbols 的期权链快照 → 直接写入 DB。"""
+    return asyncio.run(_capture_intraday_chunk_async(symbols))
+
+
+async def _capture_intraday_chunk_async(symbols: list[str]) -> dict:
+    from services.data_service.app.converters import contracts_to_rows
+    from services.data_service.app.fetchers.registry import get_option_fetcher
+    from services.data_service.app.filters import apply_option_pipeline
+    from services.data_service.app.storage import write_intraday_options
+
+    captured = 0
+    rows_written = 0
+    errors: list[str] = []
+
+    for symbol in symbols:
+        try:
+            snapshot = await get_option_fetcher().fetch_current(symbol)
+            if snapshot:
+                snapshot, _ = apply_option_pipeline(snapshot)
+                rows = contracts_to_rows(snapshot, top_expiries=None)
+                written = await write_intraday_options(rows)
+                rows_written += written
+                captured += 1
+        except Exception as exc:  # noqa: BLE001
+            errors.append(f"{symbol}: {exc}")
+            logger.error("capture_intraday.symbol_error", symbol=symbol, error=str(exc))
+
+    logger.info(
+        "capture_intraday_chunk.done",
+        symbols_total=len(symbols),
+        captured=captured,
+        rows_written=rows_written,
+        errors=len(errors),
+    )
+    return {"captured": captured, "rows_written": rows_written, "errors": errors}
 
 
 # ── Post-market data collection only (no signals / blueprint) ──
@@ -455,9 +589,9 @@ def run_post_market_pipeline(trading_date: str | None = None) -> str:
     queue="data",
 )
 def collect_post_market_data(self, trading_date: str | None = None) -> dict:
-    """只执行盘后数据采集（1m bars / daily bars / flush option parquet / aggregate）。
+    """只执行盘后数据采集（1m bars / daily bars / aggregate option daily）。
 
-    Chain:  capture_post_market_data → batch_flush_to_db → aggregate_option_daily
+    Chain:  capture_post_market_data → aggregate_option_daily
     不触发 backfill / signals / blueprint，适合手动补采。
     """
     td = trading_date or today_trading().isoformat()
@@ -471,7 +605,6 @@ def collect_post_market_data(self, trading_date: str | None = None) -> dict:
 
     pipeline = celery_chain(
         capture_post_market_data.si(td).set(queue="data"),
-        batch_flush_to_db.si(td).set(queue="data"),
         aggregate_option_daily.si(td).set(queue="data"),
     )
 
@@ -483,7 +616,6 @@ def collect_post_market_data(self, trading_date: str | None = None) -> dict:
         "chain_id": str(result.id),
         "steps": [
             "capture_post_market_data",
-            "batch_flush_to_db",
             "aggregate_option_daily",
         ],
     }

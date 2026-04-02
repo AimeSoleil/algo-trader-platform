@@ -33,7 +33,7 @@ MIN_DAYS_TO_EXPIRY = 1  # 跳过当天到期（到期日级别，非合约过滤
 
 def _get_option_settings():
     from shared.config import get_settings
-    return get_settings().data_service.options
+    return get_settings().data_service.filters.options.cleaning
 
 
 def _safe_int(val, default: int = 0) -> int:

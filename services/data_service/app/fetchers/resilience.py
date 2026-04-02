@@ -25,7 +25,7 @@ def _get_resilience_settings():
 def _get_option_settings():
     """Lazy-load option-specific settings."""
     from shared.config import get_settings
-    return get_settings().data_service.options
+    return get_settings().data_service.filters.options.cleaning
 
 
 # ── Synchronous retry (runs inside thread pool) ───────────

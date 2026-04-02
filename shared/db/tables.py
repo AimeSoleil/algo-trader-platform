@@ -157,7 +157,7 @@ class OptionIVDaily(TimescaleBase):
     """Daily aggregated IV summary per underlying (derived from intraday 5-min snapshots).
 
     NOT a hypertable — small table (~symbols × trading_days).
-    Populated by ``aggregate_option_daily`` Celery task after ``batch_flush_to_db``.
+    Populated by ``aggregate_option_daily`` Celery task (runs after intraday capture).
     """
 
     __tablename__ = "option_iv_daily"

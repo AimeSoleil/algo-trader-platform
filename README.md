@@ -16,7 +16,7 @@
 
 ```bash
 # 1) 复制环境变量
-cp .env.example .env
+cp .env.example .env.local
 
 # 2) 启动本地基础设施（默认，含 Prometheus + Grafana）
 docker compose up -d
@@ -31,11 +31,14 @@ uv run python -m scripts.init_db
 uv run python -m scripts.seed_watchlist
 
 # 6) 启动 Celery workers + beat（本地开发）
-./scripts/run_workers.sh              # 基础模式
+./scripts/run_workers.sh              # 默认优先读取 .env.local，其次回退到 .env
 ./scripts/run_workers.sh --with-flower  # 含 Flower 监控面板
+./scripts/run_workers.sh --env-file .env.local
 
 # 6b) 或使用 Docker 部署 workers（生产推荐）
 docker compose -f docker-compose.yml -f docker-compose.worker.yml up -d
+
+# 需要调整容器内 Celery 日志级别时，修改 .env 中 COMMON__LOGGING__LEVEL
 ```
 
 ### 开发模式：服务按需逐个启动

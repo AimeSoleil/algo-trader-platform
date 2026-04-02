@@ -51,10 +51,46 @@ class RedisSettings(BaseSettings):
 class RabbitMQSettings(BaseSettings):
     url: str = "amqp://trader:trader_dev@localhost:5672//"
 
+class MinioSettings(BaseSettings):
+    endpoint: str = "localhost:9000"
+    access_key: str = "minioadmin"
+    secret_key: str = "minioadmin"
+    secure: bool = False
+
+class PrometheusSettings(BaseSettings):
+    url: str = "http://localhost:9090"
+    scrape_interval: int = 15              # seconds
+
+class GrafanaSettings(BaseSettings):
+    url: str = "http://localhost:3300"
+
 class InfraSettings(BaseSettings):
     database: DatabaseSettings = Field(default_factory=DatabaseSettings)
     redis: RedisSettings = Field(default_factory=RedisSettings)
     rabbitmq: RabbitMQSettings = Field(default_factory=RabbitMQSettings)
+    minio: MinioSettings = Field(default_factory=MinioSettings)
+    prometheus: PrometheusSettings = Field(default_factory=PrometheusSettings)
+    grafana: GrafanaSettings = Field(default_factory=GrafanaSettings)
+
+
+# ── Common — Celery / Beat / Flower (shared across all workers) ──────────────
+
+class CelerySettings(BaseSettings):
+    """Celery runtime settings — applied to all workers."""
+    prefetch_multiplier: int = 1           # 严格公平调度
+    max_memory_per_child: int = 500_000    # KB, 500 MB — exceeded → auto-restart
+    task_acks_late: bool = True            # ack after completion, not on delivery
+    task_track_started: bool = True        # track STARTED state
+    concurrency: int = 0                   # 0 = Celery default (CPU cores)
+
+class BeatSettings(BaseSettings):
+    redbeat_lock_timeout: int = 300        # seconds before a dead beat loses the lock
+
+class FlowerSettings(BaseSettings):
+    port: int = 5555
+    basic_auth_user: str = "admin"
+    basic_auth_password: str = "changeme"
+    persistent: bool = True
 
 
 # ── Common — 跨服务共用 ──────────────────────────────────────
@@ -74,19 +110,11 @@ class DataQualitySettings(BaseSettings):
     reduce_threshold: float = 0.7
     reduce_factor: float = 0.5
 
-class ScheduleSettings(BaseSettings):
-    """盘后批处理流水线调度时间"""
-    blueprint_load_time: str = "09:20"
-    batch_flush_time: str = "18:30"
-    backfill_time: str = "19:00"
-    signal_compute_time: str = "19:30"
-    blueprint_generate_time: str = "20:00"
-
 class LoggingSettings(BaseSettings):
     level: str = "INFO"
     format: str = "json"
     to_console: bool = True
-    to_file: bool = False
+    to_file: bool = True
     file_path: str = "logs/algo-trader.log"
     file_rotate_mode: str = "time"
     file_max_bytes: int = 104857600
@@ -96,14 +124,40 @@ class LoggingSettings(BaseSettings):
     file_backup_count: int = 14
     file_rotate_utc: bool = False
 
+class WatchlistSettings(BaseSettings):
+    """Structured watchlist — trade targets vs benchmark context symbols.
+
+    ``for_trade``   — symbols we generate trading blueprints for.
+    ``for_benchmark`` — symbols injected into every LLM chunk for market
+                       context (data is collected, but no blueprint plans
+                       are generated unless also in *for_trade*).
+
+    Use the ``.all`` property to get the deduplicated union for data
+    collection, signal computation, and backfill.
+    """
+    for_trade: list[str] = Field(
+        default_factory=lambda: ["AAPL", "MSFT", "NVDA", "TSLA"],
+    )
+    for_benchmark: list[str] = Field(
+        default_factory=lambda: ["SPY", "QQQ"],
+    )
+
+    @property
+    def all(self) -> list[str]:
+        """Deduplicated union of for_trade + for_benchmark (order-preserving)."""
+        return list(dict.fromkeys(self.for_trade + self.for_benchmark))
+
+
 class CommonSettings(BaseSettings):
     """跨服务共用配置"""
     timezone: str = "America/New_York"
     market_hours: MarketHoursSettings = Field(default_factory=MarketHoursSettings)
-    watchlist: list[str] = Field(default_factory=lambda: ["AAPL", "MSFT", "NVDA", "TSLA", "SPY", "QQQ"])
+    watchlist: WatchlistSettings = Field(default_factory=WatchlistSettings)
     data_quality: DataQualitySettings = Field(default_factory=DataQualitySettings)
-    schedule: ScheduleSettings = Field(default_factory=ScheduleSettings)
     logging: LoggingSettings = Field(default_factory=LoggingSettings)
+    celery: CelerySettings = Field(default_factory=CelerySettings)
+    beat: BeatSettings = Field(default_factory=BeatSettings)
+    flower: FlowerSettings = Field(default_factory=FlowerSettings)
 
 
 # ── Data Service ─────────────────────────────────────────────
@@ -117,14 +171,6 @@ class IntradayRetentionSettings(BaseSettings):
     stock_1min: int = 90
     option_5min: int = 60
 
-class DataServiceIntradaySettings(BaseSettings):
-    capture_every_minutes: int = 5
-    retention_days: IntradayRetentionSettings = Field(default_factory=IntradayRetentionSettings)
-
-class OptionFetchSettings(BaseSettings):
-    """Option-chain-specific fetch parameters."""
-    max_days_to_expiry: int = 730
-
 class ResilienceSettings(BaseSettings):
     """Provider-agnostic retry / rate-limit / concurrency settings."""
     max_retries: int = 3
@@ -136,6 +182,7 @@ class ResilienceSettings(BaseSettings):
 class OptionCleaningFilterSettings(BaseSettings):
     """Stage 1: 数据清洁过滤 — 仅剔除坏数据，不影响 IV smile / skew."""
     max_iv: float = 5.0
+    max_days_to_expiry: int = 730      # 跳过超过此天数的远期到期日（~2年）
 
 class OptionTradeableMarkingSettings(BaseSettings):
     """Stage 2: 可交易标记 — 不剔除合约，只设置 is_tradeable 标志."""
@@ -156,13 +203,36 @@ class DataServiceFilterSettings(BaseSettings):
     """data_service.filters — 按资产类型组织的过滤器配置."""
     options: OptionDataFilterSettings = Field(default_factory=OptionDataFilterSettings)
 
+
+# ── Data Service Worker ───────────────────────────────────────
+
+class DataWorkerScheduleSettings(BaseSettings):
+    """data_service.worker.schedule — 盘中/盘后调度时间."""
+    options_capture_every_minutes: int = 5      # 盘中期权链采集间隔（分钟）
+    post_market_pipeline_time: str = "18:30"   # 盘后 chain 触发（data→backfill→signal→blueprint）
+
+class DataPipelineSettings(BaseSettings):
+    """data_service.worker.pipeline — 流水线 stop-after 门控.
+
+    Valid values (ordered):
+      capture_post_market_data → aggregate_option_daily
+      → detect_and_backfill_gaps → compute_daily_signals → generate_daily_blueprint
+    """
+    chunk_size: int = 5
+    stop_after: str = "compute_daily_signals"
+
+class DataWorkerSettings(BaseSettings):
+    """data_service.worker — 数据服务 worker 配置."""
+    schedule: DataWorkerScheduleSettings = Field(default_factory=DataWorkerScheduleSettings)
+    pipeline: DataPipelineSettings = Field(default_factory=DataPipelineSettings)
+
+
 class DataServiceSettings(BaseSettings):
     providers: DataProviderSettings = Field(default_factory=DataProviderSettings)
-    intraday: DataServiceIntradaySettings = Field(default_factory=DataServiceIntradaySettings)
-    options: OptionFetchSettings = Field(default_factory=OptionFetchSettings)
+    retention_days: IntradayRetentionSettings = Field(default_factory=IntradayRetentionSettings)
     resilience: ResilienceSettings = Field(default_factory=ResilienceSettings)
     filters: DataServiceFilterSettings = Field(default_factory=DataServiceFilterSettings)
-
+    worker: DataWorkerSettings = Field(default_factory=DataWorkerSettings)
 
 # ── Signal Service ───────────────────────────────────────────
 
@@ -204,7 +274,7 @@ class SignalServiceSettings(BaseSettings):
 
 class OpenAILLMSettings(BaseSettings):
     api_key: str = ""
-    model: str = "gpt-4o"
+    model: str = "claude-opus-4.6"
     temperature: float = 0.1
     max_tokens: int = 8192
     request_timeout_seconds: int = 600
@@ -212,12 +282,12 @@ class OpenAILLMSettings(BaseSettings):
 class CopilotLLMSettings(BaseSettings):
     cli_path: str = "copilot"
     github_token: str = ""
-    model: str = "gpt-4o"
+    model: str = "claude-opus-4.6"
     reasoning_effort: str = "medium"
     request_timeout_seconds: int = 600
 
 class LLMSettings(BaseSettings):
-    provider: str = "openai"
+    provider: str = "copilot"
 
     openai: OpenAILLMSettings = Field(default_factory=OpenAILLMSettings)
     copilot: CopilotLLMSettings = Field(default_factory=CopilotLLMSettings)
@@ -227,24 +297,17 @@ class LLMSettings(BaseSettings):
     cache_ttl: int = 3600
     skill_dir: str = ""
 
-    # ── Chunking ──
-    chunk_size: int = 5
-    max_concurrent_chunks: int = 3
-    benchmark_symbols: list[str] = Field(
-        default_factory=lambda: ["SPY", "QQQ"],
-        description="Symbols injected into every chunk for market context",
-    )
+    # ── Orchestrator — symbol chunking for context window management ──
+    orchestrator_chunk_size: int = 5
+    orchestrator_max_parallel: int = 2
 
-    # ── Agentic pipeline ──
-    agentic_mode: bool = False
+    # ── Critic revision ──
     max_critic_revisions: int = 2
 
     # ── Retry / Resilience ──
     max_retries: int = 3
     backoff_base_seconds: float = 2.0
     backoff_max_seconds: float = 60.0
-    circuit_breaker_threshold: int = 5
-    circuit_breaker_cooldown_seconds: int = 60
 
 class AnalysisServiceSettings(BaseSettings):
     """analysis_service 顶级配置."""
@@ -281,6 +344,7 @@ class RiskSettings(BaseSettings):
 class TradeServiceSettings(BaseSettings):
     """trade_service 顶级配置."""
     execution_interval: int = 300
+    trade_start_time: str = "09:20"        # 盘前加载蓝图 + 启动执行 tick
     broker: BrokerSettings = Field(default_factory=BrokerSettings)
     risk: RiskSettings = Field(default_factory=RiskSettings)
 

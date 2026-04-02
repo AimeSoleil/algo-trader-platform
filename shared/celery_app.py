@@ -33,25 +33,37 @@ def create_celery_app() -> Celery:
         broker=settings.infra.rabbitmq.url,
         backend=backend_url,
         include=[
-            "services.data_service.app.tasks",
-            "services.backfill_service.app.tasks",
-            "services.signal_service.app.tasks",
-            "services.analysis_service.app.tasks",
+            # data_service
+            "services.data_service.app.tasks.capture",
+            "services.data_service.app.tasks.intraday",
+            "services.data_service.app.tasks.aggregation",
+            "services.data_service.app.tasks.pipeline",
+            "services.data_service.app.tasks.manual",
+            # backfill_service
+            "services.backfill_service.app.tasks.gap_detection",
+            "services.backfill_service.app.tasks.maintenance",
+            # signal_service
+            "services.signal_service.app.tasks.signal",
+            # analysis_service
+            "services.analysis_service.app.tasks.blueprint",
+            "services.analysis_service.app.tasks.analyze",
+            # trade_service
             "services.trade_service.app.execution.tasks",
             "services.trade_service.app.portfolio.tasks",
         ],
     )
 
+    celery_cfg = settings.common.celery
     app.conf.update(
         task_serializer="json",
         accept_content=["json"],
         result_serializer="json",
         timezone=settings.common.timezone,
         enable_utc=True,
-        task_track_started=True,
-        task_acks_late=True,
-        worker_prefetch_multiplier=1,
-        worker_max_memory_per_child=500_000,  # 500 MB — 超出后自动重启 worker 子进程
+        task_track_started=celery_cfg.task_track_started,
+        task_acks_late=celery_cfg.task_acks_late,
+        worker_prefetch_multiplier=celery_cfg.prefetch_multiplier,
+        worker_max_memory_per_child=celery_cfg.max_memory_per_child,
         # Task routes — each service handles its own tasks
         task_routes={
             "data_service.tasks.*": {"queue": "data"},
@@ -66,36 +78,45 @@ def create_celery_app() -> Celery:
         beat_scheduler="redbeat.RedBeatScheduler",
         redbeat_redis_url=redbeat_url,
         redbeat_key_prefix="redbeat:",
-        redbeat_lock_timeout=300,  # seconds before a dead beat loses the lock
+        redbeat_lock_timeout=settings.common.beat.redbeat_lock_timeout,
     )
 
-    # ── 盘后流水线调度 (Celery Beat) ──────────────────────────
-    #
-    # Pipeline chain (sequential via Celery chain):
-    #   16:30  capture_post_market_data  (Data — 1m bars + daily bar + option chain → DB)
-    #          batch_flush_to_db         (Data — flush intraday option Parquet → DB)
-    #          detect_and_backfill_gaps  (Backfill — 4-table gap check + stock backfill)
-    #          compute_daily_signals     (Signal)
-    #          generate_daily_blueprint  (Analysis)
-    #
-    # Beat only triggers the pipeline entry point; the chain handles ordering.
+    if celery_cfg.concurrency > 0:
+        app.conf.worker_concurrency = celery_cfg.concurrency
 
-    # Parse schedule times from config
-    _flush_h, _flush_m = map(int, settings.common.schedule.batch_flush_time.split(":"))
-    _backfill_h, _backfill_m = map(int, settings.common.schedule.backfill_time.split(":"))
+    # ── Beat schedules ─────────────────────────────────────
+    #
+    # 1. post-market-pipeline  — triggers the full post-market chain at configured time weekdays.
+    #    Entry point: run_post_market_pipeline; chain is gated by stop_after config.
+    #
+    # 2. intraday-option-capture — captures option chain snapshots every N minutes
+    #    during US market hours (09:30-16:00 ET, weekdays).  The task itself has
+    #    an is_market_open() guard to handle edge cases (e.g. 9:25 crontab fire).
+    #    distributed_once ensures only one orchestrator runs per tick when
+    #    celery-data is scaled horizontally; chunks then fan out to all workers.
+
+    _pm_h, _pm_m = map(int, settings.data_service.worker.schedule.post_market_pipeline_time.split(":"))
+    intraday_interval = settings.data_service.worker.schedule.options_capture_every_minutes
+
+    # Market hours: crontab fires at 09:30, 09:35, ... 15:55 (ET, weekdays)
+    # The task's is_market_open() guard handles the 09:00-09:29 window.
+    _mkt_start_h, _mkt_start_m = map(int, settings.common.market_hours.start.split(":"))
+    _mkt_end_h = int(settings.common.market_hours.end.split(":")[0])
 
     app.conf.beat_schedule = {
-        # ── 盘后流水线入口 ──
         "post-market-pipeline": {
             "task": "data_service.tasks.run_post_market_pipeline",
-            "schedule": crontab(hour=_flush_h, minute=_flush_m, day_of_week="1-5"),
+            "schedule": crontab(hour=_pm_h, minute=_pm_m, day_of_week="1-5"),
             "options": {"queue": "data"},
         },
-        # ── 独立定时任务 ──
-        "daily-backfill-history-check": {
-            "task": "backfill_service.tasks.check_historical_gaps",
-            "schedule": crontab(hour=_backfill_h, minute=_backfill_m, day_of_week="1-5"),
-            "options": {"queue": "backfill"},
+        "intraday-option-capture": {
+            "task": "data_service.tasks.capture_intraday_options",
+            "schedule": crontab(
+                minute=f"*/{intraday_interval}",
+                hour=f"{_mkt_start_h}-{_mkt_end_h}",
+                day_of_week="1-5",
+            ),
+            "options": {"queue": "data"},
         },
     }
 
