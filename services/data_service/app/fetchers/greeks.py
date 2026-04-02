@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import math
+from datetime import date
 
 from py_vollib.black_scholes.greeks.analytical import delta, gamma, theta, vega
 from py_vollib.black_scholes.implied_volatility import implied_volatility
@@ -13,6 +14,54 @@ from shared.utils import get_logger
 logger = get_logger("greeks")
 
 DEFAULT_RISK_FREE_RATE = 0.045
+
+# ── Dynamic risk-free rate (13-week T-bill via yfinance) ──
+# Cached per calendar day — NOT per tick.  ^IRX intraday moves are
+# negligible (1-2 bps) and Greeks are insensitive to r (rho is the
+# smallest Greek).  Daily granularity avoids unnecessary yfinance
+# calls during the 5-min intraday capture loop.
+_cached_rate: float | None = None
+_cached_rate_date: date | None = None
+
+
+def get_risk_free_rate() -> float:
+    """Fetch the current 13-week US T-bill rate (^IRX) from yfinance.
+
+    The result is cached for the current calendar day so repeated calls
+    within the same trading session are virtually free.  On any failure
+    (network, parsing, market holiday with no data) the hardcoded
+    ``DEFAULT_RISK_FREE_RATE`` is returned.
+    """
+    global _cached_rate, _cached_rate_date
+
+    today = date.today()
+    if _cached_rate is not None and _cached_rate_date == today:
+        return _cached_rate
+
+    try:
+        import yfinance as yf
+
+        ticker = yf.Ticker("^IRX")
+        last_price = ticker.fast_info.get("lastPrice")
+        if last_price is not None and last_price > 0:
+            rate = round(last_price / 100.0, 6)  # ^IRX quotes in pct
+            _cached_rate = rate
+            _cached_rate_date = today
+            logger.info(
+                "risk_free_rate.fetched",
+                rate=rate,
+                source="^IRX",
+            )
+            return rate
+        logger.warning("risk_free_rate.invalid_price", last_price=last_price)
+    except Exception:  # noqa: BLE001
+        logger.warning(
+            "risk_free_rate.fetch_failed",
+            fallback=DEFAULT_RISK_FREE_RATE,
+            exc_info=True,
+        )
+
+    return DEFAULT_RISK_FREE_RATE
 
 # If yfinance IV is below this threshold we treat it as unreliable and
 # attempt to recalculate IV from the option's last traded price using BSM.
@@ -129,7 +178,7 @@ def compute_greeks(
 
 def enrich_snapshot_greeks(
     snapshot: OptionChainSnapshot,
-    risk_free_rate: float = DEFAULT_RISK_FREE_RATE,
+    risk_free_rate: float | None = None,
 ) -> OptionChainSnapshot:
     """为快照中的所有合约计算并填充希腊字母。
 
@@ -137,14 +186,17 @@ def enrich_snapshot_greeks(
     ----------
     snapshot : OptionChainSnapshot
         期权链快照，包含 ``underlying_price`` 和 ``contracts``。
-    risk_free_rate : float
-        无风险利率，默认 ``DEFAULT_RISK_FREE_RATE``。
+    risk_free_rate : float | None
+        无风险利率。``None``（默认）时自动从 ``^IRX`` 获取当日利率，
+        获取失败回退到 ``DEFAULT_RISK_FREE_RATE``。
 
     Returns
     -------
     OptionChainSnapshot
         同一快照对象（就地修改）。
     """
+    if risk_free_rate is None:
+        risk_free_rate = get_risk_free_rate()
     S = snapshot.underlying_price
     logger.debug(
         "greeks.enrich_start",
