@@ -15,7 +15,7 @@ from services.data_service.app.tasks.capture import capture_post_market_chunk
 
 logger = get_logger("data_tasks")
 
-_FLAG_TTL_SECONDS = 86_400  # 24 h
+from services.data_service.app.tasks.options_pipeline import _FLAG_TTL_SECONDS
 
 
 def _stock_done_key(trading_date: str) -> str:
@@ -111,13 +111,3 @@ def _schedule_timeout_check(trading_date: str) -> None:
 async def _set_done_flag(trading_date: str) -> None:
     redis = get_redis()
     await redis.set(_stock_done_key(trading_date), "1", ex=_FLAG_TTL_SECONDS)
-
-
-# ── Legacy alias (backward compat for manual invocations) ──
-
-
-@celery_app.task(name="data_service.tasks.run_post_market_pipeline", queue="data")
-def run_post_market_pipeline(trading_date: str | None = None) -> str:
-    """Deprecated — redirects to run_stock_pipeline."""
-    logger.warning("run_post_market_pipeline is deprecated, use run_stock_pipeline")
-    return run_stock_pipeline(trading_date)

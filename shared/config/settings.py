@@ -231,7 +231,9 @@ class DataPipelineSettings(BaseSettings):
     """data_service.worker.pipeline — 流水线 stop-after 门控.
 
     Valid values (ordered):
-      detect_and_backfill_gaps → compute_daily_signals → generate_daily_blueprint
+      compute_daily_signals → generate_daily_blueprint
+
+    Backfill runs as fire-and-forget and is not gated by stop_after.
     """
     chunk_size: int = 5
     stop_after: str = "compute_daily_signals"

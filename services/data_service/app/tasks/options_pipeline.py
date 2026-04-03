@@ -9,7 +9,7 @@ from shared.utils import get_logger, today_trading
 
 logger = get_logger("data_tasks")
 
-_FLAG_TTL_SECONDS = 86_400  # 24 h
+_FLAG_TTL_SECONDS = 86_400  # 24 h — shared by both pipeline flag setters
 
 
 def _options_done_key(trading_date: str) -> str:
