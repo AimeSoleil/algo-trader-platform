@@ -94,6 +94,7 @@ def setup_logging(service_name: str = "algo-trader") -> None:
     """初始化 structlog 结构化日志（FastAPI services 在 startup 中调用）"""
     settings = get_settings()
     log_level = getattr(logging, settings.common.logging.level.upper(), logging.INFO)
+    lib_level = getattr(logging, settings.common.logging.lib_level.upper(), logging.WARNING)
     log_tz = ZoneInfo(settings.common.timezone)
 
     formatter = _TZFormatter(
@@ -118,12 +119,16 @@ def setup_logging(service_name: str = "algo-trader") -> None:
         h.setFormatter(formatter)
         handlers.append(h)
 
-    # Configure stdlib root logger
+    # Root logger → lib_level (third-party libraries)
     logging.basicConfig(
         handlers=handlers,
-        level=log_level,
+        level=lib_level,
         force=True,
     )
+
+    # Project loggers → level (more verbose than libs)
+    for prefix in ("shared", "services"):
+        logging.getLogger(prefix).setLevel(log_level)
 
     _setup_structlog(settings, log_level, log_tz)
 
@@ -177,21 +182,27 @@ def setup_celery_logging(**kwargs) -> None:
     # Honour whichever is more verbose (lower numeric value).
     celery_level: int | None = kwargs.get("loglevel")
     config_level = getattr(logging, settings.common.logging.level.upper(), logging.INFO)
+    lib_level = getattr(logging, settings.common.logging.lib_level.upper(), logging.WARNING)
     effective_level = min(celery_level, config_level) if celery_level is not None else config_level
+    effective_lib_level = min(celery_level, lib_level) if celery_level is not None else lib_level
 
     root = logging.getLogger()
-    root.setLevel(effective_level)
+    root.setLevel(effective_lib_level)
 
     # Re-format existing handlers (console) with TZ-aware formatter
     for h in root.handlers:
         h.setFormatter(formatter)
-        h.setLevel(effective_level)
+        h.setLevel(effective_lib_level)
+
+    # Project loggers → project-level (more verbose than libs)
+    for prefix in ("shared", "services"):
+        logging.getLogger(prefix).setLevel(effective_level)
 
     # Add the file handler if not already present
     file_handler = _build_file_handler(settings)
     if file_handler:
         file_handler.setFormatter(formatter)
-        file_handler.setLevel(effective_level)
+        file_handler.setLevel(effective_lib_level)
         root.addHandler(file_handler)
 
     # Also setup structlog for task code that uses get_logger()

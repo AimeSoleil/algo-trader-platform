@@ -48,8 +48,9 @@ common:
     reduce_factor: 0.5             # 缩减比例（0.5 = 减半）
 
   logging:
-    level: "INFO"
-    format: "json"                     # json / console
+    level: "DEBUG"                        # 项目代码日志级别 (shared/, services/)
+    lib_level: "INFO"                 # 第三方库日志级别 (celery, redis, yfinance, httpx, etc.)
+    format: "json"                       # json / console
     to_console: true
     to_file: true
     file_path: "logs/algo-trader.log"
@@ -153,10 +154,11 @@ data_service:
   worker:
     schedule:
       options_capture_every_minutes: 5     # 盘中期权链采集间隔（分钟）
-      post_market_pipeline_time: "18:30"   # 盘后流水线触发（data→backfill→signal→blueprint）
+      stock_pipeline_time: "18:30"        # 盘后股票采集流水线触发
     pipeline:
       chunk_size: 5                         # 每个 chunked stage 的 symbol 分块大小
       stop_after: "compute_daily_signals"  # 流水线执行到此步为止（含），后续步骤跳过
+      coordination_timeout_minutes: 120     # 两条流水线协调超时（分钟）
 
 
 # ── Signal Service — 信号计算与策略过滤 ─────────────────────

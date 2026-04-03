@@ -112,6 +112,7 @@ class DataQualitySettings(BaseSettings):
 
 class LoggingSettings(BaseSettings):
     level: str = "INFO"
+    lib_level: str = "WARNING"
     format: str = "json"
     to_console: bool = True
     to_file: bool = True
@@ -224,17 +225,17 @@ class DataServiceFilterSettings(BaseSettings):
 class DataWorkerScheduleSettings(BaseSettings):
     """data_service.worker.schedule — 盘中/盘后调度时间."""
     options_capture_every_minutes: int = 5      # 盘中期权链采集间隔（分钟）
-    post_market_pipeline_time: str = "18:30"   # 盘后 chain 触发（data→backfill→signal→blueprint）
+    stock_pipeline_time: str = "18:30"         # 盘后股票采集流水线触发
 
 class DataPipelineSettings(BaseSettings):
     """data_service.worker.pipeline — 流水线 stop-after 门控.
 
     Valid values (ordered):
-      capture_post_market_data → aggregate_option_daily
-      → detect_and_backfill_gaps → compute_daily_signals → generate_daily_blueprint
+      detect_and_backfill_gaps → compute_daily_signals → generate_daily_blueprint
     """
     chunk_size: int = 5
     stop_after: str = "compute_daily_signals"
+    coordination_timeout_minutes: int = 120    # 两条流水线协调超时（分钟）
 
 class DataWorkerSettings(BaseSettings):
     """data_service.worker — 数据服务 worker 配置."""
