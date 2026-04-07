@@ -96,7 +96,8 @@ def _build_downstream_steps(td: str) -> list[tuple[str, object]]:
                     )
                     for chunk in chunks
                 ),
-                stage_barrier.si("compute_daily_signals", td).set(queue="data"),
+                # Use .s() so chord results arrive as first arg
+                stage_barrier.s("compute_daily_signals", td).set(queue="data"),
             ),
         ),
         (
