@@ -48,12 +48,13 @@ def run_stock_pipeline(trading_date: str | None = None) -> str:
     )
 
     # Build chord: parallel chunk capture → barrier → flag + coordination
+    # Use .s() so chord results arrive as first arg, td as second.
     pipeline = chord(
         group(
             capture_post_market_chunk.si(chunk, td).set(queue="data")
             for chunk in chunks
         ),
-        _stock_pipeline_finalize.si(td).set(queue="data"),
+        _stock_pipeline_finalize.s(td).set(queue="data"),
     )
     result = pipeline.apply_async()
 
