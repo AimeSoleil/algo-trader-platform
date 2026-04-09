@@ -501,20 +501,27 @@ async def get_collection_status(task_id: str):
 
 class ManualPipelineRequest(BaseModel):
     """Trigger a manual full-pipeline run for specified symbols."""
-    symbols: str                    # comma-separated, e.g. "AAPL,MSFT,NVDA"
+    symbols: list[str]               # array, e.g. ["AAPL", "MSFT", "NVDA"]
     trading_date: date | None = None
     stop_after: str | None = None   # stop after this stage (inclusive), e.g. "aggregate_options"
 
 
 @router.post("/data/pipeline/manual", status_code=202, response_model=CollectResponse)
 async def trigger_manual_pipeline(req: ManualPipelineRequest):
-    """手动触发全流水线（stock capture → option agg → backfill → signals → blueprint）。
-
+    """手动触发全流水线
+    Simulates the automatic pipeline:
+        1. capture_stock       — fetch 1m bars + daily bars
+        2. aggregate_options   — 5-min snapshots → option_daily + option_iv_daily
+        3. detect_and_backfill — gap detection + backfill
+        4. compute_signals     — compute daily signals
+        5. generate_blueprint  — generate trading blueprint
+        
+    请求体中的 ``symbols`` 需传数组，例如 ["AAPL", "MSFT"].
     用于验证自动流水线能否正常运行。每个 stage 的错误会被捕获并记录，
     不会中断后续 stage。通过 ``GET /data/collect/{task_id}`` 轮询结果。
     """
-    # Parse symbols
-    parsed = [s.strip().upper() for s in req.symbols.split(",") if s.strip()]
+    # Normalize array symbols from request body
+    parsed = [s.strip().upper() for s in req.symbols if s.strip()]
     if not parsed:
         raise HTTPException(status_code=422, detail="symbols must not be empty")
 
