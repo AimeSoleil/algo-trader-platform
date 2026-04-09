@@ -30,7 +30,7 @@ logger = get_logger("analysis_tasks")
 )
 def manual_analyze(
     self,
-    symbols: list[str],
+    symbols: list[str] | str,
     trading_date: str | None = None,
 ) -> dict:
     """Manually trigger LLM analysis for specified symbols.
@@ -40,6 +40,9 @@ def manual_analyze(
     Reads signal features for the given symbols, generates a blueprint,
     and stores it with ``status='manual'``.
     """
+    # Normalize: accept both "AAPL,NVDA" (str) and ["AAPL","NVDA"] (list)
+    if isinstance(symbols, str):
+        symbols = [s.strip() for s in symbols.split(",") if s.strip()]
     clean = [s.upper() for s in symbols]
     logger.debug(
         "manual_analyze.start",

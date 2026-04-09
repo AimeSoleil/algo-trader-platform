@@ -80,6 +80,54 @@
       "title": "ConditionOperator",
       "type": "string"
     },
+    "DataQuality": {
+      "description": "\u6570\u636e\u8d28\u91cf\u6807\u6ce8 \u2014 \u6807\u8bb0\u4fe1\u53f7\u8ba1\u7b97\u6240\u4f9d\u8d56\u7684\u6570\u636e\u662f\u5426\u5145\u8db3\u3002\n\ncomplete=True \u8868\u793a\u6240\u6709\u6307\u6807\u5747\u57fa\u4e8e\u5b8c\u6574\u6570\u636e\u8ba1\u7b97\uff1b\ncomplete=False \u8868\u793a\u90e8\u5206\u6307\u6807\u53ef\u80fd\u964d\u7ea7\u6216\u4f7f\u7528\u9ed8\u8ba4\u503c\u3002",
+      "properties": {
+        "complete": {
+          "default": true,
+          "title": "Complete",
+          "type": "boolean"
+        },
+        "score": {
+          "default": 1.0,
+          "description": "\u7efc\u5408\u8d28\u91cf\u8bc4\u5206 0-1",
+          "maximum": 1.0,
+          "minimum": 0.0,
+          "title": "Score",
+          "type": "number"
+        },
+        "warnings": {
+          "description": "\u8d28\u91cf\u95ee\u9898\u63cf\u8ff0",
+          "items": {
+            "type": "string"
+          },
+          "title": "Warnings",
+          "type": "array"
+        },
+        "stock_bar_count": {
+          "default": 0,
+          "description": "\u80a1\u7968 OHLCV \u884c\u6570",
+          "title": "Stock Bar Count",
+          "type": "integer"
+        },
+        "option_row_count": {
+          "default": 0,
+          "description": "\u671f\u6743\u94fe\u884c\u6570",
+          "title": "Option Row Count",
+          "type": "integer"
+        },
+        "degraded_indicators": {
+          "description": "\u56e0\u6570\u636e\u4e0d\u8db3\u800c\u964d\u7ea7/\u4f7f\u7528\u9ed8\u8ba4\u503c\u7684\u6307\u6807\u540d",
+          "items": {
+            "type": "string"
+          },
+          "title": "Degraded Indicators",
+          "type": "array"
+        }
+      },
+      "title": "DataQuality",
+      "type": "object"
+    },
     "Direction": {
       "enum": [
         "bullish",
@@ -102,10 +150,18 @@
           "type": "number"
         },
         "option_type": {
+          "enum": [
+            "call",
+            "put"
+          ],
           "title": "Option Type",
           "type": "string"
         },
         "side": {
+          "enum": [
+            "buy",
+            "sell"
+          ],
           "title": "Side",
           "type": "string"
         },
@@ -216,6 +272,8 @@
         },
         "max_loss_per_trade": {
           "default": 500.0,
+          "description": "\u5355\u7b14\u6700\u5927\u4e8f\u635f",
+          "exclusiveMinimum": 0,
           "title": "Max Loss Per Trade",
           "type": "number"
         },
@@ -226,8 +284,39 @@
         },
         "confidence": {
           "default": 0.5,
+          "description": "\u7f6e\u4fe1\u5ea6 0-1",
+          "maximum": 1.0,
+          "minimum": 0.0,
           "title": "Confidence",
           "type": "number"
+        },
+        "data_quality_score": {
+          "default": 1.0,
+          "description": "\u4fe1\u53f7\u6570\u636e\u7efc\u5408\u8d28\u91cf 0-1",
+          "maximum": 1.0,
+          "minimum": 0.0,
+          "title": "Data Quality Score",
+          "type": "number"
+        },
+        "data_quality_warnings": {
+          "description": "\u6570\u636e\u8d28\u91cf\u95ee\u9898\u63cf\u8ff0",
+          "items": {
+            "type": "string"
+          },
+          "title": "Data Quality Warnings",
+          "type": "array"
+        },
+        "signal_data_quality": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/DataQuality"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "\u5b8c\u6574\u4fe1\u53f7\u6570\u636e\u8d28\u91cf\u5bf9\u8c61"
         }
       },
       "required": [
@@ -325,6 +414,44 @@
       "default": 0.1,
       "title": "Portfolio Gamma Limit",
       "type": "number"
+    },
+    "min_data_quality_score": {
+      "default": 1.0,
+      "description": "\u6240\u6709\u6807\u7684\u4e2d\u6700\u4f4e\u6570\u636e\u8d28\u91cf\u5206",
+      "maximum": 1.0,
+      "minimum": 0.0,
+      "title": "Min Data Quality Score",
+      "type": "number"
+    },
+    "data_quality_summary": {
+      "description": "\u5168\u5c40\u6570\u636e\u8d28\u91cf\u8b66\u544a",
+      "items": {
+        "type": "string"
+      },
+      "title": "Data Quality Summary",
+      "type": "array"
+    },
+    "missing_symbols": {
+      "description": "Symbols lost due to chunk failures",
+      "items": {
+        "type": "string"
+      },
+      "title": "Missing Symbols",
+      "type": "array"
+    },
+    "reasoning_context": {
+      "anyOf": [
+        {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "Full LLM reasoning chain for auditability",
+      "title": "Reasoning Context"
     }
   },
   "required": [],

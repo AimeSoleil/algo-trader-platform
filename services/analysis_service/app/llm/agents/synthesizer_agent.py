@@ -246,7 +246,11 @@ The output must contain:
   - underlying, strategy_type, direction
   - legs: array of {expiry, strike, option_type, side, quantity}
   - entry_conditions, exit_conditions: array of {field, operator, value, description}
-  - adjustment_rules: array of {trigger, action, params}
+  - adjustment_rules: array of {trigger, action, params, description}
+    - trigger: object {field, operator, value, timeframe, description} — NOT a string
+    - action: one of hedge_delta, roll_strike, close_leg, add_leg, close_all
+    - params: dict (optional extra parameters)
+    - description: string
   - max_position_size, stop_loss_amount, take_profit_amount, max_loss_per_trade
   - reasoning (MUST reference which agent analyses drove the decision)
   - confidence (0-1)
@@ -259,6 +263,8 @@ StrategyType: single_leg, vertical_spread, iron_condor, iron_butterfly, butterfl
 calendar_spread, diagonal_spread, straddle, strangle, covered_call, protective_put, collar
 
 Direction: bullish, bearish, neutral
+
+AdjustmentAction: hedge_delta, roll_strike, close_leg, add_leg, close_all
 
 ConditionField: underlying_price, iv, iv_rank, delta, gamma, theta, portfolio_delta, \
 spread_width, time, pnl_percent, volume

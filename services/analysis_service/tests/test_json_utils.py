@@ -181,3 +181,10 @@ class TestParseLlmJson:
         assert result["trading_date"] == "2026-03-28"
         assert result["symbol_plans"][0]["symbol"] == "AAPL"
         assert result["symbol_plans"][0]["active"] is True
+
+    def test_invalid_escape_in_string(self):
+        """LLM sometimes emits invalid escapes like \\s, \\d inside strings."""
+        raw = r'{"pattern": "price\spike above \resistance", "value": 1}'
+        result = parse_llm_json(raw)
+        assert result["value"] == 1
+        assert "spike" in result["pattern"]

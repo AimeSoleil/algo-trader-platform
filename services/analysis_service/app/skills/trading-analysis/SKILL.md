@@ -69,7 +69,8 @@ For each symbol in the signal data:
 
 1. Output ONLY valid JSON. No extra text, no markdown code fences, no trailing commas.
 2. Every condition must be mechanically evaluable — no vague language. Use only allowed `ConditionField` and `ConditionOperator` values with concrete numeric thresholds.
-3. Every option leg must be fully defined: `expiry` (ISO date), `strike` (number), `option_type` ("call"/"put"), `side` ("buy"/"sell"), `quantity` (int).
+3. `adjustment_rules` — each rule must have `trigger` as a structured object `{field, operator, value, timeframe, description}` (NOT a plain string) and `action` as one of the allowed `AdjustmentAction` values.
+4. Every option leg must be fully defined: `expiry` (ISO date), `strike` (number), `option_type` ("call"/"put"), `side` ("buy"/"sell"), `quantity` (int).
 4. Every `symbol_plan` MUST include at least one stop-loss exit condition.
 5. The `reasoning` field must explicitly reference which indicators and reference analyses drove the decision.
 6. Respect portfolio-level risk limits. No undefined-risk positions unless data strongly supports them.
@@ -85,3 +86,6 @@ underlying_price · iv · iv_rank · delta · gamma · theta · portfolio_delta 
 
 ### ConditionOperator
 `>` · `>=` · `<` · `<=` · `==` · between · crosses_above · crosses_below
+
+### AdjustmentAction
+hedge_delta · roll_strike · close_leg · add_leg · close_all

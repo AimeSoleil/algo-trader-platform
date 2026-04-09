@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import date, datetime
 from enum import Enum
 from typing import Any, Literal
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 import uuid
 
 from shared.models.signal import DataQuality
@@ -110,12 +110,174 @@ class AdjustmentAction(str, Enum):
     CLOSE_ALL = "close_all"
 
 
+# Map common LLM action aliases → valid AdjustmentAction values
+_ACTION_ALIASES: dict[str, AdjustmentAction] = {
+    "close_position": AdjustmentAction.CLOSE_ALL,
+    "close": AdjustmentAction.CLOSE_ALL,
+    "reduce_position": AdjustmentAction.CLOSE_LEG,
+    "reduce": AdjustmentAction.CLOSE_LEG,
+    "reduce_size": AdjustmentAction.CLOSE_LEG,
+    "hedge": AdjustmentAction.HEDGE_DELTA,
+    "roll": AdjustmentAction.ROLL_STRIKE,
+    "roll_untested_side": AdjustmentAction.ROLL_STRIKE,
+    "roll_tested_side": AdjustmentAction.ROLL_STRIKE,
+    "add": AdjustmentAction.ADD_LEG,
+}
+
+# Map operator strings used in LLM free-text triggers
+_OP_MAP: list[tuple[str, ConditionOperator]] = [
+    (">=", ConditionOperator.GTE),
+    ("<=", ConditionOperator.LTE),
+    ("==", ConditionOperator.EQ),
+    (">", ConditionOperator.GT),
+    ("<", ConditionOperator.LT),
+]
+
+# Natural-language operator patterns → (ConditionOperator, negate?)
+# Order matters — longer phrases first to avoid partial matches.
+import re as _re
+
+_NL_OP_PATTERNS: list[tuple[_re.Pattern, ConditionOperator]] = [
+    (_re.compile(r"\bdrops\s+below\b", _re.I), ConditionOperator.LT),
+    (_re.compile(r"\bfalls\s+below\b", _re.I), ConditionOperator.LT),
+    (_re.compile(r"\bbreaks?\s+below\b", _re.I), ConditionOperator.LT),
+    (_re.compile(r"\bbelow\b", _re.I), ConditionOperator.LT),
+    (_re.compile(r"\bbreaks?\s+above\b", _re.I), ConditionOperator.GT),
+    (_re.compile(r"\brises?\s+above\b", _re.I), ConditionOperator.GT),
+    (_re.compile(r"\babove\b", _re.I), ConditionOperator.GT),
+    (_re.compile(r"\bexceeds?\b", _re.I), ConditionOperator.GT),
+    (_re.compile(r"\bbreache?s?\b", _re.I), ConditionOperator.GT),
+    (_re.compile(r"\bmoves?\s+to\b", _re.I), ConditionOperator.GTE),
+    (_re.compile(r"\breache?s?\b", _re.I), ConditionOperator.GTE),
+]
+
+# Map natural-language field names → ConditionField
+_FIELD_ALIASES: dict[str, ConditionField] = {
+    "underlying_price": ConditionField.UNDERLYING_PRICE,
+    "underlying": ConditionField.UNDERLYING_PRICE,
+    "price": ConditionField.UNDERLYING_PRICE,
+    "iv_rank": ConditionField.IV_RANK,
+    "iv rank": ConditionField.IV_RANK,
+    "iv": ConditionField.IV,
+    "delta": ConditionField.DELTA,
+    "gamma": ConditionField.GAMMA,
+    "theta": ConditionField.THETA,
+    "portfolio_delta": ConditionField.PORTFOLIO_DELTA,
+    "portfolio delta": ConditionField.PORTFOLIO_DELTA,
+    "pnl_percent": ConditionField.PNL_PERCENT,
+    "pnl percent": ConditionField.PNL_PERCENT,
+    "pnl": ConditionField.PNL_PERCENT,
+    "volume": ConditionField.VOLUME,
+    "spread_width": ConditionField.SPREAD_WIDTH,
+    "spread width": ConditionField.SPREAD_WIDTH,
+}
+
+# Regex to extract the first numeric value (possibly negative, with decimals)
+_NUMBER_RE = _re.compile(r"[+-]?\d+(?:\.\d+)?")
+
+
+def _guess_field(text: str) -> ConditionField:
+    """Guess the ConditionField from a free-text fragment."""
+    lower = text.lower()
+    for alias, field in _FIELD_ALIASES.items():
+        if alias in lower:
+            return field
+    return ConditionField.UNDERLYING_PRICE
+
+
+def _parse_trigger_string(raw: str) -> TriggerCondition:
+    """Best-effort parse of a free-text trigger like 'underlying_price > 352'.
+
+    Handles both symbolic operators (>, <, >=, <=, ==) and natural language
+    ('exceeds', 'drops below', 'breaches', etc.).  Compound conditions with
+    'or'/'and' take the first clause only; the full text is preserved in
+    ``description``.
+    """
+    # Take first clause before 'or' / 'and'
+    clause = raw.split(" or ")[0].split(" and ")[0].strip()
+
+    # ── Stage 1: try symbolic operators ──
+    for op_str, op_enum in _OP_MAP:
+        if op_str in clause:
+            parts = clause.split(op_str, 1)
+            field_raw = parts[0].strip()
+            value_raw = parts[1].strip()
+            try:
+                field_enum = ConditionField(field_raw)
+            except ValueError:
+                field_enum = _guess_field(field_raw)
+            num = _NUMBER_RE.search(value_raw)
+            value = float(num.group()) if num else 0.0
+            return TriggerCondition(
+                field=field_enum,
+                operator=op_enum,
+                value=value,
+                description=raw,
+            )
+
+    # ── Stage 2: try natural-language operators ──
+    for pattern, op_enum in _NL_OP_PATTERNS:
+        m = pattern.search(clause)
+        if m:
+            field_enum = _guess_field(clause[:m.start()])
+            num = _NUMBER_RE.search(clause[m.end():])
+            value = float(num.group()) if num else 0.0
+            return TriggerCondition(
+                field=field_enum,
+                operator=op_enum,
+                value=value,
+                description=raw,
+            )
+
+    # ── Stage 3: fallback — extract any number, guess field ──
+    num = _NUMBER_RE.search(raw)
+    if num:
+        return TriggerCondition(
+            field=_guess_field(raw),
+            operator=ConditionOperator.GT,
+            value=float(num.group()),
+            description=f"[fuzzy] {raw}",
+        )
+
+    # Fully unparseable
+    return TriggerCondition(
+        field=ConditionField.UNDERLYING_PRICE,
+        operator=ConditionOperator.GT,
+        value=0.0,
+        description=f"[unparsed] {raw}",
+    )
+
+
 class AdjustmentRule(BaseModel):
     """盘中动态调整规则"""
     trigger: TriggerCondition
     action: AdjustmentAction
     params: dict[str, Any] = Field(default_factory=dict)
     description: str = ""
+
+    @field_validator("trigger", mode="before")
+    @classmethod
+    def _coerce_trigger(cls, v: Any) -> Any:
+        if isinstance(v, str):
+            return _parse_trigger_string(v)
+        return v
+
+    @field_validator("action", mode="before")
+    @classmethod
+    def _coerce_action(cls, v: Any) -> Any:
+        if isinstance(v, str):
+            v_lower = v.strip().lower()
+            # Try direct enum match first
+            try:
+                return AdjustmentAction(v_lower)
+            except ValueError:
+                pass
+            # Try alias map
+            if v_lower in _ACTION_ALIASES:
+                return _ACTION_ALIASES[v_lower]
+            # Fallback
+            return AdjustmentAction.CLOSE_ALL
+        return v
 
 
 class OptionLeg(BaseModel):

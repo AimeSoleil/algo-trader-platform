@@ -131,23 +131,39 @@ def _fix_json(text: str) -> str:
     #   2. Single-quoted strings → double-quoted strings
     _ESCAPE_MAP = {"n": "\n", "t": "\t", "r": "\r"}
 
+    # Valid JSON escape characters after a backslash inside a string
+    _VALID_JSON_ESCAPES = set('"\\/bfnrtu')
+
     out: list[str] = []
     i = 0
     n = len(text)
     while i < n:
         ch = text[i]
         if ch == '"':
-            # Skip entire double-quoted string (preserve contents as-is)
+            # Walk double-quoted string, fixing invalid escape sequences
             j = i + 1
+            parts: list[str] = ['"']
             while j < n:
                 if text[j] == '\\':
+                    if j + 1 < n:
+                        next_ch = text[j + 1]
+                        if next_ch in _VALID_JSON_ESCAPES:
+                            parts.append(text[j:j + 2])
+                        else:
+                            # Invalid escape like \s, \d → double the backslash
+                            parts.append('\\\\')
+                            parts.append(next_ch)
+                    else:
+                        parts.append('\\\\')
                     j += 2
                     continue
                 if text[j] == '"':
+                    parts.append('"')
                     j += 1
                     break
+                parts.append(text[j])
                 j += 1
-            out.append(text[i:j])
+            out.append("".join(parts))
             i = j
         elif ch == "'":
             # Convert single-quoted string to double-quoted
