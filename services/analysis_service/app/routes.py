@@ -62,9 +62,11 @@ class AnalyzeRequest(BaseModel):
 
 
 class AnalyzeResponse(BaseModel):
-    task_ids: list[dict] = Field(
-        default_factory=list,
-        description="List of {symbol, task_id} for each queued analysis",
+    task_id: str = Field(
+        description="Celery task ID — poll via GET /analysis/{task_id}",
+    )
+    symbols: list[str] = Field(
+        description="Symbols included in the analysis",
     )
     status: str
     message: str
@@ -74,8 +76,9 @@ class AnalyzeResponse(BaseModel):
 async def trigger_analysis(req: AnalyzeRequest):
     """Trigger manual LLM analysis for one or more symbols.
 
-    Each symbol is dispatched as a separate Celery task.
-    Returns task_ids that can be polled via GET /analyze/{task_id}.
+    Dispatches a single Celery task that runs the full agentic pipeline
+    (same as auto-triggered generate_daily_blueprint) for the specified
+    symbols.  Returns a task_id that can be polled via GET /analysis/{task_id}.
     Signal features for the symbols must already exist in the DB.
     """
     raw_symbols = req.symbols
@@ -88,18 +91,16 @@ async def trigger_analysis(req: AnalyzeRequest):
     if not clean_symbols:
         raise HTTPException(status_code=422, detail="symbols must not be empty")
 
-    task_ids: list[dict] = []
-    for symbol in clean_symbols:
-        task = celery_app.send_task(
-            "analysis_service.tasks.manual_analyze",
-            args=[symbol, req.signal_date],
-            queue="analysis",
-        )
-        task_ids.append({"symbol": symbol, "task_id": task.id})
+    task = celery_app.send_task(
+        "analysis_service.tasks.manual_analyze",
+        args=[clean_symbols, req.signal_date],
+        queue="analysis",
+    )
 
     date_suffix = f" (signal_date={req.signal_date})" if req.signal_date else ""
     return AnalyzeResponse(
-        task_ids=task_ids,
+        task_id=task.id,
+        symbols=clean_symbols,
         status="queued",
         message=f"Analysis queued for {len(clean_symbols)} symbol(s): {', '.join(clean_symbols)}{date_suffix}",
     )

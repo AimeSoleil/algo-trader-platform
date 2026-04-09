@@ -1,7 +1,8 @@
-"""Manual single-symbol LLM analysis."""
+"""Manual LLM analysis — uses the same full agentic pipeline as the auto flow."""
 from __future__ import annotations
 
 import json
+import uuid as _uuid
 from datetime import date
 from time import perf_counter
 
@@ -13,8 +14,11 @@ from shared.db.session import get_postgres_session
 from shared.models.signal import SignalFeatures
 from shared.utils import get_logger, today_trading
 
-from services.analysis_service.app.tasks.blueprint import _annotate_blueprint_quality
-from services.analysis_service.app.tasks.helpers import _get_adapter, _parse_signal_features
+from services.analysis_service.app.tasks.blueprint import (
+    _annotate_blueprint_quality,
+    _run_blueprint_pipeline,
+)
+from services.analysis_service.app.tasks.helpers import _parse_signal_features
 
 logger = get_logger("analysis_tasks")
 
@@ -24,105 +28,112 @@ logger = get_logger("analysis_tasks")
     bind=True,
     max_retries=1,
 )
-def manual_analyze(self, symbol: str, trading_date: str | None = None) -> dict:
-    """Manually trigger LLM analysis for a single symbol.
+def manual_analyze(
+    self,
+    symbols: list[str],
+    trading_date: str | None = None,
+) -> dict:
+    """Manually trigger LLM analysis for specified symbols.
 
-    Reads the symbol's signal features from DB, fetches positions,
-    generates a blueprint containing only that symbol, and stores it
-    with ``status='manual'``.
+    Uses the same full agentic pipeline (6 agents → synthesizer → critic)
+    as the auto-triggered ``generate_daily_blueprint`` task.
+    Reads signal features for the given symbols, generates a blueprint,
+    and stores it with ``status='manual'``.
     """
+    clean = [s.upper() for s in symbols]
     logger.debug(
         "manual_analyze.start",
         log_event="task_start",
         stage="entry",
         task_id=getattr(self.request, "id", None),
-        symbol=symbol.upper(),
+        symbols=clean,
         trading_date=trading_date,
         retry=getattr(self.request, "retries", 0),
     )
     try:
-        return run_async(_manual_analyze_async(self, symbol.upper(), trading_date))
+        return run_async(_manual_analyze_async(self, clean, trading_date))
     except Exception as exc:
         logger.warning(
             "manual_analyze.retrying",
-            symbol=symbol,
+            symbols=clean,
             error=str(exc),
             retry=getattr(self.request, "retries", 0),
         )
         raise self.retry(exc=exc, countdown=30)
 
 
-async def _manual_analyze_async(task, symbol: str, trading_date_str: str | None = None) -> dict:
+async def _manual_analyze_async(
+    task,
+    symbols: list[str],
+    trading_date_str: str | None = None,
+) -> dict:
     td = date.fromisoformat(trading_date_str) if trading_date_str else today_trading()
     started = perf_counter()
     logger.debug(
         "manual_analyze.context",
         log_event="task_context",
         stage="start",
-        symbol=symbol,
+        symbols=symbols,
         trading_date=str(td),
     )
 
-    task.update_state(state="PROGRESS", meta={"step": "reading_signals", "symbol": symbol})
+    task.update_state(
+        state="PROGRESS",
+        meta={"step": "reading_signals", "symbols": symbols},
+    )
 
-    # 1) Read single symbol's signal features
+    # 1) Read signal features for the requested symbols
     signal_features: list[SignalFeatures] = []
     async with get_postgres_session() as session:
         result = await session.execute(
             text(
                 "SELECT features_json FROM signal_features "
-                "WHERE date = :date AND symbol = :symbol"
+                "WHERE date = :date AND symbol = ANY(:symbols)"
             ),
-            {"date": td, "symbol": symbol},
+            {"date": td, "symbols": symbols},
         )
         for row in result.fetchall():
             try:
                 sf = _parse_signal_features(row[0])
                 signal_features.append(sf)
             except Exception as e:
-                logger.warning("manual_analyze.signal_parse_error", symbol=symbol, error=str(e))
+                logger.warning("manual_analyze.signal_parse_error", error=str(e))
 
     logger.debug(
         "manual_analyze.signals_loaded",
         log_event="db_read",
         stage="signals_ready",
-        symbol=symbol,
+        symbols=symbols,
         trading_date=str(td),
         rows=len(signal_features),
     )
 
     if not signal_features:
-        logger.warning("manual_analyze.no_signals", symbol=symbol, date=str(td))
+        logger.warning("manual_analyze.no_signals", symbols=symbols, date=str(td))
         return {
-            "error": f"No signal features for {symbol} on {td}",
-            "symbol": symbol,
+            "error": f"No signal features for {symbols} on {td}",
+            "symbols": symbols,
             "date": str(td),
         }
 
-    # 2) Single LLM call (simplified path for single symbol)
-    task.update_state(state="PROGRESS", meta={"step": "generating_blueprint", "symbol": symbol})
-
-    from services.analysis_service.app.tasks.helpers import _fetch_current_positions
-    current_positions = await _fetch_current_positions(td)
-    adapter = _get_adapter()
-    blueprint = await adapter.generate_single_symbol(
-        signal_features=signal_features,
-        current_positions=current_positions,
-        signal_date=td,
+    # 2) Full agentic pipeline (same as auto-triggered generate_daily_blueprint)
+    task.update_state(
+        state="PROGRESS",
+        meta={"step": "generating_blueprint", "symbols": symbols},
     )
 
+    blueprint = await _run_blueprint_pipeline(signal_features, td)
     _annotate_blueprint_quality(blueprint, signal_features)
 
-    # 5) Write to DB with status='manual'
-    import uuid as _uuid
-    manual_id = f"manual-{symbol.lower()}-{_uuid.uuid4().hex[:8]}"
+    # 3) Write to DB with status='manual'
+    manual_id = f"manual-{_uuid.uuid4().hex[:8]}"
     blueprint = blueprint.model_copy(update={"id": manual_id})
+
     async with get_postgres_session() as session:
         logger.debug(
             "manual_analyze.db_write_started",
             log_event="db_write",
             stage="before_write",
-            symbol=symbol,
             trading_date=str(td),
             blueprint_id=manual_id,
         )
@@ -156,24 +167,18 @@ async def _manual_analyze_async(task, symbol: str, trading_date_str: str | None 
             "manual_analyze.db_write_finished",
             log_event="db_write",
             stage="after_write",
-            symbol=symbol,
             trading_date=str(td),
             blueprint_id=manual_id,
         )
 
-    # Invalidate cache for this date
+    # 4) Invalidate cache
     from services.analysis_service.app.cache import invalidate_blueprint_cache
-    logger.debug(
-        "manual_analyze.cache_invalidate_started",
-        log_event="cache_invalidate",
-        stage="before_invalidate",
-        trading_date=str(blueprint.trading_date),
-    )
+
     await invalidate_blueprint_cache(blueprint.trading_date)
 
     logger.info(
         "manual_analyze.generated",
-        symbol=symbol,
+        symbols=symbols,
         trading_date=str(blueprint.trading_date),
         plans=len(blueprint.symbol_plans),
         provider=blueprint.model_provider,
@@ -183,7 +188,7 @@ async def _manual_analyze_async(task, symbol: str, trading_date_str: str | None 
         "manual_analyze.summary",
         log_event="task_summary",
         stage="completed",
-        symbol=symbol,
+        symbols=symbols,
         trading_date=str(blueprint.trading_date),
         blueprint_id=manual_id,
         plans=len(blueprint.symbol_plans),
@@ -191,10 +196,9 @@ async def _manual_analyze_async(task, symbol: str, trading_date_str: str | None 
         duration_ms=round((perf_counter() - started) * 1000, 2),
     )
     return {
-        "symbol": symbol,
         "trading_date": str(blueprint.trading_date),
         "blueprint_id": manual_id,
+        "symbols": symbols,
         "plans_count": len(blueprint.symbol_plans),
         "provider": blueprint.model_provider,
-        "blueprint": blueprint.model_dump(),
     }
