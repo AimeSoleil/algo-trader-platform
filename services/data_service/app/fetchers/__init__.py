@@ -41,6 +41,10 @@ class StockFetcherProtocol(Protocol):
         """Fetch bars for an explicit date range. Returns (rows, warnings)."""
         ...
 
+    async def fetch_next_earnings(self, symbol: str) -> date | None:
+        """Return the next earnings date for *symbol*, or ``None``."""
+        ...
+
 
 # ── Option fetcher protocol ───────────────────────────────
 

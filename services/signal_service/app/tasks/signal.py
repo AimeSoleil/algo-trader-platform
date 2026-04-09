@@ -99,6 +99,20 @@ async def _compute_daily_signals(
             detail="All benchmark betas & correlations will default to 0.0",
         )
 
+    # ── Pre-load earnings dates from Redis cache ───────────
+    from shared.redis_pool import get_redis
+    earnings_map: dict[str, date | None] = {}
+    try:
+        redis = get_redis()
+        raw = await redis.hgetall("earnings:next_date")
+        for sym, iso in raw.items():
+            try:
+                earnings_map[sym] = date.fromisoformat(iso)
+            except (ValueError, TypeError):
+                pass
+    except Exception as e:
+        logger.warning("signal_compute.earnings_cache_unavailable", error=str(e))
+
     # ── Per-symbol processing ──────────────────────────────
     sem = asyncio.Semaphore(4)
 
@@ -148,6 +162,8 @@ async def _compute_daily_signals(
                     total_volume=total_volume,
                     total_option_volume=total_option_volume,
                     hedge_ratio=hedge_ratio,
+                    trading_date=td,
+                    earnings_date=earnings_map.get(symbol),
                 )
 
                 # ── HV-IV spread ───────────────────────────

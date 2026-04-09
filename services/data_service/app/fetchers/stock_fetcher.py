@@ -150,6 +150,38 @@ def _fetch_stock_bars_range_sync(
         )
         return [], [f"{symbol}: fetch error \u2013 {e}"]
 
+def _fetch_next_earnings_sync(symbol: str) -> date | None:
+    """Return the next earnings date for *symbol*, or ``None`` if unavailable."""
+    try:
+        ticker = yf.Ticker(symbol)
+        cal = retry_sync(lambda: ticker.calendar, label="stock.earnings", symbol=symbol)
+
+        if cal is None:
+            return None
+
+        # yfinance returns a DataFrame (old API) or dict (newer API)
+        if isinstance(cal, dict):
+            raw = cal.get("Earnings Date")
+        elif hasattr(cal, "loc"):
+            raw = cal.loc["Earnings Date"].iloc[0] if "Earnings Date" in cal.index else None
+        else:
+            raw = None
+
+        if raw is None:
+            return None
+
+        # Normalize to date
+        if isinstance(raw, list):
+            raw = raw[0] if raw else None
+        if raw is None:
+            return None
+        if hasattr(raw, "date"):
+            return raw.date()
+        return date.fromisoformat(str(raw)[:10])
+
+    except Exception as e:
+        logger.warning("stock_fetcher.earnings_failed", symbol=symbol, error=str(e))
+        return None
 
 # ── Async class ────────────────────────────────────────────
 
@@ -209,3 +241,6 @@ class YFinanceStockFetcher:
         return await asyncio.to_thread(
             _fetch_stock_bars_range_sync, symbol, start_date, end_date, interval
         )
+
+    async def fetch_next_earnings(self, symbol: str) -> date | None:
+        return await asyncio.to_thread(_fetch_next_earnings_sync, symbol)

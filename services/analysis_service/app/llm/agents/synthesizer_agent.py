@@ -294,5 +294,32 @@ Example entry_condition for time:
 {"field": "time", "operator": "between", "value": [10.0, 11.0], \
 "description": "Enter after opening volatility settles"}
 
+### Earnings Proximity
+
+The signal data includes `cross_asset.earnings_proximity_days` (integer, \
+-1 = unknown). Factor this into timing:
+- **≤ 3 days to earnings**: IV is elevated — sell-premium strategies benefit \
+but set tighter stop-losses (earnings move risk). Explicitly note earnings \
+proximity in the plan's reasoning.
+- **1 day to earnings**: avoid opening NEW positions unless the plan is an \
+explicit earnings play (straddle, strangle). State this in reasoning.
+- **-1 (unknown)**: treat as standard — use normal timing rules above.
+- **> 10 days**: earnings IV effect is minimal, ignore.
+
+## DTE (Days to Expiration) Guidelines
+
+Choose expiry based on strategy type. Respect config bounds (min 7, max 180 DTE).
+- **Sell-premium** (iron_condor, iron_butterfly, strangle short, covered_call): \
+**30-45 DTE** — theta decay accelerates, enough time to manage if tested.
+- **Buy-premium directional** (vertical_spread debit, protective_put): \
+**14-30 DTE** — limits time-decay cost while capturing the expected move.
+- **Straddle / strangle long**: **21-35 DTE** — needs time for the underlying \
+to make a significant move.
+- **Calendar / diagonal**: front leg **14-21 DTE**, back leg **45-60 DTE** — \
+maximizes theta differential between legs.
+- **Collar**: match DTE to the holding horizon or catalyst date.
+- If `earnings_proximity_days` is known and ≤ 45, prefer an expiry that \
+INCLUDES the earnings date to capture the IV event.
+
 Output ONLY valid JSON. No markdown fences, no extra text.
 """

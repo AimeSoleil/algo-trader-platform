@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import date
 
 import numpy as np
 import pandas as pd
@@ -259,6 +260,8 @@ def build_cross_asset_indicators(
     total_volume: int,
     total_option_volume: float,
     hedge_ratio: float,
+    trading_date: date | None = None,
+    earnings_date: date | None = None,
 ) -> CrossAssetIndicators:
     """Assemble the full ``CrossAssetIndicators`` object.
 
@@ -312,6 +315,12 @@ def build_cross_asset_indicators(
         "vix_quality": 1.0 if vix_result.vix_level > 0 else 0.0,
     }
 
+    # ── Earnings proximity ──────────────────────────────────
+    earnings_proximity = -1
+    if earnings_date is not None and trading_date is not None:
+        delta_days = (earnings_date - trading_date).days
+        earnings_proximity = delta_days if delta_days >= 0 else -1
+
     # ── Assemble ───────────────────────────────────────────
     spy = benchmark_results.get("SPY", BetaResult())
     qqq = benchmark_results.get("QQQ", BetaResult())
@@ -336,6 +345,9 @@ def build_cross_asset_indicators(
         vix_level=vix_result.vix_level,
         vix_percentile_52w=vix_result.vix_percentile_52w,
         vix_correlation_20d=vix_result.vix_correlation_20d,
+
+        # Earnings
+        earnings_proximity_days=earnings_proximity,
 
         confidence_scores=confidence,
     )

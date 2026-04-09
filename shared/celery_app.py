@@ -40,6 +40,7 @@ def create_celery_app() -> Celery:
             "services.data_service.app.tasks.pipeline",
             "services.data_service.app.tasks.options_pipeline",
             "services.data_service.app.tasks.coordination",
+            "services.data_service.app.tasks.earnings",
             "services.data_service.app.tasks.manual",
             # backfill_service
             "services.backfill_service.app.tasks.gap_detection",
@@ -136,6 +137,12 @@ def create_celery_app() -> Celery:
                 hour=f"{_mkt_start_h}-{int(settings.common.market_hours.end.split(':')[0])}",
                 day_of_week="1-5",
             ),
+            "options": {"queue": "data"},
+        },
+        # Earnings dates — refresh Redis cache before signal pipeline
+        "refresh-earnings-cache": {
+            "task": "data_service.tasks.refresh_earnings_cache",
+            "schedule": crontab(hour=_mkt_end_h, minute=_mkt_end_m + 30, day_of_week="1-5"),
             "options": {"queue": "data"},
         },
     }

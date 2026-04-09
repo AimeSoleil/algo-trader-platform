@@ -557,3 +557,53 @@ async def trigger_manual_pipeline(req: ManualPipelineRequest):
         ),
     )
 
+
+# ── Earnings endpoints ─────────────────────────────────────
+
+
+class EarningsRequest(BaseModel):
+    symbols: list[str]
+
+
+class EarningsItem(BaseModel):
+    symbol: str
+    next_earnings_date: date | None = None
+    days_until_earnings: int | None = None
+
+
+class EarningsResponse(BaseModel):
+    as_of: date
+    results: list[EarningsItem]
+
+
+@router.post("/data/earnings", response_model=EarningsResponse)
+async def get_earnings_dates(req: EarningsRequest):
+    """Fetch next earnings dates for the given symbols.
+
+    Returns each symbol's next earnings date and how many calendar days
+    away it is from today.  Results are cached in Redis until midnight ET.
+    """
+    if not req.symbols:
+        raise HTTPException(status_code=422, detail="symbols list must not be empty")
+
+    symbols = [s.strip().upper() for s in req.symbols if s.strip()]
+    if not symbols:
+        raise HTTPException(status_code=422, detail="symbols list must not be empty")
+
+    from services.data_service.app.tasks.earnings import fetch_and_cache_earnings
+
+    results = await fetch_and_cache_earnings(symbols)
+    today = today_trading()
+
+    items = []
+    for sym in symbols:
+        earn_date = results.get(sym)
+        days = (earn_date - today).days if earn_date is not None else None
+        items.append(EarningsItem(
+            symbol=sym,
+            next_earnings_date=earn_date,
+            days_until_earnings=days,
+        ))
+
+    return EarningsResponse(as_of=today, results=items)
+
