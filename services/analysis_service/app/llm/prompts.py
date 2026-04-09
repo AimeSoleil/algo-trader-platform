@@ -1,9 +1,8 @@
 """LLM prompt builder for Trading Blueprint generation.
 
 Serializes signal data, positions, and task instructions into a
-structured user prompt.  The analysis skill (SKILL.md + references)
-is mounted directly into the LLM runtime by the provider — this
-module only provides the *data* portion of the prompt.
+structured user prompt.  Analysis knowledge is inlined directly in
+each agent's system prompt (see agents/ directory).
 """
 from __future__ import annotations
 
@@ -22,9 +21,7 @@ from shared.utils import today_trading
 SYSTEM_PROMPT = """\
 You are a professional options quantitative strategist at an institutional trading desk.
 
-The trading-analysis skill is mounted in your environment.  Read its SKILL.md, \
-follow the workflow, load references based on the market context in the data, \
-and produce a next-day Trading Blueprint.
+Generate a next-day Trading Blueprint by analysing the market signal data provided.
 
 Rules:
 1. Output ONLY valid, standard JSON — no markdown fences, no comments, no extra text.
@@ -33,8 +30,8 @@ Rules:
 2. Every condition must be mechanically evaluable with concrete numeric thresholds.
 3. Every option leg must be fully defined (expiry, strike, option_type, side, quantity).
 4. Every symbol_plan MUST include at least one stop-loss exit condition.
-5. The reasoning field must reference which indicators and reference analyses drove the decision.
-6. Respect all portfolio-level risk limits from the risk-management reference.
+5. The reasoning field must reference which indicators drove the decision.
+6. Respect all portfolio-level risk limits (see risk constraints in data).
 7. **Position-aware analysis**: The prompt may include a "Current Portfolio" section. \
 If open positions are present, you MUST: \
 (a) evaluate whether to hold, increase, decrease, or close each existing position; \
@@ -62,13 +59,7 @@ def build_blueprint_prompt(
     *,
     signal_date: date | None = None,
 ) -> str:
-    """Build the user prompt containing market data and task instructions.
-
-    The analysis workflow, reference documents, and output schema are
-    provided by the ``trading-analysis`` skill bundle that is already
-    mounted in the LLM runtime.  This function supplies only the
-    *concrete market data* for the model to analyse.
-    """
+    """Build the user prompt containing market data and task instructions."""
     sections: list[str] = []
 
     # Market Signal Data

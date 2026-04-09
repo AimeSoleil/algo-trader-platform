@@ -271,5 +271,28 @@ spread_width, time, pnl_percent, volume
 
 ConditionOperator: >, >=, <, <=, ==, between, crosses_above, crosses_below
 
+## Entry Timing Best Practices
+
+Every plan SHOULD include a `field=time` entry_condition using 24-hour decimal \
+format (9.5 = 09:30, 14.25 = 14:15). Use the `between` operator for time windows.
+
+Timing guidelines by strategy:
+- **Avoid 09:30-10:00** (9.5-10.0): widest bid-ask spreads, unstable IV, \
+institutional rebalancing. Do NOT recommend entries in this window.
+- **Sell-premium** (iron_condor, iron_butterfly, vertical_spread credit, \
+covered_call, strangle short): prefer **10:00-11:00** (10.0-11.0) when IV is \
+still elevated post-open but spreads have tightened.
+- **Buy-premium** (vertical_spread debit, straddle, strangle long, \
+protective_put): prefer **11:30-14:00** (11.5-14.0) when IV compresses to \
+intraday lows, giving cheaper entry.
+- **Calendar / diagonal**: prefer **11:00-14:00** (11.0-14.0) for stable \
+IV term-structure readings.
+- **Avoid 15:30-16:00** (15.5-16.0): gamma risk spikes near close, \
+pinning effects distort pricing.
+
+Example entry_condition for time:
+{"field": "time", "operator": "between", "value": [10.0, 11.0], \
+"description": "Enter after opening volatility settles"}
+
 Output ONLY valid JSON. No markdown fences, no extra text.
 """
