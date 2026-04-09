@@ -144,16 +144,29 @@ class WatchlistSettings(BaseSettings):
     """
     for_trade: list[str] = Field(
         default_factory=lambda: [
-            "AAPL", "MSFT", "NVDA", "TSLA",
-            "AMZN", "META", "GOOGL", "AMD",
-            "SPY", "QQQ",
+            # ETFs
+            "SPY", "QQQ", "IWM",
+            # Tech / Growth
+            "AAPL", "MSFT", "NVDA", "TSLA", "AMZN",
+            "META", "GOOGL", "AMD", "NFLX", "AVGO",
+            # AI / Defense
+            "PLTR",
+            # Financials
+            "JPM", "GS",
+            # Payments · Healthcare · Pharma · Energy
+            "V", "UNH", "LLY", "XOM",
+            # Consumer · Industrials · Crypto
+            "COST", "CAT", "UBER", "COIN", "MSTR",
         ],
     )
     for_trade_benchmark: list[str] = Field(
-        default_factory=lambda: ["SPY", "QQQ"],
+        default_factory=lambda: ["SPY", "QQQ", "IWM", "DIA"],
     )
     for_signal_benchmark: list[str] = Field(
-        default_factory=lambda: ["SPY", "QQQ", "IWM", "TLT", "^VIX"],
+        default_factory=lambda: [
+            "SPY", "QQQ", "IWM", "TLT", "^VIX",
+            "GLD", "HYG", "XLE", "IBIT",
+        ],
     )
 
     @property
@@ -236,7 +249,7 @@ class DataPipelineSettings(BaseSettings):
     Backfill runs as fire-and-forget and is not gated by stop_after.
     """
     chunk_size: int = 5
-    stop_after: str = "compute_daily_signals"
+    stop_after: str = "generate_daily_blueprint"
     coordination_timeout_minutes: int = 120    # 两条流水线协调超时（分钟）
 
 class DataWorkerSettings(BaseSettings):

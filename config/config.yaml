@@ -14,6 +14,11 @@ common:
 
   watchlist:
     for_trade:
+      # ── ETFs (3) ──
+      - "SPY"
+      - "QQQ"
+      - "IWM"
+      # ── Tech / Growth (10) ──
       - "AAPL"
       - "MSFT"
       - "NVDA"
@@ -22,17 +27,42 @@ common:
       - "META"
       - "GOOGL"
       - "AMD"
-      - "SPY"
-      - "QQQ"
+      - "NFLX"
+      - "AVGO"
+      # ── AI / Defense (1) ──
+      - "PLTR"
+      # ── Financials (2) ──
+      - "JPM"
+      - "GS"
+      # ── Payments (1) ──
+      - "V"
+      # ── Healthcare / Pharma (2) ──
+      - "UNH"
+      - "LLY"
+      # ── Energy (1) ──
+      - "XOM"
+      # ── Consumer / Industrials (3) ──
+      - "COST"
+      - "CAT"
+      - "UBER"
+      # ── Crypto (2) ──
+      - "COIN"
+      - "IBIT"
     for_trade_benchmark:
-      - "SPY"
-      - "QQQ"
+      - "SPY"                          # Broad Market
+      - "QQQ"                          # Tech / Growth
+      - "IWM"                          # Small Cap / Breadth
+      - "DIA"                          # Blue Chip / Value
     for_signal_benchmark:
-      - "SPY"
-      - "QQQ"
-      - "IWM"
-      - "TLT"
-      - "^VIX"
+      - "SPY"                          # Broad Market
+      - "QQQ"                          # Tech / Growth
+      - "IWM"                          # Small Cap / Domestic
+      - "TLT"                          # 20Y+ Treasury / Rates
+      - "^VIX"                         # Equity Volatility
+      - "GLD"                          # Safe Haven / Inflation
+      - "HYG"                          # Credit Stress / High Yield
+      - "XLE"                          # Energy / Commodity Inflation
+      - "IBIT"                         # BTC / Crypto Sentiment
 
   data_quality:                    # Signal Service and Trade Service 共用数据质量评分参数
     # ── 评分权重（三项之和 = 1.0）──
@@ -157,7 +187,7 @@ data_service:
       stock_pipeline_time: "18:30"        # 盘后股票采集流水线触发
     pipeline:
       chunk_size: 5                         # 每个 chunked stage 的 symbol 分块大小
-      stop_after: "compute_daily_signals"  # 流水线执行到此步为止（含），后续步骤跳过
+      stop_after: "generate_daily_blueprint"  # 流水线执行到此步为止（含），后续步骤跳过
       coordination_timeout_minutes: 120     # 两条流水线协调超时（分钟）
 
 
