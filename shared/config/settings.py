@@ -156,7 +156,7 @@ class WatchlistSettings(BaseSettings):
             # Payments · Healthcare · Pharma · Energy
             "V", "UNH", "LLY", "XOM",
             # Consumer · Industrials · Crypto
-            "COST", "CAT", "UBER", "COIN", "MSTR",
+            "COST", "CAT", "UBER", "COIN", "IBIT",
         ],
     )
     for_trade_benchmark: list[str] = Field(
@@ -218,10 +218,10 @@ class OptionTradeableMarkingSettings(BaseSettings):
     min_volume: int = 10
     min_open_interest: int = 50
     max_relative_spread: float = 0.10
-    min_strike_ratio: float = 0.70
-    max_strike_ratio: float = 1.30
+    min_strike_ratio: float = 0.75
+    max_strike_ratio: float = 1.25
     min_delta_threshold: float = 0.01
-    max_stale_trade_days: int = 7
+    max_stale_trade_days: int = 5
 
 class OptionDataFilterSettings(BaseSettings):
     """data_service.filters.options — 组合清洁 + 可交易标记."""
@@ -269,13 +269,13 @@ class DataServiceSettings(BaseSettings):
 
 class SignalOptionTradingFilterSettings(BaseSettings):
     """Stage 3: 交易级过滤 — 仅用于策略类指标，不影响分析类指标."""
-    min_volume: int = 10
+    min_volume: int = 25
     min_open_interest: int = 100
     max_relative_spread: float = 0.08
-    min_delta: float = 0.05
-    max_delta: float = 0.95
+    min_delta: float = 0.08
+    max_delta: float = 0.90
     min_dte: int = 7
-    max_dte: int = 180
+    max_dte: int = 120
 
 class SignalOptionFilterSettings(BaseSettings):
     """signal_service.filters.options — 期权交易级过滤."""
@@ -326,10 +326,10 @@ class LLMSettings(BaseSettings):
 
     # ── Orchestrator — symbol chunking for context window management ──
     orchestrator_chunk_size: int = 5
-    orchestrator_max_parallel: int = 2
+    orchestrator_max_parallel: int = 3
 
     # ── Critic revision ──
-    max_critic_revisions: int = 2
+    max_critic_revisions: int = 1
 
     # ── Retry / Resilience ──
     max_retries: int = 3

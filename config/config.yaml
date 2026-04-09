@@ -171,10 +171,10 @@ data_service:
         min_volume: 10                 # 日成交 < 10 → 不可交易
         min_open_interest: 50          # 持仓 < 50 → 不可交易
         max_relative_spread: 0.10      # bid-ask spread / mid > 10% → 不可交易
-        min_strike_ratio: 0.70         # strike < 0.7×underlying → 不可交易
-        max_strike_ratio: 1.30         # strike > 1.3×underlying → 不可交易
+        min_strike_ratio: 0.75         # strike < 0.75×underlying → 不可交易
+        max_strike_ratio: 1.25         # strike > 1.25×underlying → 不可交易
         min_delta_threshold: 0.01      # |delta| < 0.01 → 不可交易
-        max_stale_trade_days: 7        # 距上次成交 > 7 天 → 不可交易
+        max_stale_trade_days: 5        # 距上次成交 > 5 天 → 不可交易
     # stocks:                          # 预留 — 未来股票数据清洁 / 异常值过滤
     #   cleaning:
     #     min_volume: 0
@@ -208,13 +208,13 @@ signal_service:
     options:
       # Stage 3: 交易级过滤 — 仅用于策略类指标，不影响分析类指标
       trading:
-        min_volume: 10                 # 最低日成交量
+        min_volume: 25                 # 最低日成交量
         min_open_interest: 100         # 最低持仓量
         max_relative_spread: 0.08      # 最大相对价差 8%
-        min_delta: 0.05                # Call delta 最小 / Put |delta| 最小
-        max_delta: 0.95                # Call delta 最大 / Put |delta| 最大
+        min_delta: 0.08                # Call delta 最小 / Put |delta| 最小
+        max_delta: 0.90                # Call delta 最大 / Put |delta| 最大
         min_dte: 7                     # 最短到期日（天）
-        max_dte: 180                   # 最长到期日（天）
+        max_dte: 120                   # 最长到期日（天）
     # stocks:                          # 预留 — 未来股票交易级过滤
     #   trading:
     #     min_avg_volume_20d: 100000
@@ -240,9 +240,9 @@ analysis_service:
     cache_enabled: true
     cache_ttl: 3600
     skill_dir: ""
-    max_critic_revisions: 2               # Synthesizer↔Critic revision rounds
+    max_critic_revisions: 1               # Synthesizer↔Critic revision rounds
     orchestrator_chunk_size: 5            # max non-benchmark symbols per LLM chunk
-    orchestrator_max_parallel: 2          # max parallel chunk pipelines
+    orchestrator_max_parallel: 3          # max parallel chunk pipelines
 
 
 # ── Trade Service — 交易执行与风控 ──────────────────────────
