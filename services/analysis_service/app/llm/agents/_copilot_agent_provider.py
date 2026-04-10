@@ -141,7 +141,7 @@ class CopilotAgentProvider:
                 if d.model:
                     usage_data["model"] = d.model
 
-        session.on("assistant.usage", _on_usage)
+        session.on(_on_usage)
 
         result = await session.send_and_wait(
             {"prompt": full_prompt},
