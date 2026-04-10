@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Any, ClassVar
 
 import yaml
-from pydantic import Field
+from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, PydanticBaseSettingsSource
 
 
@@ -189,6 +189,26 @@ class NotifierSettings(BaseSettings):
     enabled: bool = False
     backends: list[NotifierBackendConfig] = Field(default_factory=list)
     daily_report_time: str = "16:30"   # ET — independent beat task
+
+    @field_validator("backends", mode="before")
+    @classmethod
+    def _normalize_backends(cls, value: Any) -> Any:
+        """Accept both list input and env-nested dict input.
+
+        Pydantic env parsing with nested keys like
+        ``COMMON__NOTIFIER__BACKENDS__0__TYPE=discord`` may produce:
+        ``{"0": {"type": "discord", ...}}``.
+        Convert that shape into a list ordered by numeric index.
+        """
+        if value is None:
+            return []
+        if isinstance(value, list):
+            return value
+        if isinstance(value, dict):
+            if all(str(k).isdigit() for k in value.keys()):
+                return [value[k] for k in sorted(value.keys(), key=lambda k: int(str(k)))]
+            return list(value.values())
+        return value
 
 
 class CommonSettings(BaseSettings):
