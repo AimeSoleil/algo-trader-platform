@@ -260,7 +260,7 @@ analysis_service:
     cache_ttl: 3600
     skill_dir: ""
     max_critic_revisions: 1               # Synthesizer↔Critic revision rounds
-    orchestrator_chunk_size: 5            # max non-benchmark symbols per LLM chunk
+    orchestrator_chunk_size: 9            # max non-benchmark symbols per LLM chunk
     orchestrator_max_parallel: 3          # max parallel chunk pipelines
 
 

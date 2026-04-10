@@ -374,7 +374,7 @@ class LLMSettings(BaseSettings):
     skill_dir: str = ""
 
     # ── Orchestrator — symbol chunking for context window management ──
-    orchestrator_chunk_size: int = 5
+    orchestrator_chunk_size: int = 9
     orchestrator_max_parallel: int = 3
 
     # ── Critic revision ──
