@@ -243,7 +243,7 @@ analysis_service:
       request_timeout_seconds: 600
     copilot:
       cli_path: "copilot"
-      github_token: ""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                  # or env: ANALYSIS_SERVICE__LLM__COPILOT__GITHUB_TOKEN
+      github_token: ""                 # or env: ANALYSIS_SERVICE__LLM__COPILOT__GITHUB_TOKEN
       model: "claude-opus-4.6"          # default model for all agents
       reasoning_effort: "high"        # low / medium / high
       request_timeout_seconds: 600
