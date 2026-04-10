@@ -88,18 +88,21 @@ class CopilotAgentProvider:
         user_prompt: str,
         temperature: float | None = None,
         max_tokens: int | None = None,
+        model: str | None = None,
     ) -> LLMResult:
         client = await self._get_client()
 
+        effective_model = model or self._model
+
         session_opts: dict = {
-            "model": self._model,
+            "model": effective_model,
             "on_permission_request": self._on_permission_request,
         }
 
         # Only attach reasoning_effort for models known to support it;
         # other models (e.g. gemini-*) will reject the parameter.
         if self._reasoning_effort and any(
-            self._model.startswith(p) for p in _REASONING_EFFORT_SUPPORTED_PREFIXES
+            effective_model.startswith(p) for p in _REASONING_EFFORT_SUPPORTED_PREFIXES
         ):
             session_opts["reasoning_effort"] = self._reasoning_effort
 
@@ -131,7 +134,7 @@ class CopilotAgentProvider:
         # Capture token usage from the ASSISTANT_USAGE event.
         from copilot.generated.session_events import SessionEventType
 
-        usage_data: dict = {"input_tokens": 0, "output_tokens": 0, "model": self._model}
+        usage_data: dict = {"input_tokens": 0, "output_tokens": 0, "model": effective_model}
 
         def _on_usage(event) -> None:
             if event.type == SessionEventType.ASSISTANT_USAGE:

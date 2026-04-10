@@ -244,9 +244,18 @@ analysis_service:
     copilot:
       cli_path: "copilot"
       github_token: ""                  # or env: ANALYSIS_SERVICE__LLM__COPILOT__GITHUB_TOKEN
-      model: "claude-opus-4.6"
-      reasoning_effort: "medium"        # low / medium / high
+      model: "claude-opus-4.6"          # default model for all agents
+      reasoning_effort: "high"        # low / medium / high
       request_timeout_seconds: 600
+    agent_models_override:                        # per-agent model overrides (empty = use provider default)
+      trend: ""
+      volatility: ""
+      flow: ""
+      chain: ""
+      spread: ""
+      cross_asset: ""
+      synthesizer: "claude-sonnet-4.6"    # synthesis needs strongest model
+      critic: ""
     cache_enabled: true
     cache_ttl: 3600
     skill_dir: ""

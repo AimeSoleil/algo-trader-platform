@@ -34,10 +34,12 @@ class OpenAIAgentProvider:
         user_prompt: str,
         temperature: float | None = None,
         max_tokens: int | None = None,
+        model: str | None = None,
     ) -> LLMResult:
         settings = get_settings()
+        effective_model = model or self._model
         response = await self._client.responses.create(
-            model=self._model,
+            model=effective_model,
             instructions=instructions,
             input=user_prompt,
             text={"format": {"type": "json_object"}},

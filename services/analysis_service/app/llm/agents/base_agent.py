@@ -169,6 +169,7 @@ class AgentLLMProvider(Protocol):
         user_prompt: str,
         temperature: float | None = None,
         max_tokens: int | None = None,
+        model: str | None = None,
     ) -> LLMResult:
         """Send prompt to LLM and return text + token counts."""
         ...
@@ -229,6 +230,7 @@ class AnalysisAgent(ABC):
         *,
         provider: AgentLLMProvider | None = None,
         usage_tracker: LLMUsageTracker | None = None,
+        model: str | None = None,
     ) -> T:
         """Run analysis on the provided signal data.
 
@@ -272,6 +274,7 @@ class AnalysisAgent(ABC):
                     user_prompt=user_prompt,
                     temperature=settings.analysis_service.llm.openai.temperature,
                     max_tokens=4096,
+                    model=model,
                 )
 
                 data = parse_llm_json(result.content)
@@ -402,10 +405,8 @@ class AnalysisAgent(ABC):
 
         parts.append(
             "\n## Task\n"
-            "Analyze each symbol using the rules in your instructions. "
-            "Output ONLY valid standard JSON matching the expected schema. "
-            "Use double-quoted keys and string values (RFC 8259). "
-            "No single quotes, no trailing commas, no markdown fences, no extra text."
+            "Analyze each symbol per your instructions. "
+            "Output ONLY valid JSON (RFC 8259). No markdown fences."
         )
 
         return "\n\n".join(parts)

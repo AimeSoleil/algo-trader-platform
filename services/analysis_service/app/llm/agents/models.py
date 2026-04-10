@@ -147,6 +147,10 @@ class CrossAssetSymbolAnalysis(SymbolAnalysis):
     correlation_regime: str = "normal"  # "fear", "decoupled", "bullish_vol", "normal"
     dominant_benchmark: str = "SPY"  # which benchmark explains most variance
     rate_sensitive: bool = False
+    safe_haven_correlated: bool = False   # GLD corr > 0.3
+    credit_stress_exposure: bool = False  # HYG corr > 0.3
+    energy_exposure: bool = False         # XLE corr > 0.3
+    crypto_correlated: bool = False       # IBIT corr > 0.3
     risk_off_signal: bool = False
     regime_transition: bool = False  # SPY / QQQ / IWM correlations diverging
     vix_environment: str = "normal"  # "panic", "elevated", "normal", "complacent"

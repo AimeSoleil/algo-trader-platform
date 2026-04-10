@@ -345,14 +345,28 @@ class CopilotLLMSettings(BaseSettings):
     cli_path: str = "copilot"
     github_token: str = ""
     model: str = "claude-opus-4.6"
-    reasoning_effort: str = "medium"
+    reasoning_effort: str = "high"
     request_timeout_seconds: int = 600
+
+class AgentModelsSettings(BaseSettings):
+    """Per-agent model overrides. ``null`` / empty → use provider default."""
+    trend: str = ""
+    volatility: str = ""
+    flow: str = ""
+    chain: str = ""
+    spread: str = ""
+    cross_asset: str = ""
+    synthesizer: str = ""
+    critic: str = ""
 
 class LLMSettings(BaseSettings):
     provider: str = "copilot"
 
     openai: OpenAILLMSettings = Field(default_factory=OpenAILLMSettings)
     copilot: CopilotLLMSettings = Field(default_factory=CopilotLLMSettings)
+
+    # ── Per-agent model overrides ──
+    agent_models_override: AgentModelsSettings = Field(default_factory=AgentModelsSettings)
 
     # ── Common ──
     cache_enabled: bool = True

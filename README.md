@@ -186,7 +186,7 @@ llm:
 ## 技术栈
 
 - Python 3.11+
-- FastAPI
+- FastAPId
 - SQLAlchemy Async + Pydantic v2
 - Celery + RabbitMQ + Redis
 - TimescaleDB（时序）+ PostgreSQL（业务）

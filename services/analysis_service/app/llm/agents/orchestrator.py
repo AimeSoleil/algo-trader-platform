@@ -12,6 +12,7 @@ Flow:
 from __future__ import annotations
 
 import asyncio
+import copy
 import json
 from datetime import date
 from time import perf_counter
@@ -353,6 +354,10 @@ class AgentOrchestrator:
         # ── Step 1: Run 6 specialist agents in parallel ──
         agent_outputs = await self._run_specialists(serialized, provider=provider, usage_tracker=usage_tracker)
 
+        # Compact copy for synthesizer/critic prompts (strip reasoning, trim benchmarks)
+        trade_sym_set = set(s.upper() for s in trade_symbols) if trade_symbols else set()
+        compact_outputs = self._compact_for_synthesis(agent_outputs, trade_sym_set)
+
         logger.info(
             "orchestrator.specialists_done",
             agents_succeeded=len(agent_outputs),
@@ -360,8 +365,12 @@ class AgentOrchestrator:
         )
 
         # ── Step 2: Synthesize ──
+        agent_models_cfg = get_settings().analysis_service.llm.agent_models_override
+        synth_model = agent_models_cfg.synthesizer or None
+        critic_model = agent_models_cfg.critic or None
+
         blueprint = await self._synthesizer.synthesize(
-            agent_outputs=agent_outputs,
+            agent_outputs=compact_outputs,
             signals_summary=signals_summary,
             current_positions=current_positions,
             previous_execution=previous_execution,
@@ -369,6 +378,7 @@ class AgentOrchestrator:
             signal_date=signal_date,
             usage_tracker=usage_tracker,
             trade_symbols=trade_symbols,
+            model=synth_model,
         )
 
         logger.info(
@@ -383,10 +393,11 @@ class AgentOrchestrator:
         for revision in range(max_revisions):
             verdict = await self._critic.review(
                 blueprint_json=blueprint.model_dump(mode="json"),
-                agent_outputs=agent_outputs,
+                agent_outputs=compact_outputs,
                 signals_summary=signals_summary,
                 provider=provider,
                 usage_tracker=usage_tracker,
+                model=critic_model,
             )
 
             critic_history.append({
@@ -414,7 +425,7 @@ class AgentOrchestrator:
             )
 
             blueprint = await self._synthesizer.synthesize(
-                agent_outputs=agent_outputs,
+                agent_outputs=compact_outputs,
                 signals_summary=signals_summary,
                 current_positions=current_positions,
                 previous_execution=previous_execution,
@@ -427,6 +438,7 @@ class AgentOrchestrator:
                 signal_date=signal_date,
                 usage_tracker=usage_tracker,
                 trade_symbols=trade_symbols,
+                model=synth_model,
             )
 
         # ── Attach reasoning context for auditability ──
@@ -443,6 +455,81 @@ class AgentOrchestrator:
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
+
+    # Keys preserved for benchmark-only symbols (compact cross-asset context)
+    _BENCHMARK_KEEP_KEYS = frozenset({
+        "symbol", "confidence",
+        # trend
+        "regime", "trend_direction", "trend_strength",
+        # volatility
+        "vol_regime", "iv_rank_zone", "hv_iv_assessment",
+        # flow
+        "flow_signal", "volume_anomaly", "vwap_bias",
+        # chain
+        "pcr_signal", "gamma_pin_active", "institutional_flow",
+        # spread — not useful for benchmark context
+        # cross_asset
+        "correlation_regime", "risk_off_signal", "vix_environment",
+        "safe_haven_correlated", "credit_stress_exposure",
+        "energy_exposure", "crypto_correlated",
+    })
+
+    def _compact_for_synthesis(
+        self,
+        agent_outputs: dict[str, Any],
+        trade_syms: set[str],
+    ) -> dict[str, Any]:
+        """Return a token-efficient copy of *agent_outputs* for the synthesizer/critic.
+
+        Optimizations applied (original dict is NOT mutated):
+        1. ``reasoning`` text is stripped from every symbol analysis — the
+           synthesizer forms its own reasoning from structured fields.
+        2. ``strategies`` lists are stripped — the synthesizer generates
+           its own strategy selection from structured regime/signal fields.
+        3. Benchmark-only symbols are trimmed to a small set of key
+           signals (direction, regime, confidence) — full detail is not
+           needed to generate trade plans.
+        4. Top-level ``market_*_summary`` fields are stripped — the
+           synthesizer derives its own market assessment.
+        """
+        compact = {}
+        for agent_name, output in agent_outputs.items():
+            if not isinstance(output, dict):
+                compact[agent_name] = output
+                continue
+
+            out = {}
+            for key, value in output.items():
+                # Strip top-level summary fields (market_trend_summary, market_vol_summary, etc.)
+                if key.startswith("market_") and key.endswith("_summary"):
+                    continue
+                if key == "symbols" and isinstance(value, list):
+                    trimmed_symbols = []
+                    for sym_data in value:
+                        if not isinstance(sym_data, dict):
+                            trimmed_symbols.append(sym_data)
+                            continue
+
+                        sym = sym_data.get("symbol", "").upper()
+                        # Strip reasoning + strategies (high token cost, low synthesis value)
+                        entry = {
+                            k: v for k, v in sym_data.items()
+                            if k not in ("reasoning", "strategies")
+                        }
+
+                        if sym not in trade_syms:
+                            # Benchmark-only: keep only essential signals
+                            entry = {
+                                k: v for k, v in entry.items()
+                                if k in self._BENCHMARK_KEEP_KEYS
+                            }
+
+                        trimmed_symbols.append(entry)
+                    out["symbols"] = trimmed_symbols
+                else:
+                    out[key] = value
+            compact[agent_name] = out
+        return compact
 
     def _serialize_signals(self, features: list[SignalFeatures]) -> list[dict[str, Any]]:
         """Serialize all signal features into dicts for agent consumption.
@@ -495,9 +582,18 @@ class AgentOrchestrator:
             "cross_asset": self._cross_asset,
         }
 
+        # Resolve per-agent model overrides from config
+        agent_models_cfg = get_settings().analysis_service.llm.agent_models_override
+
         async def _run_one(name: str, agent):
             try:
-                result = await agent.analyze(serialized_signals, provider=provider, usage_tracker=usage_tracker)
+                model_override = getattr(agent_models_cfg, name, "") or None
+                result = await agent.analyze(
+                    serialized_signals,
+                    provider=provider,
+                    usage_tracker=usage_tracker,
+                    model=model_override,
+                )
                 return name, result.model_dump(mode="json")
             except Exception as e:
                 logger.warning(
