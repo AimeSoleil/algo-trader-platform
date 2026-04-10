@@ -259,7 +259,7 @@ analysis_service:
 
 trade_service:
   execution_interval: 300              # 执行检查间隔（秒）= 5分钟
-  trade_start_time: "09:20"            # 盘前加载蓝图 + 启动执行 tick
+  trade_start_time: "09:25"            # 盘前加载蓝图 + 启动执行 tick
 
   broker:
     type: "paper"                      # paper | futu
