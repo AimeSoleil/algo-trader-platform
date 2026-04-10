@@ -54,16 +54,16 @@ class BlueprintRuleEngine:
         return all(self._eval_single_condition(cond, market_ctx) for cond in conditions)
 
     def _eval_single_condition(self, condition: dict[str, Any], market_ctx: dict[str, Any]) -> bool:
-        metric = condition.get("metric")
+        field = condition.get("field")
         operator = condition.get("operator")
         value = condition.get("value")
-        current = market_ctx.get(metric)
+        current = market_ctx.get(field)
         if current is None:
             logger.debug(
-                "rule_engine.metric_missing",
+                "rule_engine.field_missing",
                 log_event="eval_single_condition",
-                stage="missing_metric",
-                metric=metric,
+                stage="missing_field",
+                field=field,
                 operator=operator,
             )
             return False
@@ -84,7 +84,7 @@ class BlueprintRuleEngine:
                     "rule_engine.between_value_invalid",
                     log_event="eval_single_condition",
                     stage="invalid_value",
-                    metric=metric,
+                    field=field,
                     operator=operator,
                 )
                 return False
@@ -93,7 +93,7 @@ class BlueprintRuleEngine:
             "rule_engine.operator_unsupported",
             log_event="eval_single_condition",
             stage="unsupported_operator",
-            metric=metric,
+            field=field,
             operator=operator,
         )
         return False

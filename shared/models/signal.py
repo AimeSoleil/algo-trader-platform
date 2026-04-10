@@ -114,6 +114,10 @@ class CrossAssetIndicators(BaseModel):
     iwm_beta: float = 0.0                  # Beta relative to IWM (small-cap risk)
     iwm_correlation_20d: float = 0.0       # 20-day rolling correlation to IWM
     tlt_correlation_20d: float = 0.0       # 20-day rolling correlation to TLT (rate sensitivity)
+    gld_correlation_20d: float = 0.0       # 20-day rolling correlation to GLD (safe haven / inflation)
+    hyg_correlation_20d: float = 0.0       # 20-day rolling correlation to HYG (credit stress)
+    xle_correlation_20d: float = 0.0       # 20-day rolling correlation to XLE (energy / commodity)
+    ibit_correlation_20d: float = 0.0      # 20-day rolling correlation to IBIT (crypto sentiment)
 
     # ── Volatility environment (VIX) ──────────────────────
     vix_level: float = 0.0                 # Current VIX close

@@ -177,6 +177,20 @@ class WatchlistSettings(BaseSettings):
         ))
 
 
+class NotifierBackendConfig(BaseSettings):
+    """Single notification backend entry."""
+    type: str = "discord"
+    enabled: bool = True
+    webhook_url: str = ""
+    timeout: float = 10.0
+
+class NotifierSettings(BaseSettings):
+    """Notification system — async, fire-and-forget."""
+    enabled: bool = False
+    backends: list[NotifierBackendConfig] = Field(default_factory=list)
+    daily_report_time: str = "16:30"   # ET — independent beat task
+
+
 class CommonSettings(BaseSettings):
     """跨服务共用配置"""
     timezone: str = "America/New_York"
@@ -187,6 +201,7 @@ class CommonSettings(BaseSettings):
     celery: CelerySettings = Field(default_factory=CelerySettings)
     beat: BeatSettings = Field(default_factory=BeatSettings)
     flower: FlowerSettings = Field(default_factory=FlowerSettings)
+    notifier: NotifierSettings = Field(default_factory=NotifierSettings)
 
 
 # ── Data Service ─────────────────────────────────────────────

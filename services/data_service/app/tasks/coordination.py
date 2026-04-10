@@ -142,6 +142,18 @@ def check_pipelines_and_continue(trading_date: str) -> dict:
     # ── Both ready — dispatch downstream ──
     logger.info("coordination.both_ready", trading_date=trading_date)
 
+    # Notify: pipeline started
+    from shared.notifier.helpers import notify_sync
+    from shared.notifier.base import NotificationEvent, EventType, Severity
+    notify_sync(NotificationEvent(
+        event_type=EventType.PIPELINE_STARTED,
+        title="🚀 Post-Market Pipeline Started",
+        message=f"Both stock and options capture completed for {trading_date}. "
+                f"Starting downstream: signals → blueprint.",
+        severity=Severity.INFO,
+        payload={"trading_date": trading_date},
+    ))
+
     # Clean up flags
     asyncio.run(_delete_flags(trading_date))
 
@@ -218,6 +230,19 @@ def coordination_timeout_check(trading_date: str) -> dict:
             options_done=options_ready,
             missing=missing,
         )
+
+        # Notify: pipeline coordination timeout
+        from shared.notifier.helpers import notify_sync
+        from shared.notifier.base import NotificationEvent, EventType, Severity
+        notify_sync(NotificationEvent(
+            event_type=EventType.PIPELINE_FAILED,
+            title="⚠️ Pipeline Coordination Timeout",
+            message=f"Pipeline coordination timed out for {trading_date}. "
+                    f"Missing: {', '.join(missing)}. Manual intervention may be needed.",
+            severity=Severity.ERROR,
+            payload={"trading_date": trading_date, "phase": "coordination", "missing": str(missing)},
+        ))
+
         return {"status": "timeout", "trading_date": trading_date, "missing": missing}
 
     # Flags already cleaned up — downstream already ran

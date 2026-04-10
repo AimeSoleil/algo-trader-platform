@@ -19,8 +19,9 @@ from shared.config import get_settings
 from shared.data_quality import DataQualityConfig, apply_quality_gate
 from shared.distributed_lock import distributed_once
 from shared.redis_pool import get_redis
-from shared.utils import get_logger, now_utc
+from shared.utils import get_logger, now_utc, now_market
 
+from services.trade_service.app.audit import log_event
 from services.trade_service.app.broker import create_broker
 from services.trade_service.app.broker.base import BrokerInterface
 from services.trade_service.app.broker.paper import PaperBroker
@@ -31,6 +32,15 @@ from services.trade_service.app.models import ExecutionRuntimeState
 
 logger = get_logger("execution_scheduler")
 
+# ── Minimum confidence to execute an entry ──
+_ENTRY_CONFIDENCE_GATE = 0.3
+
+# ── Entry cooldown: prevent re-entry within N seconds of a previous entry ──
+_ENTRY_COOLDOWN_SECONDS = 300
+
+# Track recent entries per symbol → timestamp
+_entry_timestamps: dict[str, float] = {}
+
 _scheduler: AsyncIOScheduler | None = None
 _broker: BrokerInterface | None = None
 
@@ -40,6 +50,206 @@ def _get_broker() -> BrokerInterface:
     if _broker is None:
         _broker = create_broker()
     return _broker
+
+
+async def _handle_entry_signal(
+    *,
+    symbol: str,
+    plan: dict[str, Any],
+    market_ctx: dict[str, Any],
+    broker: BrokerInterface,
+    runtime_state: ExecutionRuntimeState,
+    tick_trades: list[dict[str, Any]],
+    tick_errors: list[dict[str, Any]],
+) -> None:
+    """Place entry orders when rule engine decides 'enter'.
+
+    Guards:
+    - Confidence gate: skip if confidence < threshold.
+    - Cooldown: skip if an entry was placed recently for this symbol.
+    - Idempotency: key = entry:{symbol}:{trading_date}.
+    """
+    from time import time as _time
+
+    confidence = plan.get("confidence", 0.0)
+    if confidence < _ENTRY_CONFIDENCE_GATE:
+        logger.info(
+            "execution.entry_skipped_low_confidence",
+            symbol=symbol,
+            confidence=confidence,
+            gate=_ENTRY_CONFIDENCE_GATE,
+        )
+        return
+
+    # Cooldown check
+    last_entry = _entry_timestamps.get(symbol, 0.0)
+    if (_time() - last_entry) < _ENTRY_COOLDOWN_SECONDS:
+        logger.debug("execution.entry_skipped_cooldown", symbol=symbol)
+        return
+
+    legs = plan.get("legs", [])
+    if not legs:
+        logger.warning("execution.entry_skipped_no_legs", symbol=symbol)
+        return
+
+    trading_date = runtime_state.loaded_trading_date
+    idem_key = f"entry:{symbol}:{trading_date}"
+
+    for i, leg in enumerate(legs):
+        side = leg.get("side", "buy")
+        qty = leg.get("quantity", 1)
+        order_payload = {
+            "symbol": symbol,
+            "side": side,
+            "qty": qty,
+            "type": "market",
+            "reason": "blueprint_entry",
+            "leg_index": i,
+            "strike": leg.get("strike"),
+            "expiry": str(leg.get("expiry", "")),
+            "option_type": leg.get("option_type"),
+        }
+        leg_idem_key = f"{idem_key}:leg{i}"
+
+        try:
+            result = await broker.place_order(order_payload, idempotency_key=leg_idem_key)
+            status = str(result.get("status", "")).lower()
+            accepted = status in {"accepted", "submitted", "filled", "ok", "success"}
+
+            if accepted:
+                _entry_timestamps[symbol] = _time()
+                logger.info(
+                    "execution.entry_order_placed",
+                    symbol=symbol,
+                    leg_index=i,
+                    side=side,
+                    qty=qty,
+                    status=status,
+                )
+                await log_event(
+                    "entry_order_placed",
+                    symbol=symbol,
+                    order_id=str(result.get("id", "")),
+                    blueprint_id=runtime_state.loaded_blueprint_id,
+                    payload={
+                        "leg_index": i,
+                        "side": side,
+                        "qty": qty,
+                        "confidence": confidence,
+                        "result": result,
+                    },
+                )
+                tick_trades.append({"symbol": symbol, "action": "entry", "side": side, "qty": qty, "leg": i})
+            else:
+                logger.warning(
+                    "execution.entry_order_rejected",
+                    symbol=symbol,
+                    leg_index=i,
+                    result=result,
+                )
+        except Exception as exc:
+            logger.error(
+                "execution.entry_order_failed",
+                symbol=symbol,
+                leg_index=i,
+                error=str(exc),
+            )
+            tick_errors.append({"symbol": symbol, "action": "entry", "leg": i, "error": str(exc)})
+
+
+async def _handle_exit_signal(
+    *,
+    symbol: str,
+    plan: dict[str, Any],
+    market_ctx: dict[str, Any],
+    broker: BrokerInterface,
+    runtime_state: ExecutionRuntimeState,
+    tick_trades: list[dict[str, Any]],
+    tick_errors: list[dict[str, Any]],
+) -> None:
+    """Place exit orders when rule engine decides 'exit'.
+
+    Closes all open positions for the symbol.
+    Respects stop-loss cooldown to avoid conflicting with risk monitor.
+    """
+    from services.trade_service.app.execution.risk.risk_engine import (
+        in_cooldown_redis,
+    )
+
+    # Skip if symbol is in stop-loss cooldown (risk_monitor owns the exit)
+    if await in_cooldown_redis(symbol):
+        logger.debug("execution.exit_skipped_stoploss_cooldown", symbol=symbol)
+        return
+
+    positions = await broker.get_positions()
+    symbol_positions = [
+        p for p in positions
+        if str(p.get("symbol", "")).upper() == symbol.upper()
+        and abs(p.get("qty", 0)) > 0
+    ]
+
+    if not symbol_positions:
+        logger.debug("execution.exit_skipped_no_positions", symbol=symbol)
+        return
+
+    trading_date = runtime_state.loaded_trading_date
+    idem_key = f"exit:{symbol}:{trading_date}"
+
+    for i, pos in enumerate(symbol_positions):
+        qty = abs(pos.get("qty", 0))
+        if qty <= 0:
+            continue
+        current_side = "long" if pos.get("qty", 0) > 0 else "short"
+        order_side = "sell" if current_side == "long" else "buy"
+
+        order_payload = {
+            "symbol": symbol,
+            "side": order_side,
+            "qty": qty,
+            "type": "market",
+            "reason": "blueprint_exit",
+        }
+        pos_idem_key = f"{idem_key}:pos{i}"
+
+        try:
+            result = await broker.place_order(order_payload, idempotency_key=pos_idem_key)
+            status = str(result.get("status", "")).lower()
+            accepted = status in {"accepted", "submitted", "filled", "ok", "success"}
+
+            if accepted:
+                logger.info(
+                    "execution.exit_order_placed",
+                    symbol=symbol,
+                    side=order_side,
+                    qty=qty,
+                    status=status,
+                )
+                await log_event(
+                    "exit_order_placed",
+                    symbol=symbol,
+                    order_id=str(result.get("id", "")),
+                    blueprint_id=runtime_state.loaded_blueprint_id,
+                    payload={
+                        "side": order_side,
+                        "qty": qty,
+                        "reason": "blueprint_exit_condition",
+                        "result": result,
+                    },
+                )
+                tick_trades.append({"symbol": symbol, "action": "exit", "side": order_side, "qty": qty})
+            else:
+                logger.warning(
+                    "execution.exit_order_rejected",
+                    symbol=symbol,
+                    result=result,
+                )
+        except Exception as exc:
+            logger.error(
+                "execution.exit_order_failed",
+                symbol=symbol,
+                error=str(exc),
+            )
+            tick_errors.append({"symbol": symbol, "action": "exit", "error": str(exc)})
 
 
 def _apply_quality_gate_to_plan(
@@ -103,6 +313,43 @@ def _apply_quality_gate_to_plan(
     return plan
 
 
+async def _notify_tick_trades(
+    tick_trades: list[dict[str, Any]],
+    tick_errors: list[dict[str, Any]],
+    *,
+    trading_date: str,
+) -> None:
+    """Send aggregated trade notifications for one tick. Fire-and-forget."""
+    from shared.notifier.base import EventType, NotificationEvent, Severity
+    from shared.notifier.helpers import get_notifier
+
+    manager = get_notifier()
+    if not manager._backends:
+        return
+
+    try:
+        if tick_trades:
+            lines = [f"  {t['action'].upper()} {t['symbol']} {t.get('side','')} x{t.get('qty','')}" for t in tick_trades]
+            await manager.notify(NotificationEvent(
+                event_type=EventType.TRADE_EXECUTED,
+                title=f"\ud83d\udcb9 {len(tick_trades)} Order(s) Executed",
+                message=f"Trading date: {trading_date}\n" + "\n".join(lines),
+                severity=Severity.INFO,
+                payload={"trading_date": trading_date, "order_count": str(len(tick_trades))},
+            ))
+        if tick_errors:
+            lines = [f"  {e['action'].upper()} {e['symbol']}: {e['error']}" for e in tick_errors]
+            await manager.notify(NotificationEvent(
+                event_type=EventType.TRADE_ERROR,
+                title=f"\u274c {len(tick_errors)} Trade Error(s)",
+                message=f"Trading date: {trading_date}\n" + "\n".join(lines),
+                severity=Severity.ERROR,
+                payload={"trading_date": trading_date, "error_count": str(len(tick_errors))},
+            ))
+    except Exception as exc:
+        logger.warning("execution.notify_tick_failed", error=str(exc))
+
+
 @distributed_once("trade:execution_tick", ttl=270, service="trade_service")
 async def _evaluation_tick(runtime_state: ExecutionRuntimeState) -> None:
     """Main execution tick — protected by distributed lock.
@@ -131,6 +378,8 @@ async def _evaluation_tick(runtime_state: ExecutionRuntimeState) -> None:
     engine = BlueprintRuleEngine()
     quotes_found = 0
     symbols_evaluated = 0
+    tick_trades: list[dict[str, Any]] = []
+    tick_errors: list[dict[str, Any]] = []
 
     try:
         await run_stop_loss_checks(
@@ -138,6 +387,34 @@ async def _evaluation_tick(runtime_state: ExecutionRuntimeState) -> None:
             redis_client=redis_client,
             broker=broker,
         )
+
+        # ── Pre-build symbol → plan lookup from blueprint ──
+        symbol_plan_map: dict[str, dict] = {}
+        bp_json = runtime_state.loaded_blueprint_json
+        if isinstance(bp_json, dict):
+            for sp in bp_json.get("symbol_plans", []):
+                sym = sp.get("underlying", "").upper()
+                if sym:
+                    symbol_plan_map[sym] = sp
+
+        # ── Compute market time once (decimal hours in market TZ) ──
+        mt = now_market()
+        market_time_decimal = mt.hour + mt.minute / 60.0
+
+        # ── Pre-load signal features for market context enrichment ──
+        import json as _json
+
+        signal_cache: dict[str, dict] = {}
+        sig_date = runtime_state.loaded_trading_date
+        if sig_date:
+            for symbol in settings.common.watchlist.for_trade:
+                sig_key = f"signal:features:{symbol.upper()}:{sig_date.isoformat()}"
+                sig_data = await redis_client.get(sig_key)
+                if sig_data:
+                    try:
+                        signal_cache[symbol.upper()] = _json.loads(sig_data)
+                    except Exception:
+                        pass
 
         for symbol in settings.common.watchlist.for_trade:
             quote_key = f"market:quote:{symbol}"
@@ -152,18 +429,65 @@ async def _evaluation_tick(runtime_state: ExecutionRuntimeState) -> None:
 
             quotes_found += 1
 
-            market_ctx = {
+            # ── Build enriched market context ──
+            market_ctx: dict[str, Any] = {
+                "underlying_price": quote_price,
                 "price": quote_price,
-                "bid": float(quote.get("bid", 0) or 0),
-                "ask": float(quote.get("ask", 0) or 0),
+                "bid": safe_float(quote.get("bid"), 0.0),
+                "ask": safe_float(quote.get("ask"), 0.0),
+                "time": market_time_decimal,
             }
 
-            plan = {"symbol": symbol, "entry_conditions": [], "exit_conditions": []}
+            # Enrich from signal features cache
+            sig = signal_cache.get(symbol.upper())
+            if sig:
+                opt = sig.get("option_indicators", {})
+                market_ctx.setdefault("iv", opt.get("current_iv", 0.0))
+                market_ctx.setdefault("iv_rank", opt.get("iv_rank", 0.0))
+                market_ctx.setdefault("delta", opt.get("delta_exposure_profile", {}).get("net", 0.0))
+                market_ctx.setdefault("volume", sig.get("volume", 0))
+
+            # ── Extract conditions from blueprint symbol plan ──
+            bp_plan = symbol_plan_map.get(symbol.upper(), {})
+            entry_conditions = bp_plan.get("entry_conditions", [])
+            exit_conditions = bp_plan.get("exit_conditions", [])
+            confidence = bp_plan.get("confidence", 0.0)
+
+            plan: dict[str, Any] = {
+                "symbol": symbol,
+                "entry_conditions": entry_conditions,
+                "exit_conditions": exit_conditions,
+                "confidence": confidence,
+                "max_position_size": bp_plan.get("max_position_size", 1),
+                "legs": bp_plan.get("legs", []),
+            }
             plan = _apply_quality_gate_to_plan(plan, runtime_state, symbol)
             if plan is None:
                 continue  # skip due to very low data quality
-            engine.evaluate_symbol_plan(plan, market_ctx)
+
+            result = engine.evaluate_symbol_plan(plan, market_ctx)
             symbols_evaluated += 1
+
+            if result["action"] == "enter":
+                await _handle_entry_signal(
+                    symbol=symbol,
+                    plan=plan,
+                    market_ctx=market_ctx,
+                    broker=broker,
+                    runtime_state=runtime_state,
+                    tick_trades=tick_trades,
+                    tick_errors=tick_errors,
+                )
+            elif result["action"] == "exit":
+                await _handle_exit_signal(
+                    symbol=symbol,
+                    plan=plan,
+                    market_ctx=market_ctx,
+                    broker=broker,
+                    runtime_state=runtime_state,
+                    tick_trades=tick_trades,
+                    tick_errors=tick_errors,
+                )
 
         runtime_state.last_tick_at = now_utc()
         logger.debug(
@@ -177,6 +501,12 @@ async def _evaluation_tick(runtime_state: ExecutionRuntimeState) -> None:
             duration_ms=round((perf_counter() - tick_started) * 1000, 2),
         )
         logger.info("execution.tick_completed", trading_date=str(runtime_state.loaded_trading_date))
+
+        # ── Aggregated trade notifications (fire-and-forget) ──
+        await _notify_tick_trades(
+            tick_trades, tick_errors,
+            trading_date=str(runtime_state.loaded_trading_date),
+        )
     except Exception as exc:
         logger.error(
             "execution.tick_failed",

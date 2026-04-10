@@ -53,6 +53,7 @@ def create_celery_app() -> Celery:
             # trade_service
             "services.trade_service.app.execution.tasks",
             "services.trade_service.app.portfolio.tasks",
+            "services.trade_service.app.tasks.daily_report",
         ],
     )
 
@@ -146,6 +147,15 @@ def create_celery_app() -> Celery:
             "options": {"queue": "data"},
         },
     }
+
+    # ── Daily trading report (if notifier enabled) ──
+    if settings.common.notifier.enabled:
+        _rpt_h, _rpt_m = map(int, settings.common.notifier.daily_report_time.split(":"))
+        app.conf.beat_schedule["daily-trading-report"] = {
+            "task": "trade_service.tasks.send_daily_report",
+            "schedule": crontab(hour=_rpt_h, minute=_rpt_m, day_of_week="1-5"),
+            "options": {"queue": "data"},
+        }
 
     return app
 

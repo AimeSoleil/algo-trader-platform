@@ -92,6 +92,16 @@ common:
     file_backup_count: 14
     file_rotate_utc: false
 
+  # ── Notifier — 异步通知（不阻塞主流程）──
+  notifier:
+    enabled: false
+    daily_report_time: "16:30"           # ET — 每日交易报告推送时间
+    backends:
+      - type: "discord"
+        enabled: true
+        webhook_url: ""                  # or env: COMMON__NOTIFIER__BACKENDS__0__WEBHOOK_URL
+        timeout: 10.0
+
   # ── Celery 通用运行时 (所有 worker 共享) ──
   celery:
     prefetch_multiplier: 1             # 每次从 broker 预取的任务数（1 = 严格公平调度）

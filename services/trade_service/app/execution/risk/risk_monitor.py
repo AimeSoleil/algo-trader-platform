@@ -38,6 +38,31 @@ def _append_stoploss_event(runtime_state: ExecutionRuntimeState, event: dict[str
         runtime_state.stoploss_last_events = runtime_state.stoploss_last_events[-100:]
 
 
+async def _notify_stoploss(
+    *,
+    trigger_scope: str,
+    total_pnl: float,
+    targets: list[tuple[str, str]],
+) -> None:
+    """Notify about stop-loss triggers. Fire-and-forget."""
+    from shared.notifier.base import EventType, NotificationEvent, Severity
+    from shared.notifier.helpers import get_notifier
+
+    try:
+        manager = get_notifier()
+        symbols_str = ", ".join(sym for sym, _ in targets[:10])
+        await manager.notify(NotificationEvent(
+            event_type=EventType.TRADE_EXECUTED,
+            title=f"\ud83d\udea8 Stop-Loss Triggered ({trigger_scope})",
+            message=f"Unrealized P&L: ${total_pnl:,.2f}\n"
+                    f"Closing {len(targets)} position(s): {symbols_str}",
+            severity=Severity.WARNING,
+            payload={"scope": trigger_scope, "total_pnl": f"${total_pnl:,.2f}", "positions": str(len(targets))},
+        ))
+    except Exception as exc:
+        logger.warning("risk_monitor.notify_stoploss_failed", error=str(exc))
+
+
 async def _send_stoploss_market_order(
     broker: BrokerInterface,
     symbol: str,
@@ -144,6 +169,13 @@ async def run_stop_loss_checks(
                     "total_unrealized_pnl": total_unrealized_pnl,
                     "targets": len(targets),
                 },
+            )
+
+            # Notify: stop-loss triggered (immediate — always critical)
+            await _notify_stoploss(
+                trigger_scope=trigger_scope,
+                total_pnl=total_unrealized_pnl,
+                targets=[(str(p.get("symbol", "")), t) for p, t in targets],
             )
 
         for position, trigger_type in targets:

@@ -8,6 +8,10 @@
   QQQ  — Nasdaq-100 科技/成长
   IWM  — Russell 2000 小盘风险
   TLT  — 20+ 年期国债 ETF（利率敏感度）
+  GLD  — 黄金 ETF（避险 / 通胀）
+  HYG  — 高收益债 ETF（信用风险）
+  XLE  — 能源板块 ETF（大宗商品通胀）
+  IBIT — 比特币 ETF（加密情绪）
 
 环境指标：
   ^VIX — CBOE 波动率指数（波动率环境 & 恐慌度）
@@ -40,6 +44,11 @@ BENCHMARK_FIELD_MAP: dict[str, tuple[str, str]] = {
     "IWM": ("iwm_beta", "iwm_correlation_20d"),
     # TLT: correlation only (CAPM beta vs bonds is not meaningful)
     "TLT": (None, "tlt_correlation_20d"),
+    # Non-equity benchmarks: correlation only
+    "GLD": (None, "gld_correlation_20d"),
+    "HYG": (None, "hyg_correlation_20d"),
+    "XLE": (None, "xle_correlation_20d"),
+    "IBIT": (None, "ibit_correlation_20d"),
 }
 
 
@@ -326,6 +335,10 @@ def build_cross_asset_indicators(
     qqq = benchmark_results.get("QQQ", BetaResult())
     iwm = benchmark_results.get("IWM", BetaResult())
     tlt = benchmark_results.get("TLT", BetaResult())
+    gld = benchmark_results.get("GLD", BetaResult())
+    hyg = benchmark_results.get("HYG", BetaResult())
+    xle = benchmark_results.get("XLE", BetaResult())
+    ibit = benchmark_results.get("IBIT", BetaResult())
 
     return CrossAssetIndicators(
         stock_iv_correlation=round(iv_corr, 6),
@@ -340,6 +353,10 @@ def build_cross_asset_indicators(
         iwm_beta=round(iwm.beta, 4),
         iwm_correlation_20d=round(iwm.correlation_20d, 4),
         tlt_correlation_20d=round(tlt.correlation_20d, 4),
+        gld_correlation_20d=round(gld.correlation_20d, 4),
+        hyg_correlation_20d=round(hyg.correlation_20d, 4),
+        xle_correlation_20d=round(xle.correlation_20d, 4),
+        ibit_correlation_20d=round(ibit.correlation_20d, 4),
 
         # VIX environment
         vix_level=vix_result.vix_level,

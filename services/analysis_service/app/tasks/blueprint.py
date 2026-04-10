@@ -174,13 +174,47 @@ def generate_daily_blueprint(self, trading_date: str | None = None, prev_result=
         retry=getattr(self.request, "retries", 0),
     )
     try:
-        return run_async(_generate_blueprint_async(resolved_trading_date))
+        result = run_async(_generate_blueprint_async(resolved_trading_date))
+
+        # Notify: pipeline finished (blueprint is the final stage)
+        from shared.notifier.helpers import notify_sync
+        from shared.notifier.base import NotificationEvent, EventType, Severity
+        notify_sync(NotificationEvent(
+            event_type=EventType.PIPELINE_FINISHED,
+            title="✅ Daily Pipeline Completed",
+            message=f"Blueprint generated for {resolved_trading_date}. "
+                    f"{result.get('plans_count', 0)} symbol plans, "
+                    f"provider: {result.get('provider', 'unknown')}.",
+            severity=Severity.INFO,
+            payload={
+                "trading_date": str(resolved_trading_date),
+                "blueprint_id": str(result.get("blueprint_id", "")),
+                "plans_count": str(result.get("plans_count", 0)),
+            },
+        ))
+
+        return result
     except Exception as exc:
+        retries = getattr(self.request, "retries", 0)
         logger.warning(
             "blueprint.generate.retrying",
             error=str(exc),
-            retry=getattr(self.request, "retries", 0),
+            retry=retries,
         )
+
+        # Notify on final retry failure
+        if retries >= self.max_retries:
+            from shared.notifier.helpers import notify_sync
+            from shared.notifier.base import NotificationEvent, EventType, Severity
+            notify_sync(NotificationEvent(
+                event_type=EventType.PIPELINE_FAILED,
+                title="❌ Blueprint Generation Failed",
+                message=f"Blueprint generation failed for {resolved_trading_date} "
+                        f"after {retries + 1} attempts. Error: {exc}",
+                severity=Severity.ERROR,
+                payload={"trading_date": str(resolved_trading_date), "phase": "generate_daily_blueprint", "error": str(exc)},
+            ))
+
         raise self.retry(exc=exc, countdown=60)
 
 
