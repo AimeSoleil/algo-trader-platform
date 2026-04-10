@@ -275,6 +275,11 @@ class AnalysisAgent(ABC):
                 )
 
                 data = parse_llm_json(result.content)
+                # LLM sometimes returns a bare list instead of
+                # {"symbols": [...], ...} — wrap it so Pydantic
+                # can validate against the output model.
+                if isinstance(data, list):
+                    data = {"symbols": data}
                 parsed = self.output_model.model_validate(data)
 
                 status = "ok"

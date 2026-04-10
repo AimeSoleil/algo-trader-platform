@@ -138,12 +138,12 @@ class AgentOrchestrator:
             chunk_size=chunk_size,
         )
 
-        # ── Split: trade targets vs benchmark-only ──
-        # A symbol in both for_trade AND for_trade_benchmark is a trade target.
-        benchmark_only_features = [
+        # ── Split: trade targets vs benchmark ──
+        # Benchmark features are always injected into every chunk for
+        # cross-asset context, but only trade symbols get plans.
+        benchmark_features = [
             sf for sf in signal_features
             if sf.symbol.upper() in trade_benchmark_syms
-            and sf.symbol.upper() not in trade_syms
         ]
         trade_features = [
             sf for sf in signal_features
@@ -166,10 +166,12 @@ class AgentOrchestrator:
                 sf for sf in trade_features
                 if not should_circuit_break_analysis(sf.data_quality.degraded_indicators)
             ]
-            # Also remove from the full signal_features list for single-pass path
+            # Also remove from the full signal_features list for single-pass path,
+            # but always keep benchmark symbols so cross-asset context is preserved.
             signal_features = [
                 sf for sf in signal_features
-                if not should_circuit_break_analysis(sf.data_quality.degraded_indicators)
+                if sf.symbol.upper() in trade_benchmark_syms
+                or not should_circuit_break_analysis(sf.data_quality.degraded_indicators)
             ]
 
         if not trade_features:
@@ -181,6 +183,9 @@ class AgentOrchestrator:
         # ── Decide: single pass vs chunked ──
         usage_tracker = LLMUsageTracker()
 
+        # Compute trade symbol names for the synthesizer prompt
+        trade_symbol_names = [sf.symbol for sf in trade_features]
+
         if len(trade_features) <= chunk_size:
             # Small enough — run everything in one pass (no chunking overhead)
             blueprint = await self._generate_single_pass(
@@ -190,19 +195,30 @@ class AgentOrchestrator:
                 provider=provider,
                 signal_date=signal_date,
                 usage_tracker=usage_tracker,
+                trade_symbols=trade_symbol_names,
             )
         else:
-            # Chunk trade symbols, inject benchmark-only into each chunk
+            # Chunk trade symbols; inject ALL benchmark symbols into each chunk
+            # for cross-asset context.  Dedup in case a symbol is both trade
+            # and benchmark (e.g. SPY, QQQ, IWM).
+            benchmark_sym_set = {sf.symbol.upper() for sf in benchmark_features}
             chunks: list[list[SignalFeatures]] = []
             for i in range(0, len(trade_features), chunk_size):
-                chunk = benchmark_only_features + trade_features[i : i + chunk_size]
-                chunks.append(chunk)
+                trade_slice = trade_features[i : i + chunk_size]
+                # Benchmark first, then trade symbols not already in benchmark
+                seen: set[str] = set()
+                deduped_chunk: list[SignalFeatures] = []
+                for sf in benchmark_features + trade_slice:
+                    key = sf.symbol.upper()
+                    if key not in seen:
+                        seen.add(key)
+                        deduped_chunk.append(sf)
+                chunks.append(deduped_chunk)
 
             logger.info(
                 "orchestrator.chunking",
                 total_symbols=len(signal_features),
-                benchmark_only_symbols=len(benchmark_only_features),
-                benchmark_symbols=[sf.symbol for sf in benchmark_only_features],
+                benchmark_symbols=[sf.symbol for sf in benchmark_features],
                 trade_symbols=len(trade_features),
                 chunks=len(chunks),
                 chunk_size=chunk_size,
@@ -218,13 +234,11 @@ class AgentOrchestrator:
                 chunk_trackers.append(chunk_tracker)
                 trade_syms_in_chunk = [
                     sf.symbol for sf in chunk_features
-                    if sf.symbol.upper() not in trade_benchmark_syms
-                    or sf.symbol.upper() in trade_syms
+                    if sf.symbol.upper() in trade_syms
                 ]
                 benchmark_syms_in_chunk = [
                     sf.symbol for sf in chunk_features
                     if sf.symbol.upper() in trade_benchmark_syms
-                    and sf.symbol.upper() not in trade_syms
                 ]
                 async with sem:
                     logger.info(
@@ -242,6 +256,7 @@ class AgentOrchestrator:
                         signal_date=signal_date,
                         is_chunk=True,
                         usage_tracker=chunk_tracker,
+                        trade_symbols=trade_syms_in_chunk,
                     )
 
             chunk_blueprints = await asyncio.gather(
@@ -253,12 +268,15 @@ class AgentOrchestrator:
             for other in chunk_blueprints[1:]:
                 blueprint.symbol_plans.extend(other.symbol_plans)
 
-            # De-duplicate benchmark plans — keep only from first chunk
+            # Keep only plans for trade symbols (drop benchmark-only plans)
+            # and de-duplicate (a symbol in multiple chunks keeps the first).
             seen_symbols: set[str] = set()
             deduped_plans = []
             for plan in blueprint.symbol_plans:
                 sym = plan.underlying.upper()
                 if sym in seen_symbols:
+                    continue
+                if sym not in trade_syms:
                     continue
                 seen_symbols.add(sym)
                 deduped_plans.append(plan)
@@ -282,6 +300,12 @@ class AgentOrchestrator:
             # Merge chunk trackers into the main usage tracker
             for ct in chunk_trackers:
                 usage_tracker.merge(ct)
+
+        # Safety net: drop any benchmark-only plans the LLM may still emit
+        blueprint.symbol_plans = [
+            p for p in blueprint.symbol_plans
+            if p.underlying.upper() in trade_syms
+        ]
 
         elapsed_ms = round((perf_counter() - started) * 1000, 2)
 
@@ -311,6 +335,7 @@ class AgentOrchestrator:
         signal_date: date | None = None,
         is_chunk: bool = False,
         usage_tracker: LLMUsageTracker | None = None,
+        trade_symbols: list[str] | None = None,
     ) -> LLMTradingBlueprint:
         """Run the full specialist → synthesizer → critic pipeline on one set of signals."""
         # ── Step 0: Serialize signals once ──
@@ -343,6 +368,7 @@ class AgentOrchestrator:
             provider=provider,
             signal_date=signal_date,
             usage_tracker=usage_tracker,
+            trade_symbols=trade_symbols,
         )
 
         logger.info(
@@ -400,6 +426,7 @@ class AgentOrchestrator:
                 provider=provider,
                 signal_date=signal_date,
                 usage_tracker=usage_tracker,
+                trade_symbols=trade_symbols,
             )
 
         # ── Attach reasoning context for auditability ──

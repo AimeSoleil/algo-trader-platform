@@ -44,6 +44,7 @@ class SynthesizerAgent:
         provider: AgentLLMProvider | None = None,
         signal_date: date | None = None,
         usage_tracker: LLMUsageTracker | None = None,
+        trade_symbols: list[str] | None = None,
     ) -> LLMTradingBlueprint:
         """Produce a trading blueprint from specialist agent analyses.
 
@@ -72,6 +73,7 @@ class SynthesizerAgent:
             agent_outputs, signals_summary,
             current_positions, previous_execution,
             critic_feedback,
+            trade_symbols=trade_symbols,
         )
 
         max_retries = settings.analysis_service.llm.max_retries
@@ -172,6 +174,8 @@ class SynthesizerAgent:
         current_positions: dict | None,
         previous_execution: dict | None,
         critic_feedback: str | None,
+        *,
+        trade_symbols: list[str] | None = None,
     ) -> str:
         parts: list[str] = []
 
@@ -204,6 +208,16 @@ class SynthesizerAgent:
             parts.append(
                 "\nAddress ALL issues raised by the Critic. "
                 "Explain in each plan's reasoning how you resolved the feedback."
+            )
+
+        # Trade-only instruction
+        if trade_symbols:
+            sym_list = ", ".join(trade_symbols)
+            parts.append(
+                f"\n## Trade Symbols\n\n"
+                f"Generate symbol_plans ONLY for these trade symbols: {sym_list}\n"
+                f"Other symbols (benchmarks) are provided as cross-asset context only — "
+                f"do NOT create plans for them."
             )
 
         # Task
