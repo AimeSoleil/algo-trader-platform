@@ -128,6 +128,21 @@ class CopilotAgentProvider:
             "no extra text.\n</user>"
         )
 
+        # Capture token usage from the ASSISTANT_USAGE event.
+        from copilot.generated.session_events import SessionEventType
+
+        usage_data: dict = {"input_tokens": 0, "output_tokens": 0, "model": self._model}
+
+        def _on_usage(event) -> None:
+            if event.type == SessionEventType.ASSISTANT_USAGE:
+                d = event.data
+                usage_data["input_tokens"] = int(d.input_tokens or 0)
+                usage_data["output_tokens"] = int(d.output_tokens or 0)
+                if d.model:
+                    usage_data["model"] = d.model
+
+        session.on("assistant.usage", _on_usage)
+
         result = await session.send_and_wait(
             {"prompt": full_prompt},
             timeout=self._timeout,
@@ -137,12 +152,13 @@ class CopilotAgentProvider:
             result.content if hasattr(result, "content") else str(result)
         )
 
-        # Copilot SDK doesn't expose token counts.
-        # Use shared extract_json_str to strip fences / noise before
-        # returning to the consumer; final json.loads happens upstream.
+        input_tok = usage_data["input_tokens"]
+        output_tok = usage_data["output_tokens"]
+
         return LLMResult(
             content=extract_json_str(response_text),
-            input_tokens=0,
-            output_tokens=0,
-            total_tokens=0,
+            input_tokens=input_tok,
+            output_tokens=output_tok,
+            total_tokens=input_tok + output_tok,
+            model=usage_data["model"],
         )

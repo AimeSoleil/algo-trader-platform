@@ -19,7 +19,7 @@ from shared.metrics import llm_request_duration, llm_retries_total, llm_tokens_t
 from shared.models.blueprint import LLMTradingBlueprint
 from shared.utils import get_logger, now_utc, next_trading_day
 
-from services.analysis_service.app.llm.agents.base_agent import AgentLLMProvider, _default_provider
+from services.analysis_service.app.llm.agents.base_agent import AgentLLMProvider, LLMUsageTracker, _default_provider
 from services.analysis_service.app.llm.json_utils import parse_llm_json
 
 logger = get_logger("synthesizer_agent")
@@ -43,6 +43,7 @@ class SynthesizerAgent:
         *,
         provider: AgentLLMProvider | None = None,
         signal_date: date | None = None,
+        usage_tracker: LLMUsageTracker | None = None,
     ) -> LLMTradingBlueprint:
         """Produce a trading blueprint from specialist agent analyses.
 
@@ -99,6 +100,7 @@ class SynthesizerAgent:
 
                 blueprint = LLMTradingBlueprint.model_validate(data)
                 status = "ok"
+                elapsed = perf_counter() - t0
 
                 llm_tokens_total.labels(
                     provider=provider.name, direction="prompt",
@@ -107,11 +109,25 @@ class SynthesizerAgent:
                     provider=provider.name, direction="completion",
                 ).inc(result.output_tokens)
 
+                if usage_tracker is not None:
+                    usage_tracker.record(
+                        agent="synthesizer",
+                        provider=provider.name,
+                        model=result.model,
+                        input_tokens=result.input_tokens,
+                        output_tokens=result.output_tokens,
+                        total_tokens=result.total_tokens,
+                        duration_s=round(elapsed, 3),
+                    )
+
                 logger.info(
                     "synthesizer.completed",
                     provider=provider.name,
+                    model=result.model,
                     plans=len(blueprint.symbol_plans),
-                    tokens=result.total_tokens,
+                    input_tokens=result.input_tokens,
+                    output_tokens=result.output_tokens,
+                    total_tokens=result.total_tokens,
                 )
                 return blueprint
 

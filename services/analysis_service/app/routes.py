@@ -112,14 +112,21 @@ async def trigger_analysis(req: AnalyzeRequest):
 
 
 @router.get("/analysis/blueprint/reasoning/{blueprint_id}")
-async def get_blueprint_reasoning(blueprint_id: str):
+async def get_blueprint_reasoning(
+    blueprint_id: str,
+    symbols: str | None = Query(None, description="Comma-separated symbols to filter, e.g. AAPL,NVDA"),
+):
     """查询蓝图的完整 LLM 推理上下文（agent outputs、critic 反馈、原始响应等）。
 
-    可用于审查 LLM 分析结论是否合理。
+    可用于审查 LLM 分析结论是否合理。可选按 symbols 过滤只返回相关 symbol 的分析结果。
     """
     from services.analysis_service.app.queries import query_reasoning
 
-    result = await query_reasoning(blueprint_id)
+    symbol_filter: set[str] | None = None
+    if symbols:
+        symbol_filter = {s.strip().upper() for s in symbols.split(",") if s.strip()}
+
+    result = await query_reasoning(blueprint_id, symbol_filter=symbol_filter)
     if "error" in result:
         raise HTTPException(status_code=404, detail=result["error"])
     return result

@@ -56,8 +56,11 @@ async def query_blueprint(
     return {**data, "_from_cache": False}
 
 
-async def query_reasoning(blueprint_id: str) -> dict:
-    """从 DB 查询蓝图的 LLM 推理上下文"""
+async def query_reasoning(
+    blueprint_id: str,
+    symbol_filter: set[str] | None = None,
+) -> dict:
+    """从 DB 查询蓝图的 LLM 推理上下文，可选按 symbol 过滤"""
     async with get_postgres_session() as session:
         result = await session.execute(
             text(
@@ -90,7 +93,11 @@ async def query_reasoning(blueprint_id: str) -> dict:
         import json
         reasoning = json.loads(reasoning)
 
-    return {
+    # Apply symbol filter if requested
+    if symbol_filter and isinstance(reasoning, dict):
+        reasoning = _filter_reasoning_by_symbols(reasoning, symbol_filter)
+
+    resp: dict = {
         "blueprint_id": row[0],
         "trading_date": str(row[1]),
         "model_provider": row[2],
@@ -98,3 +105,45 @@ async def query_reasoning(blueprint_id: str) -> dict:
         "generated_at": str(row[4]),
         "reasoning": reasoning,
     }
+    if symbol_filter:
+        resp["_symbol_filter"] = sorted(symbol_filter)
+    return resp
+
+
+def _filter_reasoning_by_symbols(reasoning: dict, symbols: set[str]) -> dict:
+    """Filter reasoning context to only include data for the requested symbols."""
+    filtered = dict(reasoning)
+
+    # Filter signals_summary
+    if "signals_summary" in filtered and isinstance(filtered["signals_summary"], list):
+        filtered["signals_summary"] = [
+            s for s in filtered["signals_summary"]
+            if s.get("symbol", "").upper() in symbols
+        ]
+
+    # Filter agent_outputs — each agent stores a dict with a "symbols" list
+    if "agent_outputs" in filtered and isinstance(filtered["agent_outputs"], dict):
+        filtered_outputs = {}
+        for agent_name, output in filtered["agent_outputs"].items():
+            if not isinstance(output, dict):
+                filtered_outputs[agent_name] = output
+                continue
+            agent_filtered = dict(output)
+            # Most agents have a "symbols" key with per-symbol analysis list
+            if "symbols" in agent_filtered and isinstance(agent_filtered["symbols"], list):
+                agent_filtered["symbols"] = [
+                    s for s in agent_filtered["symbols"]
+                    if s.get("symbol", "").upper() in symbols
+                ]
+            filtered_outputs[agent_name] = agent_filtered
+        filtered["agent_outputs"] = filtered_outputs
+
+    # Filter chunked contexts if present
+    if "chunk_contexts" in filtered and isinstance(filtered["chunk_contexts"], list):
+        filtered["chunk_contexts"] = [
+            _filter_reasoning_by_symbols(ctx, symbols)
+            for ctx in filtered["chunk_contexts"]
+            if isinstance(ctx, dict)
+        ]
+
+    return filtered

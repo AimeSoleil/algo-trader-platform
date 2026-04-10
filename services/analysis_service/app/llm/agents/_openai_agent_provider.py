@@ -52,4 +52,5 @@ class OpenAIAgentProvider:
             input_tokens=usage.input_tokens if usage else 0,
             output_tokens=usage.output_tokens if usage else 0,
             total_tokens=usage.total_tokens if usage else 0,
+            model=self._model,
         )

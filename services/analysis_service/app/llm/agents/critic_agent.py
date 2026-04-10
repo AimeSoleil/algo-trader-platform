@@ -17,7 +17,7 @@ from shared.config import get_settings
 from shared.metrics import llm_request_duration, llm_retries_total, llm_tokens_total
 from shared.utils import get_logger
 
-from services.analysis_service.app.llm.agents.base_agent import AgentLLMProvider, _default_provider
+from services.analysis_service.app.llm.agents.base_agent import AgentLLMProvider, LLMUsageTracker, _default_provider
 from services.analysis_service.app.llm.json_utils import parse_llm_json
 from services.analysis_service.app.llm.agents.models import CriticVerdict
 
@@ -37,6 +37,7 @@ class CriticAgent:
         signals_summary: list[dict[str, Any]],
         *,
         provider: AgentLLMProvider | None = None,
+        usage_tracker: LLMUsageTracker | None = None,
     ) -> CriticVerdict:
         """Review a blueprint and return verdict.
 
@@ -78,6 +79,7 @@ class CriticAgent:
                 verdict = CriticVerdict.model_validate(data)
 
                 status = "ok"
+                elapsed = perf_counter() - t0
                 llm_tokens_total.labels(
                     provider=provider.name, direction="prompt",
                 ).inc(result.input_tokens)
@@ -85,12 +87,26 @@ class CriticAgent:
                     provider=provider.name, direction="completion",
                 ).inc(result.output_tokens)
 
+                if usage_tracker is not None:
+                    usage_tracker.record(
+                        agent="critic",
+                        provider=provider.name,
+                        model=result.model,
+                        input_tokens=result.input_tokens,
+                        output_tokens=result.output_tokens,
+                        total_tokens=result.total_tokens,
+                        duration_s=round(elapsed, 3),
+                    )
+
                 logger.info(
                     "critic.completed",
                     provider=provider.name,
+                    model=result.model,
                     verdict=verdict.verdict,
                     issues=len(verdict.issues),
-                    tokens=result.total_tokens,
+                    input_tokens=result.input_tokens,
+                    output_tokens=result.output_tokens,
+                    total_tokens=result.total_tokens,
                 )
                 return verdict
 

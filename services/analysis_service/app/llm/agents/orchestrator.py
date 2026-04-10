@@ -24,7 +24,7 @@ from shared.models.blueprint import LLMTradingBlueprint
 from shared.models.signal import SignalFeatures
 from shared.utils import get_logger
 
-from services.analysis_service.app.llm.agents.base_agent import AgentLLMProvider
+from services.analysis_service.app.llm.agents.base_agent import AgentLLMProvider, LLMUsageTracker
 from services.analysis_service.app.llm.agents.chain_agent import ChainAgent
 from services.analysis_service.app.llm.agents.cross_asset_agent import CrossAssetAgent
 from services.analysis_service.app.llm.agents.critic_agent import CriticAgent
@@ -179,6 +179,8 @@ class AgentOrchestrator:
             return LLMTradingBlueprint(symbol_plans=[])
 
         # ── Decide: single pass vs chunked ──
+        usage_tracker = LLMUsageTracker()
+
         if len(trade_features) <= chunk_size:
             # Small enough — run everything in one pass (no chunking overhead)
             blueprint = await self._generate_single_pass(
@@ -187,6 +189,7 @@ class AgentOrchestrator:
                 previous_execution=previous_execution,
                 provider=provider,
                 signal_date=signal_date,
+                usage_tracker=usage_tracker,
             )
         else:
             # Chunk trade symbols, inject benchmark-only into each chunk
@@ -199,6 +202,7 @@ class AgentOrchestrator:
                 "orchestrator.chunking",
                 total_symbols=len(signal_features),
                 benchmark_only_symbols=len(benchmark_only_features),
+                benchmark_symbols=[sf.symbol for sf in benchmark_only_features],
                 trade_symbols=len(trade_features),
                 chunks=len(chunks),
                 chunk_size=chunk_size,
@@ -207,10 +211,29 @@ class AgentOrchestrator:
 
             # Run chunks with concurrency limit
             sem = asyncio.Semaphore(max_parallel)
+            chunk_trackers: list[LLMUsageTracker] = []
 
             async def _run_chunk(idx: int, chunk_features: list[SignalFeatures]):
+                chunk_tracker = LLMUsageTracker()
+                chunk_trackers.append(chunk_tracker)
+                trade_syms_in_chunk = [
+                    sf.symbol for sf in chunk_features
+                    if sf.symbol.upper() not in trade_benchmark_syms
+                    or sf.symbol.upper() in trade_syms
+                ]
+                benchmark_syms_in_chunk = [
+                    sf.symbol for sf in chunk_features
+                    if sf.symbol.upper() in trade_benchmark_syms
+                    and sf.symbol.upper() not in trade_syms
+                ]
                 async with sem:
-                    logger.info("orchestrator.chunk_started", chunk=idx, symbols=len(chunk_features))
+                    logger.info(
+                        "orchestrator.chunk_started",
+                        chunk=idx,
+                        symbols=len(chunk_features),
+                        trade_symbols=trade_syms_in_chunk,
+                        benchmark_symbols=benchmark_syms_in_chunk,
+                    )
                     return await self._generate_single_pass(
                         signal_features=chunk_features,
                         current_positions=current_positions,
@@ -218,6 +241,7 @@ class AgentOrchestrator:
                         provider=provider,
                         signal_date=signal_date,
                         is_chunk=True,
+                        usage_tracker=chunk_tracker,
                     )
 
             chunk_blueprints = await asyncio.gather(
@@ -255,7 +279,21 @@ class AgentOrchestrator:
                 chunks=len(chunks),
             )
 
+            # Merge chunk trackers into the main usage tracker
+            for ct in chunk_trackers:
+                usage_tracker.merge(ct)
+
         elapsed_ms = round((perf_counter() - started) * 1000, 2)
+
+        # ── Log LLM usage summary ──
+        usage_summary = usage_tracker.summary()
+        logger.info(
+            "orchestrator.llm_usage_summary",
+            elapsed_ms=elapsed_ms,
+            **usage_summary["total"],
+            agents=usage_summary["agents"],
+        )
+
         logger.info(
             "orchestrator.completed",
             plans=len(blueprint.symbol_plans),
@@ -272,6 +310,7 @@ class AgentOrchestrator:
         *,
         signal_date: date | None = None,
         is_chunk: bool = False,
+        usage_tracker: LLMUsageTracker | None = None,
     ) -> LLMTradingBlueprint:
         """Run the full specialist → synthesizer → critic pipeline on one set of signals."""
         # ── Step 0: Serialize signals once ──
@@ -287,7 +326,7 @@ class AgentOrchestrator:
         ]
 
         # ── Step 1: Run 6 specialist agents in parallel ──
-        agent_outputs = await self._run_specialists(serialized, provider=provider)
+        agent_outputs = await self._run_specialists(serialized, provider=provider, usage_tracker=usage_tracker)
 
         logger.info(
             "orchestrator.specialists_done",
@@ -303,6 +342,7 @@ class AgentOrchestrator:
             previous_execution=previous_execution,
             provider=provider,
             signal_date=signal_date,
+            usage_tracker=usage_tracker,
         )
 
         logger.info(
@@ -320,6 +360,7 @@ class AgentOrchestrator:
                 agent_outputs=agent_outputs,
                 signals_summary=signals_summary,
                 provider=provider,
+                usage_tracker=usage_tracker,
             )
 
             critic_history.append({
@@ -358,6 +399,7 @@ class AgentOrchestrator:
                 ),
                 provider=provider,
                 signal_date=signal_date,
+                usage_tracker=usage_tracker,
             )
 
         # ── Attach reasoning context for auditability ──
@@ -410,6 +452,7 @@ class AgentOrchestrator:
         serialized_signals: list[dict[str, Any]],
         *,
         provider: AgentLLMProvider,
+        usage_tracker: LLMUsageTracker | None = None,
     ) -> dict[str, Any]:
         """Run all 6 specialist agents in parallel, collecting results.
 
@@ -427,7 +470,7 @@ class AgentOrchestrator:
 
         async def _run_one(name: str, agent):
             try:
-                result = await agent.analyze(serialized_signals, provider=provider)
+                result = await agent.analyze(serialized_signals, provider=provider, usage_tracker=usage_tracker)
                 return name, result.model_dump(mode="json")
             except Exception as e:
                 logger.warning(

@@ -65,6 +65,92 @@ class LLMResult:
     input_tokens: int = 0
     output_tokens: int = 0
     total_tokens: int = 0
+    model: str = ""
+
+
+@dataclass
+class LLMCallRecord:
+    """One LLM invocation record for usage tracking."""
+
+    agent: str
+    provider: str
+    model: str
+    input_tokens: int
+    output_tokens: int
+    total_tokens: int
+    duration_s: float
+
+
+class LLMUsageTracker:
+    """Accumulates LLM call records across a pipeline run."""
+
+    def __init__(self) -> None:
+        self.records: list[LLMCallRecord] = []
+
+    def record(
+        self,
+        *,
+        agent: str,
+        provider: str,
+        model: str,
+        input_tokens: int,
+        output_tokens: int,
+        total_tokens: int,
+        duration_s: float,
+    ) -> None:
+        self.records.append(LLMCallRecord(
+            agent=agent,
+            provider=provider,
+            model=model,
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            total_tokens=total_tokens,
+            duration_s=duration_s,
+        ))
+
+    def summary(self) -> dict:
+        """Return per-agent breakdown and grand totals."""
+        by_agent: dict[str, dict] = {}
+        total_input = total_output = total_total = 0
+        total_calls = 0
+        total_duration = 0.0
+
+        for r in self.records:
+            entry = by_agent.setdefault(r.agent, {
+                "calls": 0,
+                "model": r.model,
+                "provider": r.provider,
+                "input_tokens": 0,
+                "output_tokens": 0,
+                "total_tokens": 0,
+                "duration_s": 0.0,
+            })
+            entry["calls"] += 1
+            entry["input_tokens"] += r.input_tokens
+            entry["output_tokens"] += r.output_tokens
+            entry["total_tokens"] += r.total_tokens
+            entry["duration_s"] = round(entry["duration_s"] + r.duration_s, 3)
+
+            total_input += r.input_tokens
+            total_output += r.output_tokens
+            total_total += r.total_tokens
+            total_calls += 1
+            total_duration += r.duration_s
+
+        return {
+            "agents": by_agent,
+            "total": {
+                "calls": total_calls,
+                "input_tokens": total_input,
+                "output_tokens": total_output,
+                "total_tokens": total_total,
+                "duration_s": round(total_duration, 3),
+            },
+        }
+
+    def merge(self, other: "LLMUsageTracker") -> None:
+        """Merge records from another tracker (for chunked pipelines)."""
+        self.records.extend(other.records)
 
 
 @runtime_checkable
@@ -142,6 +228,7 @@ class AnalysisAgent(ABC):
         context: dict[str, Any] | None = None,
         *,
         provider: AgentLLMProvider | None = None,
+        usage_tracker: LLMUsageTracker | None = None,
     ) -> T:
         """Run analysis on the provided signal data.
 
@@ -191,6 +278,7 @@ class AnalysisAgent(ABC):
                 parsed = self.output_model.model_validate(data)
 
                 status = "ok"
+                elapsed = perf_counter() - t0
                 llm_tokens_total.labels(
                     provider=provider.name, direction="prompt",
                 ).inc(result.input_tokens)
@@ -198,11 +286,25 @@ class AnalysisAgent(ABC):
                     provider=provider.name, direction="completion",
                 ).inc(result.output_tokens)
 
+                if usage_tracker is not None:
+                    usage_tracker.record(
+                        agent=self.name,
+                        provider=provider.name,
+                        model=result.model,
+                        input_tokens=result.input_tokens,
+                        output_tokens=result.output_tokens,
+                        total_tokens=result.total_tokens,
+                        duration_s=round(elapsed, 3),
+                    )
+
                 logger.info(
                     f"agent.{self.name}.completed",
                     provider=provider.name,
+                    model=result.model,
                     symbols=len(filtered),
-                    tokens=result.total_tokens,
+                    input_tokens=result.input_tokens,
+                    output_tokens=result.output_tokens,
+                    total_tokens=result.total_tokens,
                 )
                 return parsed
 
