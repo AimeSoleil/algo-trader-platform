@@ -77,14 +77,17 @@ class InfraSettings(BaseSettings):
 
 class CelerySettings(BaseSettings):
     """Celery runtime settings — applied to all workers."""
-    prefetch_multiplier: int = 1           # 严格公平调度
+    prefetch_multiplier: int = 4           # 预取任务数（analysis worker 单独覆盖为 1）
     max_memory_per_child: int = 500_000    # KB, 500 MB — exceeded → auto-restart
     task_acks_late: bool = True            # ack after completion, not on delivery
     task_track_started: bool = True        # track STARTED state
+    task_soft_time_limit: int = 600        # seconds — SoftTimeLimitExceeded (graceful)
+    task_time_limit: int = 900             # seconds — SIGKILL (hard ceiling)
+    task_reject_on_worker_lost: bool = True  # re-queue if worker dies mid-task
     concurrency: int = 0                   # 0 = Celery default (CPU cores)
 
 class BeatSettings(BaseSettings):
-    redbeat_lock_timeout: int = 300        # seconds before a dead beat loses the lock
+    redbeat_lock_timeout: int = 900        # seconds before a dead beat loses the lock
 
 class FlowerSettings(BaseSettings):
     port: int = 5555
@@ -273,7 +276,9 @@ class DataServiceFilterSettings(BaseSettings):
 class DataWorkerScheduleSettings(BaseSettings):
     """data_service.worker.schedule — 盘中/盘后调度时间."""
     options_capture_every_minutes: int = 5      # 盘中期权链采集间隔（分钟）
-    stock_pipeline_time: str = "18:30"         # 盘后股票采集流水线触发
+    options_post_close_time: str = "17:00"      # 盘后期权聚合流水线触发
+    stock_pipeline_time: str = "17:25"          # 盘后股票采集流水线触发
+    refresh_earnings_time: str = "17:50"        # 刷新 earnings cache
 
 class DataPipelineSettings(BaseSettings):
     """data_service.worker.pipeline — 流水线 stop-after 门控.
@@ -285,7 +290,7 @@ class DataPipelineSettings(BaseSettings):
     """
     chunk_size: int = 5
     stop_after: str = "generate_daily_blueprint"
-    coordination_timeout_minutes: int = 120    # 两条流水线协调超时（分钟）
+    coordination_timeout_minutes: int = 60     # 两条流水线协调超时（分钟）
 
 class DataWorkerSettings(BaseSettings):
     """data_service.worker — 数据服务 worker 配置."""

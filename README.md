@@ -61,15 +61,46 @@ docker compose ps
 
 ## 核心调度模型
 
-| 时间 | 服务 | 动作 |
-|------|------|------|
-| 09:20 | Trade | 加载当日 `llm_trading_blueprint` |
-| 09:30-16:00（每5分钟） | Data | 拉取行情并写入 L1 内存 + L2 Parquet 缓存 |
-| 09:30-16:00（每5分钟） | Rule Engine + Trade | 校验蓝图条件，触发下单 |
-| 16:30 | Data (Celery) | 批量入库（股票1min + 期权5min） |
-| 16:35 | Backfill (Celery) | 检测并补齐缺口 |
-| 17:00 | Signal (Celery) | 批量计算特征（IV/PCR/趋势/曲面） |
-| 17:10 | Analysis (Celery) | 生成次日蓝图并写入 PostgreSQL |
+### 盘后流水线时间线（ET，工作日）
+
+| 时间 | 队列 | 任务 | 说明 |
+|------|------|------|------|
+| 09:30-16:00 每5分钟 | data | `capture_intraday_options` | 盘中期权链快照采集 |
+| 17:00 | data | `run_options_post_close` | 期权 5min 快照 → option_daily 聚合 → set flag |
+| 17:25 | data | `run_stock_pipeline` | 股票 1min + daily bars 采集 → set flag → schedule timeout |
+| 17:50 | data | `refresh_earnings_cache` | 刷新 Redis 中 earnings 日期缓存 |
+| ~17:40 | data | `check_pipelines_and_continue` | 两管线 flag 齐 → 触发下游 |
+| ~17:40 | backfill | `detect_gaps_chunk` × N | fire-and-forget 缺口检测回填（不阻塞关键路径） |
+| ~17:45 | signal | `compute_signals_chunk` × N (chord) | 并行分块信号计算 → stage_barrier |
+| ~18:00 | analysis | `generate_daily_blueprint` | 6 specialist + synthesizer + critic 多智能体蓝图生成 |
+| 16:30 | data | `send_daily_report` | 每日交易报告推送（if notifier enabled） |
+
+### 设计决策
+
+- **17:00 起步**：与最后一次盘中采集（16:00）间隔 60 分钟，确保所有 snapshot 写入完成
+- **25 分钟间隔**：options → stock → earnings 各步骤错开，避免 data 队列争抢
+- **coordination 模式**：两管线各自完成后 set Redis flag + call `check_pipelines_and_continue`；
+  第二个到达时 flag 齐全 → 触发 backfill + signal → blueprint 链
+- **coordination timeout**：60 分钟（countdown from stock pipeline），超时仅告警不自动重试
+
+### Celery 调优
+
+| 参数 | 值 | 说明 |
+|------|-----|------|
+| `prefetch_multiplier` | 4（全局）/ 1（analysis） | data/signal/backfill 多预取提高吞吐；analysis 单任务重且慢 |
+| `task_acks_late` | true | 崩溃时可重投递 |
+| `task_soft_time_limit` | 600s（全局）/ 2400s（analysis） | 超时优雅终止 |
+| `task_time_limit` | 900s（全局）/ 2700s（analysis） | SIGKILL 硬限制 |
+| `task_reject_on_worker_lost` | true | worker 崩溃时未 ack 任务重新入队 |
+
+### RabbitMQ
+
+- `consumer_timeout = 0`：禁用 delivery ack 超时（Celery countdown 任务 + acks_late 会长时间持有 unacked 消息）
+- 安全网由 Celery `task_time_limit` + `task_reject_on_worker_lost` 提供
+
+### RedBeat（分布式 Beat 调度）
+
+- `redbeat_lock_timeout = 900s`（续期间隔 180s）：避免 Redis 短暂不可达导致锁丢失、Beat 停止调度
 
 ## 手动触发链路（Collect → Signal → Analysis）
 

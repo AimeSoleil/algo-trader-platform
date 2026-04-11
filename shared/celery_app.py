@@ -66,6 +66,9 @@ def create_celery_app() -> Celery:
         enable_utc=True,
         task_track_started=celery_cfg.task_track_started,
         task_acks_late=celery_cfg.task_acks_late,
+        task_soft_time_limit=celery_cfg.task_soft_time_limit,
+        task_time_limit=celery_cfg.task_time_limit,
+        task_reject_on_worker_lost=celery_cfg.task_reject_on_worker_lost,
         worker_prefetch_multiplier=celery_cfg.prefetch_multiplier,
         worker_max_memory_per_child=celery_cfg.max_memory_per_child,
         # Task routes — each service handles its own tasks
@@ -74,6 +77,7 @@ def create_celery_app() -> Celery:
             "backfill_service.tasks.*": {"queue": "backfill"},
             "signal_service.tasks.*": {"queue": "signal"},
             "analysis_service.tasks.*": {"queue": "analysis"},
+            "trade_service.tasks.*": {"queue": "data"},
         },
         # ── RedBeat — distributed Beat scheduler ──────────────
         # Replaces the default file-based beat scheduler so that
@@ -90,17 +94,15 @@ def create_celery_app() -> Celery:
 
     # ── Beat schedules ─────────────────────────────────────
     #
-    # 1. stock-pipeline  — captures post-market stock data (1m bars / daily bars)
-    #    at configured time (default 18:30 ET) weekdays.
+    # Timeline (ET, weekdays):
+    #   09:30-16:00  intraday-option-capture (every 5 min)
+    #   17:00        options-post-close      — aggregate 5-min snapshots → daily
+    #   17:25        stock-pipeline          — capture post-market 1m bars + daily
+    #   17:50        refresh-earnings-cache  — update Redis earnings cache
+    #   (16:30)      daily-trading-report    — if notifier enabled
     #
-    # 2. options-post-close — aggregates intraday option snapshots into daily
-    #    tables shortly after market close (default 16:10 ET) weekdays.
-    #
-    # 3. intraday-option-capture — captures option chain snapshots every N minutes
-    #    during US market hours (09:30-16:00 ET, weekdays).  The task itself has
-    #    an is_market_open() guard to handle edge cases (e.g. 9:25 crontab fire).
-    #    distributed_once ensures only one orchestrator runs per tick when
-    #    celery-data is scaled horizontally; chunks then fan out to all workers.
+    # Tasks are staggered so each finishes before the next starts,
+    # avoiding data-queue contention on a single-concurrency worker.
     #
     # Coordination: both stock-pipeline and options-post-close set Redis flags
     # and call check_pipelines_and_continue.  Downstream stages (backfill →
@@ -114,11 +116,11 @@ def create_celery_app() -> Celery:
     _mkt_start_h, _mkt_start_m = map(int, settings.common.market_hours.start.split(":"))
     _mkt_end_h, _mkt_end_m = map(int, settings.common.market_hours.end.split(":"))
 
-    # Options aggregation = market close + 10 minutes
-    _opt_agg_h, _opt_agg_m = _mkt_end_h, _mkt_end_m + 10
-    if _opt_agg_m >= 60:
-        _opt_agg_h += 1
-        _opt_agg_m -= 60
+    # Options post-close — configurable (default 16:20 ET)
+    _opt_h, _opt_m = map(int, settings.data_service.worker.schedule.options_post_close_time.split(":"))
+
+    # Earnings cache refresh — configurable (default 17:15 ET)
+    _earn_h, _earn_m = map(int, settings.data_service.worker.schedule.refresh_earnings_time.split(":"))
 
     app.conf.beat_schedule = {
         "stock-pipeline": {
@@ -128,7 +130,7 @@ def create_celery_app() -> Celery:
         },
         "options-post-close": {
             "task": "data_service.tasks.run_options_post_close",
-            "schedule": crontab(hour=_opt_agg_h, minute=_opt_agg_m, day_of_week="1-5"),
+            "schedule": crontab(hour=_opt_h, minute=_opt_m, day_of_week="1-5"),
             "options": {"queue": "data"},
         },
         "intraday-option-capture": {
@@ -140,10 +142,9 @@ def create_celery_app() -> Celery:
             ),
             "options": {"queue": "data"},
         },
-        # Earnings dates — refresh Redis cache before signal pipeline
         "refresh-earnings-cache": {
             "task": "data_service.tasks.refresh_earnings_cache",
-            "schedule": crontab(hour=_mkt_end_h, minute=_mkt_end_m + 30, day_of_week="1-5"),
+            "schedule": crontab(hour=_earn_h, minute=_earn_m, day_of_week="1-5"),
             "options": {"queue": "data"},
         },
     }

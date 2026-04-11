@@ -95,6 +95,7 @@ services:
       RABBITMQ_DEFAULT_PASS: trader_dev
     volumes:
       - rabbitmq_data:/var/lib/rabbitmq
+      - ./config/rabbitmq.conf:/etc/rabbitmq/rabbitmq.conf:ro
     networks:
       algo_trader_net:
         aliases:

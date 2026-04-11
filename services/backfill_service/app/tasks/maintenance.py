@@ -18,7 +18,8 @@ _MAX_1MIN_LOOKBACK = 7
 # ── 18:00 Historical Gap Check ────────────────────────────
 
 
-@celery_app.task(name="backfill_service.tasks.check_historical_gaps")
+@celery_app.task(name="backfill_service.tasks.check_historical_gaps",
+                 soft_time_limit=1800, time_limit=2100)
 def check_historical_gaps() -> dict:
     """18:00 每日检查：回溯验证近期数据完整性并自动修复"""
     return asyncio.run(_check_historical_async())
@@ -117,7 +118,8 @@ async def _check_historical_async() -> dict:
 # ── 手动触发：新标的冷启动 ─────────────────────────────────
 
 
-@celery_app.task(name="backfill_service.tasks.backfill_new_symbol")
+@celery_app.task(name="backfill_service.tasks.backfill_new_symbol",
+                 soft_time_limit=1200, time_limit=1500)
 def backfill_new_symbol(symbol: str, days: int = 90) -> dict:
     """手动触发：为新标的回填历史数据"""
     logger.debug(

@@ -109,7 +109,7 @@ services:
     build:
       context: .
       dockerfile: services/celery_worker/Dockerfile
-    command: worker -Q analysis -n analysis@%h --loglevel=${COMMON__LOGGING__LEVEL:-INFO}
+    command: worker -Q analysis -n analysis@%h --prefetch-multiplier=1 --loglevel=${COMMON__LOGGING__LEVEL:-INFO}
     env_file:
       - .env
     environment:

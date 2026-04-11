@@ -644,8 +644,12 @@ echo "$$" > "$MANAGER_PID_FILE"
 # ── Start workers (only those in ACTIVE_WORKERS) ──────────
 
 for queue in "${ACTIVE_WORKERS[@]}"; do
+  # analysis worker: force prefetch=1 (one LLM call at a time)
+  extra_args=""
+  [[ "$queue" == "analysis" ]] && extra_args="--prefetch-multiplier=1"
+
   run_with_restart "$queue" \
-    $CELERY_CMD worker -Q "$queue" -n "${queue}@%h" \
+    $CELERY_CMD worker -Q "$queue" -n "${queue}@%h" $extra_args \
     --loglevel="$LOG_LEVEL" --logfile="$LOG_DIR/celery-${queue}.log" &
   WRAPPER_PIDS[$queue]=$!
 done

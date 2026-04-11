@@ -104,14 +104,17 @@ common:
 
   # ── Celery 通用运行时 (所有 worker 共享) ──
   celery:
-    prefetch_multiplier: 1             # 每次从 broker 预取的任务数（1 = 严格公平调度）
+    prefetch_multiplier: 4             # 每次从 broker 预取的任务数（analysis worker 单独覆盖为 1）
     max_memory_per_child: 500000       # KB — 子进程超出后自动重启（500 MB）
     task_acks_late: true               # true = 任务完成后才 ack（崩溃时可重投递）
     task_track_started: true           # true = 任务开始执行即标记 STARTED 状态
+    task_soft_time_limit: 600          # 秒 — 超时抛 SoftTimeLimitExceeded（优雅终止）
+    task_time_limit: 900               # 秒 — 超时 SIGKILL（硬限制，必须 > soft）
+    task_reject_on_worker_lost: true   # worker 崩溃时将未 ack 的任务重新入队
     concurrency: 0                     # worker 并发数（0 = Celery 默认，即 CPU 核数）
 
   beat:
-    redbeat_lock_timeout: 300          # RedBeat 分布式锁超时秒数
+    redbeat_lock_timeout: 900          # RedBeat 分布式锁超时秒数（续期间隔 = timeout/5 = 180s）
 
   flower:
     port: 5555
@@ -194,11 +197,13 @@ data_service:
   worker:
     schedule:
       options_capture_every_minutes: 5     # 盘中期权链采集间隔（分钟）
-      stock_pipeline_time: "18:30"        # 盘后股票采集流水线触发
+      options_post_close_time: "17:00"    # 盘后期权聚合（收盘后 60 分钟缓冲）
+      stock_pipeline_time: "17:25"        # 盘后股票采集（options 聚合完成后）
+      refresh_earnings_time: "17:50"      # 刷新 earnings cache（stock pipeline 完成后）
     pipeline:
       chunk_size: 5                         # 每个 chunked stage 的 symbol 分块大小
       stop_after: "generate_daily_blueprint"  # 流水线执行到此步为止（含），后续步骤跳过
-      coordination_timeout_minutes: 120     # 两条流水线协调超时（分钟）
+      coordination_timeout_minutes: 60      # 两条流水线协调超时（分钟）
 
 
 # ── Signal Service — 信号计算与策略过滤 ─────────────────────

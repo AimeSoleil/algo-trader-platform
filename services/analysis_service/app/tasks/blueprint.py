@@ -157,7 +157,8 @@ def _annotate_blueprint_quality(
 # ── Daily blueprint task ──────────────────────────────────────
 
 
-@celery_app.task(name="analysis_service.tasks.generate_daily_blueprint", bind=True, max_retries=2)
+@celery_app.task(name="analysis_service.tasks.generate_daily_blueprint", bind=True, max_retries=2,
+                 soft_time_limit=2400, time_limit=2700)
 def generate_daily_blueprint(self, trading_date: str | None = None, prev_result=None) -> dict:
     """
     17:10 Celery 任务：生成次日交易蓝图

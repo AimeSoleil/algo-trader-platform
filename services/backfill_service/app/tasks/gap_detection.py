@@ -24,6 +24,8 @@ _DAILY_GAP_LOOKBACK = 5
     name="backfill_service.tasks.detect_and_backfill_gaps",
     bind=True,
     max_retries=2,
+    soft_time_limit=1800,
+    time_limit=2100,
 )
 def detect_and_backfill_gaps(
     self,
@@ -199,6 +201,8 @@ async def _detect_and_backfill_async(trading_date_str: str | None = None) -> dic
     bind=True,
     max_retries=2,
     queue="backfill",
+    soft_time_limit=1200,
+    time_limit=1500,
 )
 def detect_gaps_chunk(
     self,
