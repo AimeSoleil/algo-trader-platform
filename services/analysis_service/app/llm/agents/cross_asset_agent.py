@@ -57,7 +57,7 @@ Multi-Benchmark Beta & Correlation:
 
 VIX:
 - Level: <15=low, 15-25=normal, 25-35=elevated, >35=panic
-- 52w Pct(252 trading days lookback): <0.2=complacent, >0.8=fear extreme
+- 52w Pct: Use 60-trading-day rolling percentile for VIX classification. 252-day includes regime changes that distort current context. Example: If VIX averaged 30 for 6 months then dropped to 15 for 2 months, 252-day says 'complacent' at VIX=15 but 60-day says 'normal'. <0.2=complacent, >0.8=fear extreme
 - Corr(20d): most stocks negative; positive=unusual
 
 Rules:
@@ -74,6 +74,7 @@ R10. iwm_corr>0.6+IWM down→risk-off→reduce 30%,tighten stops
 R11. iwm_β>1.3→high small-cap risk→wider stops
 R12. tlt_corr>0.3→rate-sensitive→reduce ahead of FOMC
 R13. tlt_corr<-0.3→rate-beneficiary→increase in rising rates
+IMPORTANT: Rules R14-R26 (correlation-based trading adjustments) require regime_days ≥ 2 before activation. A single-day correlation spike (e.g., HYG dropping 1%) should NOT trigger position reductions. Require at least 2 consecutive days of the correlation signal persisting.
 R14. SPY/QQQ/IWM corr spread>0.4→regime transition→reduce all 25%
 R15. VIX>30→sell premium aggressively,wider defined risk
 R16. VIX<15→buy cheap protection,narrow spreads
@@ -97,17 +98,20 @@ RP2. Regime change requires 5+ consecutive days of consistent signal to be "conf
 RP3. When reporting regime_transition=true, set regime_days=0 to indicate new regime just started
 RP4. If data shows regime_days < 5, do NOT apply full position size modifiers — scale linearly:
    effective_modifier = 1.0 + (target_modifier - 1.0) × min(regime_days / 5, 1.0)
+RP5. Asymmetric hysteresis for regime transitions. To ENTER a new regime: require regime_days ≥ 3 (current). To REVERT to previous regime: require regime_days ≥ 5 in new direction. This prevents whipsaw: a 4-day fear regime reverting on 1 good day should NOT immediately restore full confidence.
+RP6. If regime_days < 3 in new direction, blend: 70% previous regime modifier + 30% current.
 
 ## Correlation Confidence Assessment
-CC1. 20d correlation with few data points or high variance → label "weak" correlation
-CC2. Weak correlation signals should reduce modifier impact by 50%
-CC3. When multiple weak correlations are the only basis for a regime call → cap confidence at 0.3
+CC1. Use exponentially-weighted correlation (half-life 20 days) instead of flat 60-day window.
+CC2. Report correlation confidence as R² of the exponentially-weighted fit.
+CC3. If R² < 0.3, mark correlation as 'unstable' and cap derived confidence at 0.4.
 
 ## Size Modifier Floor (prevents cascading to near-zero)
 SM1. Combined effective_size_modifier (after ALL adjustments) must NOT go below 0.3
 SM2. If combined modifiers would push below 0.3 → set effective_size_modifier=0.0 and recommend SKIP
    (Rationale: a 0.1-0.2× position is noise, not a trade. Either trade at 0.3+ or don't trade)
 SM3. Report effective_size_modifier in output for downstream use
+SM4. If strategy_type is explicitly 'hedge' or 'protective', the 0.3× modifier floor does NOT apply. Hedges at 0.1-0.2× have portfolio value even when standalone they are 'too small'. Only apply the floor to directional/income trades.
 
 Constraints:
 - No >25% changes with conf<0.5
@@ -117,7 +121,7 @@ Constraints:
 - |hedge_ratio|>200→split tranches(max 100 shares)
 - Multi-benchmark quality≥0.5 required
 - VIX rules need vix_quality=1.0
-- VIX percentile uses 252 trading day lookback
+- VIX percentile uses 60-trading-day rolling lookback (not 252-day — regime changes distort longer windows)
 
 ## Output Schema
 {"symbols":[{"symbol":"AAPL","correlation_regime":"fear|decoupled|bullish_vol|normal","dominant_benchmark":"SPY|QQQ|IWM","rate_sensitive":false,"safe_haven_correlated":false,"credit_stress_exposure":false,"energy_exposure":false,"crypto_correlated":false,"risk_off_signal":false,"regime_transition":false,"regime_days":0,"vix_environment":"panic|elevated|normal|complacent","position_size_modifier":1.0,"hedging_needed":false,"hedge_direction":null,"effective_size_modifier":1.0,"reasoning":"","confidence":0.0-1.0}],"market_regime":"","vix_summary":""}

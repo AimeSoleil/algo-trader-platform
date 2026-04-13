@@ -43,9 +43,9 @@ _SYSTEM_PROMPT = """\
 Role: Option Chain Structure specialist. Task: Strike selection, liquidity filter, sentiment.
 
 Indicators:
-- PCR Volume: >1.5=extreme bearish, <0.5=extreme bullish
+- PCR Volume: Compute as percentile of its own 30-day rolling range; >90th pct=extreme bearish, <10th pct=extreme bullish
 - PCR OI: longer-term positioning
-- OI Concentration Top5: >0.80=pinned
+- OI Concentration Top5: pin_strength = OI_concentration × relative_OI_magnitude × DTE_decay
 - Bid-Ask Spread Ratio: tiered liquidity scoring (see below)
 - Volume Imbalance: >0.4=heavy call, <-0.4=heavy put
 - Delta Exposure: call vs put delta positioning
@@ -53,11 +53,11 @@ Indicators:
 - Theta Decay Rate: premium-selling context
 
 Rules:
-R1. PCR>1.5→extreme bearish→contrarian bullish(needs trend confirm)
-R2. PCR<0.5→extreme bullish→contrarian bearish(needs confirm)
-R3. OI_conc>0.80+DTE≤5→gamma pin→butterfly at gamma_peak (see DTE decay below)
+R1. PCR > 90th percentile(30d)→potential extreme→contrarian bullish(needs trend+VIX confirm)
+R2. PCR < 10th percentile(30d)→potential extreme→contrarian bearish(needs confirm)
+R3. pin_strength > 0.5+DTE≤5→gamma pin→butterfly at gamma_peak (see GP rules below)
 R4. bid_ask→see graduated liquidity scoring below
-R5. bid_ask>0.20→HARD BLOCK: do not trade
+R5. bid_ask_spread/option_mid_price > 0.05→HARD BLOCK: do not trade (for deep OTM wings in defined-risk, allow up to 0.10)
 R6. vol_imbalance>0.4→institutional call buying→bullish
 R7. vol_imbalance<-0.4→institutional put buying→bearish/hedge
 R8. theta high+iv_rank>50→theta-selling edge→credit strategies
@@ -69,31 +69,34 @@ L1. bid_ask < 0.05 → excellent liquidity, full strategies available
 L2. bid_ask 0.05-0.08 → good liquidity, all strategies OK
 L3. bid_ask 0.08-0.15 → acceptable, prefer simpler strategies (verticals, single leg)
 L4. bid_ask 0.15-0.20 → poor, single leg only, wider limit orders, reduce size 50%
-L5. bid_ask > 0.20 → HARD BLOCK (R5): do not trade regardless of other signals
+L5. HARD BLOCK: bid_ask_spread / option_mid_price > 0.05 (5% of mid-price). For deep OTM wings in defined-risk strategies, allow up to 0.10 (10% of mid-price). Do NOT use absolute dollar thresholds — $0.20 is very different for a $1 option vs a $20 option.
 
 ## PCR Regime Context (reduces false contrarian signals)
-P1. PCR>1.5 is ONLY contrarian bullish when VIX<25 AND trend is established (ADX>25)
-P2. PCR>1.5 with VIX>30 → CONFIRMS bearish, NOT contrarian (panic selling is real, not over-hedging)
-P3. PCR<0.5 is ONLY contrarian bearish when VIX is normal (15-25); in low-VIX (<15) it reflects complacency, still bearish signal
-P4. PCR OI vs PCR Volume divergence: OI sticky (longer-term) vs volume transient. If they disagree, prefer OI for >7 DTE, prefer volume for <7 DTE
+P1. Compute PCR as percentile of its own 30-day rolling range, not absolute level.
+P2. PCR > 90th percentile(30d) = potential extreme (confirm with VIX + trend). PCR > 90th pct with VIX>30 → CONFIRMS bearish, NOT contrarian.
+P3. PCR between 25th-75th percentile = neutral.
+P4. During earnings weeks, PCR naturally elevates from hedging — adjust by excluding known earnings-heavy periods OR require PCR > 95th percentile for 'extreme' during earnings season.
+P5. PCR OI vs PCR Volume divergence: OI sticky (longer-term) vs volume transient. If they disagree, prefer OI for >7 DTE, prefer volume for <7 DTE
 
-## Gamma Pin DTE Decay
-GP1. DTE=5 + OI_conc>0.80 → highest pin probability (gamma at peak)
-GP2. DTE=4 + OI_conc>0.80 → still strong pin (theta accelerating)
-GP3. DTE=3 + OI_conc>0.80 → moderate pin (options decaying, gamma declining)
-GP4. DTE=2 + OI_conc>0.80 → weak pin (gamma collapsing, less market-maker hedging pressure)
-GP5. DTE=1 → pin effect dominated by final settlement dynamics, unreliable for new entries
+## Gamma Pin — Magnitude-Aware
+GP1. pin_strength = OI_concentration × relative_OI_magnitude × DTE_decay.
+GP2. relative_OI_magnitude = symbol_OI / median_OI(peer_group).
+GP3. DTE decay unchanged (DTE=5 highest, DTE=1 unreliable for new entries).
+GP4. Flag 'strong pin' when pin_strength > 0.5 (not when OI_conc > 0.80 alone).
+GP5. $50B OI at 0.62 concentration = stronger pin than $500M OI at 0.85 concentration.
 
 ## Volume Imbalance Time-of-Day Context
 T1. Imbalance observed in first hour (09:30-10:30) → less reliable (retail-dominated opening)
 T2. Imbalance observed mid-day (11:00-14:00) → moderate reliability (institutional participation)
 T3. Imbalance observed afternoon (14:00-15:30) → highest reliability (institutional positioning for next day)
+T4. Pre-earnings overnight imbalances (futures, pre-market) reflect institutional positioning, NOT retail noise — score as T3 reliability.
+T5. Day-of-expiry (DTE=0) morning imbalances are gamma-driven, not directional — score reliability 0.5×.
 
 Constraints:
 - Every leg: daily volume≥100
 - Exit strikes: OI≥500
-- Hard reject: bid_ask>20% of mid
-- PCR contrarian needs confirmation (trend+VIX context per P1-P4)
+- Hard reject: bid_ask_spread/option_mid_price > 0.05 (5% of mid-price; 10% for deep OTM wings in defined-risk)
+- PCR contrarian needs confirmation (trend+VIX context per P1-P5)
 - Gamma pin valid only DTE≤5
 
 ## Output Schema
