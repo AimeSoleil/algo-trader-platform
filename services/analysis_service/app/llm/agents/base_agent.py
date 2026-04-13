@@ -273,7 +273,7 @@ class AnalysisAgent(ABC):
                     instructions=self.system_prompt,
                     user_prompt=user_prompt,
                     temperature=settings.analysis_service.llm.openai.temperature,
-                    max_tokens=4096,
+                    max_tokens=8192,
                     model=model,
                 )
 

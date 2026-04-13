@@ -49,6 +49,9 @@ class CheckResult:
 def check_blueprint(
     blueprint: dict[str, Any],
     signal_features: dict[str, dict[str, Any]] | None = None,
+    *,
+    account_size: float = 100_000.0,
+    context: dict[str, Any] | None = None,
 ) -> CheckResult:
     """Run all deterministic rule checks on a blueprint.
 
@@ -59,6 +62,11 @@ def check_blueprint(
     signal_features:
         Optional mapping of symbol → serialized signal data for
         context-aware checks (e.g. ADX-based counter-trend detection).
+    account_size:
+        Account size in dollars used to compute daily-loss caps.
+        Default 100_000 preserves legacy $2000/$3000 behaviour.
+    context:
+        Optional dict with market context (e.g. ``trend_strength``).
 
     Returns
     -------
@@ -67,8 +75,12 @@ def check_blueprint(
     """
     result = CheckResult()
     signal_features = signal_features or {}
+    context = context or {}
 
-    _check_portfolio_risk(blueprint, result)
+    soft_limit = account_size * 0.02
+    hard_limit = account_size * 0.03
+    _check_portfolio_risk(blueprint, result, context=context,
+                          soft_limit=soft_limit, hard_limit=hard_limit)
     _check_duplicate_symbols(blueprint, result)
     for plan in blueprint.get("symbol_plans", []):
         _check_plan_risk(plan, result)
@@ -95,44 +107,111 @@ def check_blueprint(
 # ---------------------------------------------------------------------------
 
 
-def _check_portfolio_risk(bp: dict, result: CheckResult) -> None:
+def _check_portfolio_risk(
+    bp: dict,
+    result: CheckResult,
+    *,
+    context: dict[str, Any] | None = None,
+    soft_limit: float = 2000.0,
+    hard_limit: float = 3000.0,
+) -> None:
     """Validate portfolio-level risk constraints."""
-    # Delta limit
+    context = context or {}
+    trend_strength = context.get("trend_strength")
+
+    # --- Delta limit (A3: adaptive based on trend_strength) ---
     delta_limit = bp.get("portfolio_delta_limit", 0.5)
-    if delta_limit > 0.8:
+    if trend_strength is not None:
+        if trend_strength > 0.7:
+            delta_warn, delta_err = 0.8, 0.9
+        elif trend_strength < 0.3:
+            delta_warn, delta_err = 0.4, 0.7
+        else:
+            delta_warn, delta_err = 0.5, 0.8
+    else:
+        delta_warn, delta_err = 0.5, 0.8
+
+    if delta_limit > delta_err:
         result.issues.append(RuleIssue(
             severity="error",
             category="risk_breach",
             rule="portfolio_delta_limit",
-            description=f"portfolio_delta_limit={delta_limit} exceeds max 0.8",
+            description=f"portfolio_delta_limit={delta_limit} exceeds max {delta_err}",
         ))
-    elif delta_limit > 0.5:
+    elif delta_limit > delta_warn:
         result.issues.append(RuleIssue(
             severity="warning",
             category="risk_breach",
             rule="portfolio_delta_limit_elevated",
-            description=f"portfolio_delta_limit={delta_limit} > 0.5 (needs strong trend justification)",
+            description=f"portfolio_delta_limit={delta_limit} > {delta_warn} (needs strong trend justification)",
         ))
 
-    # Gamma limit
+    # --- Gamma limit (A3: only error if short-gamma with short DTE) ---
     gamma_limit = bp.get("portfolio_gamma_limit", 0.1)
     if gamma_limit > 0.1:
-        result.issues.append(RuleIssue(
-            severity="error",
-            category="risk_breach",
-            rule="portfolio_gamma_limit",
-            description=f"portfolio_gamma_limit={gamma_limit} exceeds max 0.1",
-        ))
+        has_short_gamma_short_dte = False
+        today = _date_type.today()
+        for plan in bp.get("symbol_plans", []):
+            for leg in plan.get("legs", []):
+                if leg.get("side") == "sell":
+                    expiry_str = leg.get("expiry", "")
+                    if expiry_str:
+                        try:
+                            dte = (_date_type.fromisoformat(expiry_str) - today).days
+                        except (ValueError, TypeError):
+                            continue
+                        if dte <= 7:
+                            has_short_gamma_short_dte = True
+                            break
+            if has_short_gamma_short_dte:
+                break
 
-    # Daily loss
-    max_loss = bp.get("max_daily_loss", 2000.0)
-    if max_loss > 2000.0:
+        if has_short_gamma_short_dte:
+            result.issues.append(RuleIssue(
+                severity="error",
+                category="risk_breach",
+                rule="portfolio_gamma_limit",
+                description=f"portfolio_gamma_limit={gamma_limit} exceeds max 0.1 (short gamma with DTE≤7)",
+            ))
+        else:
+            result.issues.append(RuleIssue(
+                severity="warning",
+                category="risk_breach",
+                rule="portfolio_gamma_limit",
+                description=f"portfolio_gamma_limit={gamma_limit} exceeds 0.1 — elevated gamma",
+            ))
+
+    # --- Daily loss (A2: account-scaled) ---
+    max_loss = bp.get("max_daily_loss", 0.0)
+    if max_loss > hard_limit:
         result.issues.append(RuleIssue(
             severity="error",
             category="risk_breach",
             rule="max_daily_loss",
-            description=f"max_daily_loss=${max_loss} exceeds $2,000 hard limit",
+            description=f"max_daily_loss=${max_loss} exceeds ${hard_limit:.0f} hard limit (3% of account)",
         ))
+    elif max_loss > soft_limit:
+        result.issues.append(RuleIssue(
+            severity="warning",
+            category="risk_breach",
+            rule="max_daily_loss",
+            description=f"max_daily_loss=${max_loss} exceeds ${soft_limit:.0f} soft limit (2% of account)",
+        ))
+
+
+# ---------------------------------------------------------------------------
+# Strategy-aware confidence baselines (A6)
+# ---------------------------------------------------------------------------
+
+_CONFIDENCE_BASELINES = {
+    "iron_condor": 0.35, "iron_butterfly": 0.35,
+    "calendar_spread": 0.30, "diagonal": 0.30,
+    "straddle": 0.30, "strangle": 0.30,
+    "bull_call_spread": 0.45, "bear_put_spread": 0.45,
+    "bull_put_spread": 0.45, "bear_call_spread": 0.45,
+}
+
+_DEFAULT_CONFIDENCE_BASELINE = 0.40
 
 
 # ---------------------------------------------------------------------------
@@ -166,15 +245,21 @@ def _check_plan_risk(plan: dict, result: CheckResult) -> None:
             description=f"max_loss_per_trade={max_loss} — must be > 0",
         ))
 
-    # Confidence sanity
+    # Confidence sanity (A6: strategy-aware baseline)
     conf = plan.get("confidence", 0)
-    if conf < 0.3:
+    strategy = plan.get("strategy_type", "")
+    baseline = _CONFIDENCE_BASELINES.get(strategy, _DEFAULT_CONFIDENCE_BASELINE)
+    threshold = baseline * 0.6
+    if conf < threshold:
         result.issues.append(RuleIssue(
             severity="warning",
             category="risk_breach",
             symbol=sym,
             rule="low_confidence",
-            description=f"Plan confidence={conf:.2f} — very low, consider skipping",
+            description=(
+                f"Plan confidence={conf:.2f} below {threshold:.2f} "
+                f"(60% of {strategy or 'default'} baseline {baseline:.2f}) — consider skipping"
+            ),
         ))
 
 
@@ -264,7 +349,10 @@ def _check_plan_reasoning(plan: dict, result: CheckResult) -> None:
 
 
 def _check_counter_trend(plan: dict, signal: dict, result: CheckResult) -> None:
-    """ADX>30 → do NOT enter counter-trend (trend-momentum.md rule 9)."""
+    """ADX>30 → do NOT enter counter-trend (trend-momentum.md rule 9).
+
+    A4: downgrade to warning if 2+ confluence signals present AND stop_loss is set.
+    """
     sym = plan.get("underlying", "UNKNOWN")
     trend = signal.get("stock_trend", {})
     adx = trend.get("adx_14", 0)
@@ -272,14 +360,28 @@ def _check_counter_trend(plan: dict, signal: dict, result: CheckResult) -> None:
     plan_dir = plan.get("direction", "neutral")
 
     if adx > 30 and trend_dir != "neutral" and plan_dir != "neutral":
-        # Check for counter-trend
         is_counter = (
             (trend_dir == "bullish" and plan_dir == "bearish")
             or (trend_dir == "bearish" and plan_dir == "bullish")
         )
         if is_counter:
+            # A4: check confluence signals
+            confluence_count = 0
+            pcr = signal.get("option_chain", {}).get("pcr_volume", 0)
+            if pcr > 1.5 or pcr < 0.5:
+                confluence_count += 1
+            bb_pos = signal.get("trend", {}).get("bb_position")
+            if bb_pos is not None and (bb_pos > 0.95 or bb_pos < 0.05):
+                confluence_count += 1
+            vol_ratio = signal.get("flow", {}).get("volume_ratio", 1)
+            if vol_ratio < 0.8:
+                confluence_count += 1
+
+            has_stop = bool(plan.get("stop_loss_amount"))
+            severity = "warning" if (confluence_count >= 2 and has_stop) else "error"
+
             result.issues.append(RuleIssue(
-                severity="error",
+                severity=severity,
                 category="strategy_mismatch",
                 symbol=sym,
                 rule="counter_trend_adx30",
@@ -292,19 +394,26 @@ def _check_counter_trend(plan: dict, signal: dict, result: CheckResult) -> None:
 
 
 def _check_liquidity(plan: dict, signal: dict, result: CheckResult) -> None:
-    """bid-ask > 0.20 → HARD BLOCK (option-chain-structure.md rule 5)."""
+    """Bid-ask spread ratio check (A5: strategy-aware thresholds)."""
     sym = plan.get("underlying", "UNKNOWN")
     chain = signal.get("option_chain", {})
     bid_ask_ratio = chain.get("bid_ask_spread_ratio", 0)
+    strategy = plan.get("strategy_type", "")
 
-    if bid_ask_ratio > 0.20:
+    # A5: relax hard block for multi-leg strategies with wider wings
+    if "iron_condor" in strategy or "calendar" in strategy:
+        hard_threshold = 0.30
+    else:
+        hard_threshold = 0.25
+
+    if bid_ask_ratio > hard_threshold:
         result.issues.append(RuleIssue(
             severity="error",
             category="liquidity",
             symbol=sym,
             rule="bid_ask_hard_block",
             description=(
-                f"bid_ask_spread_ratio={bid_ask_ratio:.4f} > 0.20 — "
+                f"bid_ask_spread_ratio={bid_ask_ratio:.4f} > {hard_threshold:.2f} — "
                 f"HARD BLOCK: do not trade this symbol."
             ),
         ))
@@ -481,9 +590,20 @@ def _check_greeks_direction(plan: dict, result: CheckResult) -> None:
 
 
 def _check_dte_bounds(plan: dict, result: CheckResult) -> None:
-    """Validate all legs have DTE within [7, 180]."""
+    """Validate all legs have DTE within strategy-appropriate bounds (A1)."""
     sym = plan.get("underlying", "UNKNOWN")
     today = _date_type.today()
+    strategy = plan.get("strategy_type", "")
+
+    # A1: strategy-specific DTE ranges
+    if strategy == "gamma_scalp":
+        dte_min, dte_max = 0, 5
+    elif strategy in ("calendar_spread", "diagonal"):
+        dte_min, dte_max = 14, 200
+    elif strategy in ("leaps", "long_leaps"):
+        dte_min, dte_max = 60, 365
+    else:
+        dte_min, dte_max = 7, 180
 
     for i, leg in enumerate(plan.get("legs", [])):
         expiry_str = leg.get("expiry", "")
@@ -495,17 +615,17 @@ def _check_dte_bounds(plan: dict, result: CheckResult) -> None:
             continue
         dte = (expiry - today).days
 
-        if dte < 7:
+        if dte < dte_min:
             result.issues.append(RuleIssue(
                 severity="error", category="risk_breach", symbol=sym,
                 rule="dte_bounds",
-                description=f"Leg {i} expiry {expiry_str} has DTE={dte} < 7 — too short",
+                description=f"Leg {i} expiry {expiry_str} has DTE={dte} < {dte_min} — too short for {strategy or 'default'}",
             ))
-        elif dte > 180:
+        elif dte > dte_max:
             result.issues.append(RuleIssue(
                 severity="warning", category="risk_breach", symbol=sym,
                 rule="dte_bounds",
-                description=f"Leg {i} expiry {expiry_str} has DTE={dte} > 180 — unusually long",
+                description=f"Leg {i} expiry {expiry_str} has DTE={dte} > {dte_max} — unusually long for {strategy or 'default'}",
             ))
 
 
@@ -606,8 +726,9 @@ def _check_confidence_quality_gate(
 def _check_cascading_modifiers(
     plan: dict, signal: dict, result: CheckResult,
 ) -> None:
-    """Warn if stacked position-size modifiers reduce position to near-zero."""
+    """Warn/error if stacked position-size modifiers reduce position (A7: nuanced severity)."""
     sym = plan.get("underlying", "UNKNOWN")
+    strategy = plan.get("strategy_type", "")
 
     flow_mod = signal.get("flow", {}).get("position_size_modifier") if isinstance(signal.get("flow"), dict) else None
     cross_mod = (
@@ -620,17 +741,46 @@ def _check_cascading_modifiers(
         return
 
     try:
-        product = float(flow_mod) * float(cross_mod)
+        flow_val = float(flow_mod)
+        cross_val = float(cross_mod)
+        product = flow_val * cross_val
     except (TypeError, ValueError):
         return
 
-    if product < 0.3:
+    if product >= 0.3:
+        return
+
+    if product < 0.1:
+        # Position effectively zero — skip trade
         result.issues.append(RuleIssue(
-            severity="warning", category="risk_breach", symbol=sym,
+            severity="error", category="risk_breach", symbol=sym,
             rule="cascading_size_modifiers",
             description=(
-                f"Stacked modifiers (flow={flow_mod}, cross_asset={cross_mod}, "
+                f"Stacked modifiers (flow={flow_val}, cross_asset={cross_val}, "
+                f"product={product:.2f}) reduce position to near-zero — skip trade"
+            ),
+        ))
+    else:
+        # Product 0.1–0.3: determine intent
+        both_reducing = flow_val < 0.5 and cross_val < 0.5
+        conflict = (flow_val > 0.75 and cross_val < 0.5) or (cross_val > 0.75 and flow_val < 0.5)
+        is_hedge = "hedge" in strategy
+
+        if is_hedge:
+            severity = "info"
+        elif both_reducing:
+            severity = "info"
+        elif conflict:
+            severity = "warning"
+        else:
+            severity = "warning"
+
+        result.issues.append(RuleIssue(
+            severity=severity, category="risk_breach", symbol=sym,
+            rule="cascading_size_modifiers",
+            description=(
+                f"Stacked modifiers (flow={flow_val}, cross_asset={cross_val}, "
                 f"product={product:.2f}) reduce position to near-zero — "
-                f"effectively a skip"
+                f"{'intentional reduction' if severity == 'info' else 'unclear intent'}"
             ),
         ))

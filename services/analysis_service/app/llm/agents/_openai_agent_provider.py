@@ -44,7 +44,7 @@ class OpenAIAgentProvider:
             input=user_prompt,
             text={"format": {"type": "json_object"}},
             temperature=temperature if temperature is not None else settings.analysis_service.llm.openai.temperature,
-            max_output_tokens=max_tokens or 4096,
+            max_output_tokens=max_tokens or 8192,
             timeout=self._timeout,
         )
 

@@ -14,6 +14,7 @@ from __future__ import annotations
 import asyncio
 import copy
 import json
+import statistics
 from datetime import date
 from time import perf_counter
 from typing import Any
@@ -115,6 +116,9 @@ class AgentOrchestrator:
             The final reviewed blueprint.
         """
         started = perf_counter()
+
+        # ── Validate signal features (D6) ──
+        signal_features = self._validate_signal_features(signal_features)
 
         # ── Resolve provider (lazy-create on first call) ──
         provider = self._provider
@@ -228,11 +232,11 @@ class AgentOrchestrator:
 
             # Run chunks with concurrency limit
             sem = asyncio.Semaphore(max_parallel)
-            chunk_trackers: list[LLMUsageTracker] = []
+            chunk_trackers: dict[int, LLMUsageTracker] = {}
 
             async def _run_chunk(idx: int, chunk_features: list[SignalFeatures]):
                 chunk_tracker = LLMUsageTracker()
-                chunk_trackers.append(chunk_tracker)
+                chunk_trackers[idx] = chunk_tracker  # Safe: each coroutine writes unique key
                 trade_syms_in_chunk = [
                     sf.symbol for sf in chunk_features
                     if sf.symbol.upper() in trade_syms
@@ -299,7 +303,7 @@ class AgentOrchestrator:
             )
 
             # Merge chunk trackers into the main usage tracker
-            for ct in chunk_trackers:
+            for ct in chunk_trackers.values():
                 usage_tracker.merge(ct)
 
         # Safety net: drop any benchmark-only plans the LLM may still emit
@@ -474,6 +478,38 @@ class AgentOrchestrator:
     # Internal helpers
     # ------------------------------------------------------------------
 
+    def _validate_signal_features(self, signal_features: list) -> list:
+        """Validate and filter signal features, removing invalid entries."""
+        valid = []
+        for sf in signal_features:
+            if isinstance(sf, dict):
+                symbol = sf.get("symbol", "")
+                price = sf.get("close_price", 0)
+            else:
+                symbol = getattr(sf, "symbol", "")
+                price = getattr(sf, "close_price", 0)
+
+            if not symbol:
+                logger.warning("orchestrator.signal_filtered", reason="missing symbol")
+                continue
+            if price is None or price <= 0:
+                logger.warning("orchestrator.signal_filtered", symbol=symbol, reason=f"invalid close_price={price}")
+                continue
+            valid.append(sf)
+
+        if len(valid) < 1:
+            raise ValueError(f"Insufficient valid signal features: {len(valid)} (minimum 1 required)")
+
+        if len(valid) < len(signal_features):
+            logger.warning(
+                "orchestrator.signals_filtered",
+                original=len(signal_features),
+                valid=len(valid),
+                dropped=len(signal_features) - len(valid),
+            )
+
+        return valid
+
     # Keys preserved for benchmark-only symbols (compact cross-asset context)
     _BENCHMARK_KEEP_KEYS = frozenset({
         "symbol", "confidence",
@@ -619,12 +655,37 @@ class AgentOrchestrator:
 
                 symbol_directions.setdefault(sym, []).append((agent_name, direction, conf))
 
-        # Compute consensus
+        # Compute confidence-weighted consensus
         consensus: dict[str, dict[str, Any]] = {}
         for sym, directions in symbol_directions.items():
             counts = {"bullish": 0, "bearish": 0, "neutral": 0}
-            for _, d, _ in directions:
+            weights = {"bullish": 0.0, "bearish": 0.0, "neutral": 0.0}
+            for _, d, c in directions:
                 counts[d] = counts.get(d, 0) + 1
+                weights[d] = weights.get(d, 0.0) + c
+
+            bullish_weight = weights["bullish"]
+            bearish_weight = weights["bearish"]
+
+            # Require 1.5× confidence-weight advantage for directional consensus
+            if bullish_weight > bearish_weight * 1.5:
+                consensus_dir = "bullish"
+            elif bearish_weight > bullish_weight * 1.5:
+                consensus_dir = "bearish"
+            else:
+                consensus_dir = "neutral"
+
+            # Effective confidence = 25th percentile of agreeing agents' confidence
+            agreeing_confs = [c for _, d, c in directions if d == consensus_dir]
+            if agreeing_confs:
+                effective_confidence = round(
+                    statistics.quantiles(agreeing_confs, n=4)[0]
+                    if len(agreeing_confs) >= 2
+                    else agreeing_confs[0],
+                    3,
+                )
+            else:
+                effective_confidence = 0.0
 
             max_dir = max(counts, key=counts.get)
             agreement = counts[max_dir]
@@ -632,10 +693,16 @@ class AgentOrchestrator:
 
             consensus[sym] = {
                 "direction_counts": counts,
-                "consensus_direction": max_dir if agreement > total / 2 else "neutral",
+                "consensus_direction": consensus_dir,
                 "agreement_count": agreement,
                 "total_agents": total,
                 "consensus_strength": round(agreement / max(total, 1), 2),
+                "confidence_weight": {
+                    "bullish": round(bullish_weight, 3),
+                    "bearish": round(bearish_weight, 3),
+                    "neutral": round(weights["neutral"], 3),
+                },
+                "effective_confidence": effective_confidence,
             }
 
         return consensus

@@ -55,28 +55,31 @@ R3. CMF>0.1→strong buying→confirms bullish
 R4. CMF<-0.1→strong selling→confirms bearish
 R5. tick_delta>0.3→aggressive institutional buying
 R6. tick_delta<-0.3→aggressive institutional selling
-R7. volume>2×avg→anomaly→widen stops 1.5×, reduce size 30%
+R7. volume significance→see Volume Context Analysis below
 R8. breakout+volume<1×avg→false breakout→avoid entry
 R9. breakout+volume>1.5×avg+delta confirms→validated→full size
 R10. CMF vs tick_delta disagree→conflicting→downgrade confidence
 
 ## Volume Context Analysis (reduces false signals)
-V1. Accumulation detection: high volume + small price change (<0.5% daily move) = institutional accumulation → bullish
-V2. Distribution detection: high volume + large price drop (>1.5% decline) = distribution → bearish
-V3. Climactic volume: volume >3× avg + extreme price move = exhaustion → REVERSAL likely, reduce confidence in continuation
-V4. Volume recency: weight most recent session's flow data more heavily. Stale volume patterns (>2 sessions old) should be discounted
+V1. volume > 3×20d_avg = significant regardless.
+V2. volume > 2×5d_avg AND price_move > 1.5×ATR = momentum-driven flow.
+V3. volume 1.3-2×avg on Friday/pre-holiday = routine, NOT anomalous.
+V4. Always link volume to price direction — high volume IN trend direction = institutional follow-through (increase conviction); high volume AGAINST trend = distribution (reduce conviction).
+
+## Accumulation / Distribution (ATR-normalized)
+F1. Accumulation = volume > 1.5×avg AND price_move < 0.3×ATR (stealth buying).
+F2. Distribution = volume > 1.5×avg AND price decline > 1.0×ATR.
+F3. Quiet deterioration = steady decline on BELOW-average volume — this is actually MORE bearish than climactic selling (institutions exiting without urgency = no floor).
+F4. Climactic volume + reversal candle = potential exhaustion (NOT continuation).
 
 ## Enhanced False Breakout Detection
-F1. Gap fill failure + volume < 1× avg = strong false breakout signal (confidence in breakout = 0.1)
-F2. Breakout on declining volume (3 consecutive bars decreasing) = suspect breakout (confidence 0.3)
-F3. Breakout beyond key level + immediate retest with high volume = validated (confidence 0.8)
-F4. Volume < 1× avg alone is base case false breakout (R8), but combine with price pattern for higher conviction
+BK1. Gap fill failure + volume < 1× avg = strong false breakout signal (confidence in breakout = 0.1)
+BK2. Breakout on declining volume (3 consecutive bars decreasing) = suspect breakout (confidence 0.3)
+BK3. Breakout beyond key level + immediate retest with high volume = validated (confidence 0.8)
+BK4. Volume < 1× avg alone is base case false breakout (R8), but combine with price pattern for higher conviction
 
 ## VWAP Normalization
-N1. VWAP deviation should be assessed relative to stock's ATR:
-   - Distance from VWAP < 0.5× ATR = near VWAP, weak signal
-   - Distance from VWAP 0.5-1.5× ATR = moderate signal
-   - Distance from VWAP > 1.5× ATR = strong signal, likely mean-revert
+N1. 0.5-1.0×ATR from VWAP = highest probability mean-reversion zone. >1.5×ATR from VWAP = OVER-EXTENDED, likely to continue trending (NOT revert). Price within 0.3×ATR of VWAP = no edge, avoid entry. Adjust for time-of-day: final hour (15:00-16:00) tightens all thresholds by 30%.
 
 Constraints:
 - No volume confirmation→max 50% position size

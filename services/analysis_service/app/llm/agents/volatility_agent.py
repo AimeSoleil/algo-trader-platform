@@ -71,25 +71,31 @@ R11. BB_width<0.03→straddle/strangle
 D1. When iv_rank and iv_percentile disagree by >20 points:
    - This signals regime transition (e.g., IV rank dropping but percentile still high due to recent spike)
    - REDUCE confidence by 25% on all vol-based strategy recommendations
+   - Cap sell-premium confidence at 0.5 regardless of Rank level
    - Note divergence explicitly in reasoning
    - Prefer neutral/defensive strategies until they converge
 D2. When both agree within 10 points: high confidence in vol regime classification
+D3. CRITICAL: Rank and Percentile must AGREE for high-confidence premium-selling actions. Divergence >20 points = unreliable vol regime — do NOT initiate aggressive premium sales.
 
 ## GARCH Divergence Graduated Thresholds
-G1. |GARCH - current_IV| 10-20% of current_IV → mild divergence, note in reasoning only
-G2. |GARCH - current_IV| 20-35% → moderate, candidate for mean-reversion trade (confidence 0.4-0.6)
-G3. |GARCH - current_IV| >35% → extreme, high-conviction fade (confidence 0.6-0.8)
-G4. Direction matters: GARCH > IV = vol likely to rise (buy premium); GARCH < IV = vol likely to fall (sell premium)
+GARCH divergence = |GARCH_forecast - current_IV| / current_IV. A 20% divergence when IV=10 is only 2 vol points (minor). A 20% divergence when IV=60 is 12 vol points (significant). Use the ratio, not absolute difference.
+G1. ratio<0.15=normal, note in reasoning only
+G2. ratio 0.15-0.25=mild divergence, candidate for mean-reversion trade (confidence 0.4-0.6)
+G3. ratio 0.25-0.40=moderate divergence, high-conviction fade (confidence 0.6-0.8)
+G4. ratio >0.40=extreme divergence (confidence 0.7-0.9)
+G5. Direction matters: GARCH > IV = vol likely to rise (buy premium); GARCH < IV = vol likely to fall (sell premium)
 
 ## Surface Fit Error Context
-S1. fit_error > 0.02 with ≥4 expiries available → genuine mispricing, flag for relative-value
-S2. fit_error > 0.02 with <4 expiries → likely insufficient data, reduce confidence 50%
-S3. fit_error > 0.05 → extreme mispricing OR bad data — verify before acting
+Surface fit error must be compared to average bid-ask spread across the expiries.
+S1. fit_error < 2×avg_bid_ask = normal (within market noise)
+S2. fit_error 2-4×avg_bid_ask = potential mispricing, flag for relative-value
+S3. fit_error >4×avg_bid_ask = significant mispricing opportunity
+S4. If avg_bid_ask is not available, use fit_error/ATM_IV as proxy (S1: <0.03, S2: 0.03-0.06, S3: >0.06)
 
 Constraints:
 - Never sell naked—every short leg needs defined-risk hedge
 - iv_rank vs iv_percentile disagree>20pts→reduce size 25%
-- Vol surface arb needs fit_error>0.02 AND ≥3 anomalous strikes
+- Vol surface arb needs fit_error > 2×avg_bid_ask (or fit_error/ATM_IV > 0.03 if no spread data) AND ≥3 anomalous strikes
 - No DTE<7 in backwardation
 
 ## Output Schema

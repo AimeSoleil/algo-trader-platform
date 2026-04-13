@@ -15,6 +15,15 @@ from dataclasses import dataclass, field
 from typing import Any
 
 
+# Per-Greek tolerance thresholds (D1)
+_GREEK_TOLERANCES: dict[str, dict[str, float]] = {
+    "delta": {"warn": 0.15, "error": 0.40},   # Most position-critical
+    "gamma": {"warn": 0.30, "error": 0.60},   # Small absolute values, less sensitive
+    "theta": {"warn": 0.20, "error": 0.50},   # Moderate sensitivity
+    "vega":  {"warn": 0.20, "error": 0.50},   # Moderate sensitivity
+}
+
+
 @dataclass
 class GreeksIssue:
     """A discrepancy found between calculated and stated Greeks."""
@@ -136,7 +145,21 @@ def compute_leg_greeks(
     Returns
     -------
     dict with delta, gamma, theta, vega
+
+    Raises
+    ------
+    ValueError
+        If any input is out of reasonable range.
     """
+    if iv <= 0 or iv > 5.0:
+        raise ValueError(f"IV={iv} out of reasonable range (0, 5.0]. Got {iv}")
+    if dte_years <= 0:
+        raise ValueError(f"dte_years={dte_years} must be > 0")
+    if spot <= 0:
+        raise ValueError(f"spot={spot} must be > 0")
+    if strike <= 0:
+        raise ValueError(f"strike={strike} must be > 0")
+
     sign = 1 if is_long else -1
     
     delta = bs_delta(spot, strike, dte_years, risk_free_rate, iv, is_call) * sign * quantity
@@ -258,6 +281,33 @@ def validate_greeks(
         if not spot:
             continue
         
+        # D3: Validate IV from market data before computing Greeks
+        if default_iv <= 0 or default_iv > 5.0:
+            result.issues.append(GreeksIssue(
+                severity="error",
+                symbol=sym,
+                greek="iv",
+                calculated=0.0,
+                stated=default_iv,
+                pct_diff=0.0,
+                description=f"IV={default_iv} out of reasonable range (0, 5.0] for {sym}. Skipping Greeks computation.",
+            ))
+            result.passed = False
+            continue
+        
+        if spot <= 0:
+            result.issues.append(GreeksIssue(
+                severity="error",
+                symbol=sym,
+                greek="spot",
+                calculated=0.0,
+                stated=spot,
+                pct_diff=0.0,
+                description=f"Spot price={spot} must be > 0 for {sym}. Skipping Greeks computation.",
+            ))
+            result.passed = False
+            continue
+        
         # Compute expected Greeks
         calculated = compute_position_greeks(
             legs=legs,
@@ -265,6 +315,58 @@ def validate_greeks(
             default_iv=default_iv,
             risk_free_rate=rfr,
         )
+        
+        # Compare stated vs calculated Greeks
+        stated_greeks = plan.get("greeks", {})
+        for greek_name in ("delta", "gamma", "theta", "vega"):
+            stated = stated_greeks.get(greek_name)
+            if stated is None:
+                continue
+            calc_val = calculated.get(greek_name, 0.0)
+
+            # D2: Sign-flip detection — always an error
+            if (calc_val > 0 and stated < 0) or (calc_val < 0 and stated > 0):
+                result.issues.append(GreeksIssue(
+                    severity="error",
+                    symbol=sym,
+                    greek=greek_name,
+                    calculated=round(calc_val, 4),
+                    stated=stated,
+                    pct_diff=abs(calc_val - stated) / max(abs(calc_val), 1e-6),
+                    description=f"SIGN FLIP: calculated {greek_name}={calc_val:.4f} but stated={stated:.4f}. Position direction is OPPOSITE of intended.",
+                ))
+                result.passed = False
+                continue  # Skip normal threshold comparison
+
+            # D1: Per-Greek tolerance thresholds (fall back to function params)
+            tol = _GREEK_TOLERANCES.get(greek_name, {})
+            greek_warn = tol.get("warn", warn_threshold)
+            greek_error = tol.get("error", error_threshold)
+
+            denom = max(abs(calc_val), 1e-6)
+            pct_diff = abs(calc_val - stated) / denom
+
+            if pct_diff >= greek_error:
+                result.issues.append(GreeksIssue(
+                    severity="error",
+                    symbol=sym,
+                    greek=greek_name,
+                    calculated=round(calc_val, 4),
+                    stated=stated,
+                    pct_diff=round(pct_diff, 4),
+                    description=f"{greek_name} deviation {pct_diff:.1%} exceeds error threshold {greek_error:.0%}: calculated={calc_val:.4f}, stated={stated:.4f}",
+                ))
+                result.passed = False
+            elif pct_diff >= greek_warn:
+                result.issues.append(GreeksIssue(
+                    severity="warning",
+                    symbol=sym,
+                    greek=greek_name,
+                    calculated=round(calc_val, 4),
+                    stated=stated,
+                    pct_diff=round(pct_diff, 4),
+                    description=f"{greek_name} deviation {pct_diff:.1%} exceeds warning threshold {greek_warn:.0%}: calculated={calc_val:.4f}, stated={stated:.4f}",
+                ))
         
         # Compare with plan-level direction for basic sanity
         direction = plan.get("direction", "neutral")
