@@ -99,7 +99,7 @@ common:
     backends:
       - type: "discord"
         enabled: true
-        webhook_url: "https://discord.com/api/webhooks/1412999975872368843/VOv5UsUszt6BzzyeK62dFDhlX25CHH3f4rCTYzoREzFI125WqGq_t0XxAhDUsu0YCKHa"                  # or env: COMMON__NOTIFIER__BACKENDS__0__WEBHOOK_URL
+        webhook_url: ""                  # or env: COMMON__NOTIFIER__BACKENDS__0__WEBHOOK_URL
         timeout: 10.0
 
   # ── Celery 通用运行时 (所有 worker 共享) ──
