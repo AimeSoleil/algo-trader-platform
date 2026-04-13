@@ -200,10 +200,17 @@ async def _manual_analyze_async(
         provider=blueprint.model_provider,
         duration_ms=round((perf_counter() - started) * 1000, 2),
     )
+    validation = (blueprint.reasoning_context or {}).get("deterministic_validation", {})
+    soft_blocked = bool(validation.get("error_count", 0) > 0)
     return {
         "trading_date": str(blueprint.trading_date),
         "blueprint_id": manual_id,
         "symbols": symbols,
         "plans_count": len(blueprint.symbol_plans),
         "provider": blueprint.model_provider,
+        "status": "manual",
+        "soft_blocked": soft_blocked,
+        "deterministic_validation": (
+            (blueprint.reasoning_context or {}).get("deterministic_validation")
+        ),
     }

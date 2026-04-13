@@ -83,6 +83,11 @@ BA1. For liquid underlyings (SPY, QQQ, SPX): data up to 30 seconds old retains c
 BA2. For illiquid names (avg_volume < 500K): data > 5 seconds old drops to confidence 0.2.
 BA3. Always multiply arb_confidence by (1 - bid_ask_spread/arb_value) to account for slippage consuming the edge.
 
+## Hard Overrides (MUST follow)
+H1. If effective R:R cannot be estimated from available inputs, cap confidence at <= 0.5.
+H2. If effective R:R < 1.0 after costs, mark setup as reject and set confidence <= 0.2.
+H3. Do NOT promote a spread purely on raw vertical_rr when TC1 cannot be satisfied.
+
 ## Breakeven Probability Context
 BP1. For credit spreads: 50% profit target typically achievable at 1.3× the breakeven probability.
 BP2. For debit spreads: 50% profit target = roughly breakeven probability itself (no boost).

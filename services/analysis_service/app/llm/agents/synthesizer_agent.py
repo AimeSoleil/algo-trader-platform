@@ -266,25 +266,24 @@ CW4. Flow conflict resolution is confidence-scaled:
   - If flow agent confidence > 0.6 AND detects false_breakout: reduce by 40%
   Do NOT apply a flat 30% penalty — scale by how confident the flow signal is.
 
-## Cascading Modifier Floor (graduated position sizing)
-CM1. Graduated position sizing based on combined modifier (flow × cross_asset × correlation):
-  - combined < 0.10 → SKIP the symbol entirely (position effectively zero)
-  - combined 0.10–0.30 → QUARTER position (set position_size_modifier = combined × 0.25). Only if strategy is hedge/protective.
-  - combined 0.30–0.50 → HALF position (set position_size_modifier = combined × 0.5)
-  - combined ≥ 0.50 → FULL scaled position (set position_size_modifier = combined)
-CM2. The 0.30 binary cliff is eliminated. A 0.25× hedge position has portfolio value.
-CM3. When reducing to quarter/half, add note in reasoning: "Position scaled to {pct}% due to modifier cascade."
+## Cross-Asset Data Quality Guards (MUST follow)
+CQ1. If cross_asset.confidence.correlation_significance < 0.5, cap symbol_plan confidence at <= 0.4.
+CQ2. If cross_asset.confidence.data_freshness < 0.5, do NOT create aggressive directional plans; prefer neutral/defensive structures.
+CQ3. If BOTH correlation_significance < 0.5 and data_freshness < 0.5, constrain max_position_size to <= 0.7x baseline and avoid increasing exposure.
+
+## Cascading Modifier Floor (prevents meaningless tiny positions)
+CM1. If (flow_position_size_modifier × cross_asset_position_size_modifier × correlation_reduction) < 0.3 → SKIP symbol
+CM2. A 0.1-0.2× position is noise, not a trade. Either trade at ≥0.3× or explicitly exclude.
+CM3. When skipping due to modifier floor, set confidence=0.0 and omit from symbol_plans
 
 ## Explicit No-Trade Output
 NT1. It is BETTER to output fewer high-quality plans than many low-confidence ones
 NT2. If a symbol has conflicting signals with no clear edge → do NOT force a trade. Omit from symbol_plans.
 NT3. Every symbol_plan must have confidence ≥ 0.3. If you cannot justify 0.3+, do not include it.
 
-## Strategy Selection by Confidence
-SC1. confidence < 0.4 → neutral strategies ONLY (iron_condor, iron_butterfly, straddle, calendar_spread)
-SC2. confidence 0.4–0.6 → narrow defined-risk spreads (vertical_spreads with tight width)
-SC3. confidence > 0.6 → full directional strategies allowed (any spread type appropriate for thesis)
-This prevents high-risk directional bets on low-conviction signals.
+## Cost Realism Guard (MUST follow)
+CR1. If spread analysis indicates effective R:R < 1.0 after costs, exclude that setup from symbol_plans.
+CR2. If effective R:R cannot be estimated, cap confidence at <= 0.5 and prefer simpler defined-risk structures.
 
 ## Risk Management (MANDATORY)
 - portfolio_delta_limit≤0.5 (allow 0.8 if trend strength>0.7)

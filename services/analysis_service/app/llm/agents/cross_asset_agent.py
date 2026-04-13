@@ -101,10 +101,17 @@ RP4. If data shows regime_days < 5, do NOT apply full position size modifiers �
 RP5. Asymmetric hysteresis for regime transitions. To ENTER a new regime: require regime_days ≥ 3 (current). To REVERT to previous regime: require regime_days ≥ 5 in new direction. This prevents whipsaw: a 4-day fear regime reverting on 1 good day should NOT immediately restore full confidence.
 RP6. If regime_days < 3 in new direction, blend: 70% previous regime modifier + 30% current.
 
+RP5. Hard override: if regime_days < 3, you MUST NOT output a confirmed regime-driven aggressive call.
+
 ## Correlation Confidence Assessment
 CC1. Use exponentially-weighted correlation (half-life 20 days) instead of flat 60-day window.
 CC2. Report correlation confidence as R² of the exponentially-weighted fit.
 CC3. If R² < 0.3, mark correlation as 'unstable' and cap derived confidence at 0.4.
+
+## Hard Overrides (MUST follow)
+H1. If cross_asset.confidence.correlation_significance < 0.5, cap symbol confidence at <= 0.4.
+H2. If cross_asset.confidence.data_freshness < 0.5, do NOT issue aggressive regime calls; use normal/transitioning bias only.
+H3. If both correlation_significance < 0.5 and data_freshness < 0.5, set position_size_modifier to [0.7, 1.0] (no aggressive upsize/downsize).
 
 ## Size Modifier Floor (prevents cascading to near-zero)
 SM1. Combined effective_size_modifier (after ALL adjustments) must NOT go below 0.3

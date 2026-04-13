@@ -100,10 +100,10 @@ def _serialize_signals(features: list[SignalFeatures]) -> str:
 
 
 def _prune_defaults(d: dict[str, Any]) -> dict[str, Any]:
-    """Remove zero-value / empty entries to reduce prompt token count."""
+    """Remove only empty values while preserving meaningful numeric zeros."""
     return {
         k: v for k, v in d.items()
-        if v and v != 0 and v != 0.0 and v != {} and v != "" and v != []
+        if v is not None and v != {} and v != "" and v != []
     }
 
 

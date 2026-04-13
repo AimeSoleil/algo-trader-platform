@@ -15,6 +15,8 @@ from shared.models.blueprint import LLMTradingBlueprint
 from shared.models.signal import DataQuality, SignalFeatures
 from shared.utils import get_logger, resolve_trading_date_arg, today_trading
 
+from services.analysis_service.app.evaluation.rule_checker import check_blueprint
+
 from services.analysis_service.app.tasks.helpers import (
     _fetch_current_positions,
     _get_adapter,
@@ -107,6 +109,49 @@ async def _run_blueprint_pipeline(
         trading_date=str(td),
         provider=blueprint.model_provider,
         plans=len(blueprint.symbol_plans),
+    )
+
+    # 4) Deterministic validation (warning-only minimal integration)
+    signal_map = {
+        sf.symbol.upper(): sf.model_dump(mode="json")
+        for sf in signal_features
+    }
+    check = check_blueprint(blueprint.model_dump(mode="json"), signal_map)
+    errors = [i for i in check.issues if i.severity == "error"]
+    warnings = [i for i in check.issues if i.severity == "warning"]
+    summary = {
+        "passed": check.passed,
+        "error_count": len(errors),
+        "warning_count": len(warnings),
+        "errors": [
+            {
+                "rule": i.rule,
+                "symbol": i.symbol,
+                "category": i.category,
+                "description": i.description,
+            }
+            for i in errors[:10]
+        ],
+        "warnings": [
+            {
+                "rule": i.rule,
+                "symbol": i.symbol,
+                "category": i.category,
+                "description": i.description,
+            }
+            for i in warnings[:10]
+        ],
+    }
+    ctx = dict(blueprint.reasoning_context or {})
+    ctx["deterministic_validation"] = summary
+    blueprint = blueprint.model_copy(update={"reasoning_context": ctx})
+
+    logger.info(
+        "blueprint.pipeline_deterministic_validation",
+        trading_date=str(td),
+        passed=check.passed,
+        error_count=len(errors),
+        warning_count=len(warnings),
     )
     return blueprint
 
@@ -262,6 +307,9 @@ async def _generate_blueprint_async(trading_date_str: str | None = None) -> dict
 
     _annotate_blueprint_quality(blueprint, signal_features)
     blueprint = blueprint.model_copy(update={"id": blueprint.id})
+    validation = (blueprint.reasoning_context or {}).get("deterministic_validation", {})
+    soft_blocked = bool(validation.get("error_count", 0) > 0)
+    blueprint_status = "cancelled" if soft_blocked else "pending"
 
     # 5) Write to DB (UPSERT)
     async with get_postgres_session() as session:
@@ -278,7 +326,7 @@ async def _generate_blueprint_async(trading_date_str: str | None = None) -> dict
                 "(id, trading_date, generated_at, model_provider, model_version, "
                 " blueprint_json, reasoning_json, status) "
                 "VALUES (:id, :trading_date, :generated_at, :model_provider, "
-                " :model_version, :blueprint_json, :reasoning_json, 'pending') "
+                " :model_version, :blueprint_json, :reasoning_json, :status) "
                 "ON CONFLICT (trading_date) DO UPDATE SET "
                 "  id               = EXCLUDED.id, "
                 "  generated_at     = EXCLUDED.generated_at, "
@@ -286,7 +334,7 @@ async def _generate_blueprint_async(trading_date_str: str | None = None) -> dict
                 "  model_version    = EXCLUDED.model_version, "
                 "  blueprint_json   = EXCLUDED.blueprint_json, "
                 "  reasoning_json   = EXCLUDED.reasoning_json, "
-                "  status           = 'pending'"
+                "  status           = EXCLUDED.status"
             ),
             {
                 "id": blueprint.id,
@@ -296,6 +344,7 @@ async def _generate_blueprint_async(trading_date_str: str | None = None) -> dict
                 "model_version": blueprint.model_version,
                 "blueprint_json": blueprint.model_dump_json(),
                 "reasoning_json": json.dumps(blueprint.reasoning_context, default=str) if blueprint.reasoning_context else None,
+                "status": blueprint_status,
             },
         )
         logger.debug(
@@ -315,7 +364,7 @@ async def _generate_blueprint_async(trading_date_str: str | None = None) -> dict
     blueprint_data = {
         "id": blueprint.id,
         "trading_date": str(blueprint.trading_date),
-        "status": "pending",
+        "status": blueprint_status,
         "blueprint": blueprint.model_dump(mode="json"),
         "execution_summary": None,
     }
@@ -350,10 +399,17 @@ async def _generate_blueprint_async(trading_date_str: str | None = None) -> dict
         trading_date=str(blueprint.trading_date),
         plans=len(blueprint.symbol_plans),
         provider=blueprint.model_provider,
+        status=blueprint_status,
+        soft_blocked=soft_blocked,
     )
     return {
         "trading_date": str(blueprint.trading_date),
         "blueprint_id": blueprint.id,
         "plans_count": len(blueprint.symbol_plans),
         "provider": blueprint.model_provider,
+        "status": blueprint_status,
+        "soft_blocked": soft_blocked,
+        "deterministic_validation": (
+            (blueprint.reasoning_context or {}).get("deterministic_validation")
+        ),
     }

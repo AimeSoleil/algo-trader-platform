@@ -18,6 +18,8 @@ from shared.utils import get_logger, now_utc, today_trading
 
 logger = get_logger("signal_generator")
 
+VOLATILITY_REGIME_HYSTERESIS_PCT = 2.0
+
 
 def _namespace_degraded_indicators(indicators: list[str], source: str) -> list[str]:
     """Attach source namespace to degraded indicators.
@@ -49,6 +51,7 @@ def generate_signal(
     trading_date: date | None = None,
     stock_bar_count: int = 0,
     option_row_count: int = 0,
+    previous_volatility_regime: str | None = None,
 ) -> SignalFeatures:
     """组装 SignalFeatures，做 volatility_regime 分类和数据质量标注。"""
     settings = get_settings()
@@ -56,12 +59,22 @@ def generate_signal(
     iv_pct = option_indicators.iv_percentile
     high_thr = settings.signal_service.option_strategy.high_quantile * 100  # e.g. 70.0
     low_thr  = settings.signal_service.option_strategy.low_quantile  * 100  # e.g. 30.0
-    if iv_pct >= high_thr:
-        vol_regime = "high"
-    elif iv_pct <= low_thr:
-        vol_regime = "low"
+    band = VOLATILITY_REGIME_HYSTERESIS_PCT
+    prev = (previous_volatility_regime or "").lower()
+
+    # Hysteresis: when previous state is available, require stronger evidence
+    # to switch out of an extreme regime near quantile boundaries.
+    if prev == "high":
+        vol_regime = "high" if iv_pct >= (high_thr - band) else "normal"
+    elif prev == "low":
+        vol_regime = "low" if iv_pct <= (low_thr + band) else "normal"
     else:
-        vol_regime = "normal"
+        if iv_pct >= high_thr:
+            vol_regime = "high"
+        elif iv_pct <= low_thr:
+            vol_regime = "low"
+        else:
+            vol_regime = "normal"
 
     # ── Build data quality annotation ──
     # 合并股票 + 期权降级指标列表，并区分来源（stock/option）。

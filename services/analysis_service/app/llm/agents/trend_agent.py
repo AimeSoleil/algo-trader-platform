@@ -70,14 +70,20 @@ C1. Regime change requires ≥2 confirming indicators. Single indicator = "preli
    - Reversal: Divergence + (volume decline OR momentum exhaustion) required
    - Squeeze: BB_width < 0.3×ATR + ADX below its 60d mean + declining volume = confirmed squeeze
 C2. ADX rate-of-change matters:
-   - ADX rising from below its 60d mean = emerging trend (lower confidence 0.4-0.5)
-   - ADX falling from >1σ above its 60d mean = trend exhaustion (reduce to neutral, confidence 0.3-0.4)
-   - ADX steady >1σ above its 60d mean = established trend (high confidence 0.7+)
+   - ADX rising from <20 toward 25 = emerging trend (lower confidence 0.4-0.5)
+   - ADX falling from >30 toward 25 = trend exhaustion (reduce to neutral, confidence 0.3-0.4)
+    - ADX steady >30 = established trend (high confidence 0.7+)
+    - Define "steady": abs(adx_14 - prior_adx_14) <= 2 when prior value is available; if prior value unavailable, do NOT assume steady.
 C3. Reversal confidence scaling:
    - RSI divergence alone = max confidence 0.3
    - RSI + MACD divergence same sign = confidence 0.5-0.6
    - RSI + MACD divergence + volume declining = confidence 0.7-0.8
    - Divergence confidence INCREASES with trend strength: ADX>30 + RSI divergence at key level + declining volume = high-probability exhaustion signal (confidence 0.6-0.8). This is classic institutional exit pattern. Do NOT cap divergence confidence when ADX is high — that is exactly when divergences are most reliable.
+
+## Hard Overrides (MUST follow)
+H1. If only RSI divergence is present (without MACD divergence confirmation), strategy confidence MUST be <= 0.3.
+H2. If ADX>30 and proposed direction is counter-trend, set trend_direction="neutral" and confidence <= 0.2.
+H3. If C1 multi-signal confirmation is not satisfied, do NOT output a confirmed regime; use neutral/preliminary with confidence <= 0.4.
 
 ## Output Schema
 {"symbols":[{"symbol":"AAPL","regime":"trending_up|trending_down|range_bound|squeeze|reversal_warning|neutral","trend_direction":"bullish|bearish|neutral","trend_strength":0.0-1.0,"adx_zone":"trending|range_bound|transition|extreme","divergence_detected":false,"divergence_type":null,"strategies":[{"strategy_type":"","direction":"","reasoning":"","confidence":0.0-1.0,"constraints":[]}],"reasoning":"","confidence":0.0-1.0}],"market_trend_summary":""}

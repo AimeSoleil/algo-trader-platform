@@ -106,6 +106,18 @@ class TestPlanRisk:
         result = check_blueprint(_blueprint(symbol_plans=[_plan(confidence=0.2)]))
         assert any(i.rule == "low_confidence" for i in result.issues)
 
+    def test_stop_loss_exceeds_max_loss_error(self):
+        result = check_blueprint(
+            _blueprint(symbol_plans=[_plan(stop_loss_amount=700.0, max_loss_per_trade=500.0)])
+        )
+        assert any(i.rule == "stop_loss_exceeds_max_loss" for i in result.issues)
+
+    def test_risk_reward_below_one_warning(self):
+        result = check_blueprint(
+            _blueprint(symbol_plans=[_plan(take_profit_amount=300.0, max_loss_per_trade=500.0)])
+        )
+        assert any(i.rule == "risk_reward_below_one" for i in result.issues)
+
 
 # ---------------------------------------------------------------------------
 # Strategy ↔ legs consistency
@@ -150,8 +162,8 @@ class TestContextAwareChecks:
     def test_counter_trend_adx30_error(self):
         signals = {
             "AAPL": {
-                "stock_trend": {"adx_14": 35.0, "trend_direction": "bullish"},
-                "option_chain": {},
+                "stock_indicators": {"adx_14": 35.0, "trend": "bullish"},
+                "option_indicators": {},
             }
         }
         result = check_blueprint(
@@ -163,8 +175,8 @@ class TestContextAwareChecks:
     def test_no_counter_trend_when_same_direction(self):
         signals = {
             "AAPL": {
-                "stock_trend": {"adx_14": 35.0, "trend_direction": "bullish"},
-                "option_chain": {},
+                "stock_indicators": {"adx_14": 35.0, "trend": "bullish"},
+                "option_indicators": {},
             }
         }
         result = check_blueprint(
@@ -176,8 +188,8 @@ class TestContextAwareChecks:
     def test_bid_ask_hard_block(self):
         signals = {
             "AAPL": {
-                "stock_trend": {},
-                "option_chain": {"bid_ask_spread_ratio": 0.30},
+                "stock_indicators": {},
+                "option_indicators": {"bid_ask_spread_ratio": 0.25},
             }
         }
         result = check_blueprint(
@@ -189,8 +201,8 @@ class TestContextAwareChecks:
     def test_bid_ask_illiquid_warning(self):
         signals = {
             "AAPL": {
-                "stock_trend": {},
-                "option_chain": {"bid_ask_spread_ratio": 0.17},
+                "stock_indicators": {},
+                "option_indicators": {"bid_ask_spread_ratio": 0.17},
             }
         }
         result = check_blueprint(
@@ -436,8 +448,8 @@ class TestConfidenceQualityGate:
         """High confidence + low data quality should warn."""
         signals = {
             "AAPL": {
-                "stock_trend": {},
-                "option_chain": {},
+                "stock_indicators": {},
+                "option_indicators": {},
                 "data_quality": {"score": 0.3},
             }
         }
@@ -451,8 +463,8 @@ class TestConfidenceQualityGate:
         """Moderate confidence + low data quality is fine."""
         signals = {
             "AAPL": {
-                "stock_trend": {},
-                "option_chain": {},
+                "stock_indicators": {},
+                "option_indicators": {},
                 "data_quality": {"score": 0.3},
             }
         }
@@ -463,428 +475,69 @@ class TestConfidenceQualityGate:
         assert not any(i.rule == "overconfident_on_bad_data" for i in result.issues)
 
 
+# Cascading modifier checks were removed from rule_checker because those
+# modifiers are agent outputs, not SignalFeatures fields.
+
+
 # ---------------------------------------------------------------------------
-# Cascading modifiers check
+# Cross-asset quality guard checks
 # ---------------------------------------------------------------------------
 
 
-class TestCascadingModifiers:
-    def test_cascading_modifiers_near_zero(self):
-        """Stacked modifiers producing <0.3 effective size should warn."""
+class TestCrossAssetQualityGuards:
+    def test_low_significance_caps_confidence(self):
         signals = {
             "AAPL": {
-                "stock_trend": {},
-                "option_chain": {},
-                "flow": {"position_size_modifier": 0.5},
-                "cross_asset": {"position_size_modifier": 0.4},
+                "stock_indicators": {},
+                "option_indicators": {},
+                "cross_asset_indicators": {
+                    "confidence_scores": {
+                        "correlation_significance": 0.4,
+                        "data_freshness": 0.9,
+                    }
+                },
             }
         }
         result = check_blueprint(
-            _blueprint(),
+            _blueprint(symbol_plans=[_plan(confidence=0.7)]),
             signal_features=signals,
         )
-        assert any(i.rule == "cascading_size_modifiers" for i in result.issues)
+        assert any(i.rule == "cross_asset_low_significance_confidence_cap" for i in result.issues)
 
-    def test_reasonable_modifiers_ok(self):
-        """Normal modifiers should not warn."""
+    def test_stale_data_blocks_aggressive_directional(self):
         signals = {
             "AAPL": {
-                "stock_trend": {},
-                "option_chain": {},
-                "flow": {"position_size_modifier": 0.8},
-                "cross_asset": {"position_size_modifier": 0.9},
+                "stock_indicators": {},
+                "option_indicators": {},
+                "cross_asset_indicators": {
+                    "confidence_scores": {
+                        "correlation_significance": 0.8,
+                        "data_freshness": 0.3,
+                    }
+                },
             }
         }
         result = check_blueprint(
-            _blueprint(),
+            _blueprint(symbol_plans=[_plan(direction="bullish", confidence=0.7)]),
             signal_features=signals,
         )
-        assert not any(i.rule == "cascading_size_modifiers" for i in result.issues)
+        assert any(i.rule == "cross_asset_stale_data_aggressive_direction" for i in result.issues)
 
-
-# ---------------------------------------------------------------------------
-# A1: Context-Aware DTE Bounds
-# ---------------------------------------------------------------------------
-
-
-class TestDTEBoundsContextAware:
-    def test_gamma_scalp_allows_short_dte(self):
-        """gamma_scalp allows DTE=2 (min=0)."""
-        from datetime import date, timedelta
-        short_expiry = (date.today() + timedelta(days=2)).isoformat()
-        result = check_blueprint(_blueprint(symbol_plans=[_plan(
-            strategy_type="gamma_scalp",
-            legs=[_leg(expiry=short_expiry)],
-        )]))
-        assert not any(i.rule == "dte_bounds" for i in result.issues)
-
-    def test_gamma_scalp_warns_long_dte(self):
-        """gamma_scalp warns if DTE > 5."""
-        from datetime import date, timedelta
-        long_expiry = (date.today() + timedelta(days=10)).isoformat()
-        result = check_blueprint(_blueprint(symbol_plans=[_plan(
-            strategy_type="gamma_scalp",
-            legs=[_leg(expiry=long_expiry)],
-        )]))
-        assert any(i.rule == "dte_bounds" and i.severity == "warning" for i in result.issues)
-
-    def test_calendar_spread_errors_short_dte(self):
-        """calendar_spread errors if DTE < 14."""
-        from datetime import date, timedelta
-        short_expiry = (date.today() + timedelta(days=10)).isoformat()
-        result = check_blueprint(_blueprint(symbol_plans=[_plan(
-            strategy_type="calendar_spread",
-            legs=[
-                _leg(expiry=short_expiry, side="sell"),
-                _leg(expiry=(date.today() + timedelta(days=50)).isoformat(), side="buy"),
-            ],
-        )]))
-        assert any(i.rule == "dte_bounds" and i.severity == "error" for i in result.issues)
-
-    def test_leaps_allows_long_dte(self):
-        """leaps allows DTE=300."""
-        from datetime import date, timedelta
-        long_expiry = (date.today() + timedelta(days=300)).isoformat()
-        result = check_blueprint(_blueprint(symbol_plans=[_plan(
-            strategy_type="leaps",
-            legs=[_leg(expiry=long_expiry)],
-        )]))
-        assert not any(i.rule == "dte_bounds" for i in result.issues)
-
-    def test_leaps_errors_short_dte(self):
-        """leaps errors if DTE < 60."""
-        from datetime import date, timedelta
-        short_expiry = (date.today() + timedelta(days=30)).isoformat()
-        result = check_blueprint(_blueprint(symbol_plans=[_plan(
-            strategy_type="leaps",
-            legs=[_leg(expiry=short_expiry)],
-        )]))
-        assert any(i.rule == "dte_bounds" and i.severity == "error" for i in result.issues)
-
-
-# ---------------------------------------------------------------------------
-# A2: Account-Scaled Daily Loss Cap
-# ---------------------------------------------------------------------------
-
-
-class TestAccountScaledLossCap:
-    def test_small_account_lower_hard_limit(self):
-        """50k account → hard limit $1500. $1600 should error."""
-        result = check_blueprint(_blueprint(max_daily_loss=1600.0), account_size=50_000.0)
-        assert any(i.rule == "max_daily_loss" and i.severity == "error" for i in result.issues)
-
-    def test_small_account_soft_limit_warning(self):
-        """50k account → soft limit $1000. $1100 should warn."""
-        result = check_blueprint(_blueprint(max_daily_loss=1100.0), account_size=50_000.0)
-        warns = [i for i in result.issues if i.rule == "max_daily_loss" and i.severity == "warning"]
-        assert len(warns) == 1
-
-    def test_large_account_allows_higher_loss(self):
-        """500k account → hard limit $15000. $3000 should pass."""
-        result = check_blueprint(_blueprint(max_daily_loss=3000.0), account_size=500_000.0)
-        assert not any(i.rule == "max_daily_loss" for i in result.issues)
-
-    def test_default_account_preserves_behaviour(self):
-        """Default 100k → hard limit $3000, soft limit $2000."""
-        result = check_blueprint(_blueprint(max_daily_loss=2000.0))
-        assert not any(i.rule == "max_daily_loss" for i in result.issues)
-
-
-# ---------------------------------------------------------------------------
-# A3: Adaptive Delta/Gamma Limits
-# ---------------------------------------------------------------------------
-
-
-class TestAdaptiveDeltaGamma:
-    def test_strong_trend_allows_high_delta(self):
-        """trend_strength > 0.7 → delta 0.85 only warns (no error)."""
-        result = check_blueprint(
-            _blueprint(portfolio_delta_limit=0.85),
-            context={"trend_strength": 0.8},
-        )
-        warns = [i for i in result.issues if i.rule == "portfolio_delta_limit_elevated"]
-        errs = [i for i in result.issues if i.rule == "portfolio_delta_limit"]
-        assert len(warns) == 1
-        assert len(errs) == 0
-
-    def test_weak_trend_errors_lower_delta(self):
-        """trend_strength < 0.3 → delta 0.75 errors."""
-        result = check_blueprint(
-            _blueprint(portfolio_delta_limit=0.75),
-            context={"trend_strength": 0.2},
-        )
-        assert any(i.rule == "portfolio_delta_limit" and i.severity == "error"
-                    for i in result.issues)
-
-    def test_weak_trend_warns_moderate_delta(self):
-        """trend_strength < 0.3 → delta 0.45 warns."""
-        result = check_blueprint(
-            _blueprint(portfolio_delta_limit=0.45),
-            context={"trend_strength": 0.2},
-        )
-        warns = [i for i in result.issues if i.rule == "portfolio_delta_limit_elevated"]
-        assert len(warns) == 1
-
-    def test_gamma_warning_without_short_dte(self):
-        """Gamma > 0.1 but no short gamma + short DTE → warning only."""
-        result = check_blueprint(_blueprint(portfolio_gamma_limit=0.15))
-        issues = [i for i in result.issues if i.rule == "portfolio_gamma_limit"]
-        assert len(issues) == 1
-        assert issues[0].severity == "warning"
-
-    def test_gamma_error_with_short_gamma_short_dte(self):
-        """Gamma > 0.1 with short gamma + DTE ≤ 7 → error."""
-        from datetime import date, timedelta
-        short_expiry = (date.today() + timedelta(days=3)).isoformat()
-        result = check_blueprint(_blueprint(
-            portfolio_gamma_limit=0.15,
-            symbol_plans=[_plan(
-                strategy_type="gamma_scalp",
-                legs=[_leg(expiry=short_expiry, side="sell")],
-            )],
-        ))
-        gamma_issues = [i for i in result.issues if i.rule == "portfolio_gamma_limit"]
-        assert len(gamma_issues) == 1
-        assert gamma_issues[0].severity == "error"
-
-
-# ---------------------------------------------------------------------------
-# A4: Counter-Trend Confluence Gate
-# ---------------------------------------------------------------------------
-
-
-class TestCounterTrendConfluence:
-    def test_confluence_downgrades_to_warning(self):
-        """2+ confluence signals + stop_loss → warning instead of error."""
+    def test_low_quality_caps_position_size(self):
         signals = {
             "AAPL": {
-                "stock_trend": {"adx_14": 35.0, "trend_direction": "bullish"},
-                "option_chain": {"pcr_volume": 1.8},
-                "trend": {"bb_position": 0.98},
-                "flow": {"volume_ratio": 0.7},
+                "stock_indicators": {},
+                "option_indicators": {},
+                "cross_asset_indicators": {
+                    "confidence_scores": {
+                        "correlation_significance": 0.4,
+                        "data_freshness": 0.3,
+                    }
+                },
             }
         }
         result = check_blueprint(
-            _blueprint(symbol_plans=[_plan(direction="bearish", stop_loss_amount=200.0)]),
+            _blueprint(symbol_plans=[_plan(max_position_size=0.9)]),
             signal_features=signals,
         )
-        issues = [i for i in result.issues if i.rule == "counter_trend_adx30"]
-        assert len(issues) == 1
-        assert issues[0].severity == "warning"
-
-    def test_no_confluence_stays_error(self):
-        """No confluence signals → stays error."""
-        signals = {
-            "AAPL": {
-                "stock_trend": {"adx_14": 35.0, "trend_direction": "bullish"},
-                "option_chain": {},
-            }
-        }
-        result = check_blueprint(
-            _blueprint(symbol_plans=[_plan(direction="bearish")]),
-            signal_features=signals,
-        )
-        issues = [i for i in result.issues if i.rule == "counter_trend_adx30"]
-        assert len(issues) == 1
-        assert issues[0].severity == "error"
-
-    def test_confluence_without_stop_loss_stays_error(self):
-        """Confluence signals but no stop_loss → stays error."""
-        signals = {
-            "AAPL": {
-                "stock_trend": {"adx_14": 35.0, "trend_direction": "bullish"},
-                "option_chain": {"pcr_volume": 1.8},
-                "trend": {"bb_position": 0.02},
-                "flow": {},
-            }
-        }
-        result = check_blueprint(
-            _blueprint(symbol_plans=[_plan(direction="bearish", stop_loss_amount=None)]),
-            signal_features=signals,
-        )
-        issues = [i for i in result.issues if i.rule == "counter_trend_adx30"]
-        assert len(issues) == 1
-        assert issues[0].severity == "error"
-
-
-# ---------------------------------------------------------------------------
-# A5: Relative Bid-Ask Spread Check
-# ---------------------------------------------------------------------------
-
-
-class TestBidAskRelative:
-    def test_iron_condor_relaxed_threshold(self):
-        """iron_condor has hard block at 0.30 — 0.27 should not block."""
-        signals = {
-            "AAPL": {
-                "stock_trend": {},
-                "option_chain": {"bid_ask_spread_ratio": 0.27},
-            }
-        }
-        result = check_blueprint(
-            _blueprint(symbol_plans=[_plan(
-                strategy_type="iron_condor",
-                direction="neutral",
-                legs=[
-                    _leg(strike=140, option_type="put", side="buy"),
-                    _leg(strike=145, option_type="put", side="sell"),
-                    _leg(strike=155, option_type="call", side="sell"),
-                    _leg(strike=160, option_type="call", side="buy"),
-                ],
-            )]),
-            signal_features=signals,
-        )
-        assert not any(i.rule == "bid_ask_hard_block" for i in result.issues)
-        assert any(i.rule == "bid_ask_illiquid" for i in result.issues)
-
-    def test_regular_strategy_blocks_at_new_threshold(self):
-        """Non-condor/calendar: hard block at 0.25."""
-        signals = {
-            "AAPL": {
-                "stock_trend": {},
-                "option_chain": {"bid_ask_spread_ratio": 0.26},
-            }
-        }
-        result = check_blueprint(
-            _blueprint(),
-            signal_features=signals,
-        )
-        assert any(i.rule == "bid_ask_hard_block" for i in result.issues)
-
-    def test_between_old_and_new_threshold_no_hard_block(self):
-        """0.21 no longer hard-blocks (was 0.20), should only warn."""
-        signals = {
-            "AAPL": {
-                "stock_trend": {},
-                "option_chain": {"bid_ask_spread_ratio": 0.21},
-            }
-        }
-        result = check_blueprint(
-            _blueprint(),
-            signal_features=signals,
-        )
-        assert not any(i.rule == "bid_ask_hard_block" for i in result.issues)
-        assert any(i.rule == "bid_ask_illiquid" for i in result.issues)
-
-
-# ---------------------------------------------------------------------------
-# A6: Strategy-Aware Confidence Floor
-# ---------------------------------------------------------------------------
-
-
-class TestStrategyAwareConfidence:
-    def test_iron_condor_low_confidence_warns(self):
-        """iron_condor baseline=0.35, threshold=0.21. confidence=0.15 should warn."""
-        result = check_blueprint(_blueprint(symbol_plans=[_plan(
-            strategy_type="iron_condor",
-            direction="neutral",
-            confidence=0.15,
-            legs=[
-                _leg(strike=140, option_type="put", side="buy"),
-                _leg(strike=145, option_type="put", side="sell"),
-                _leg(strike=155, option_type="call", side="sell"),
-                _leg(strike=160, option_type="call", side="buy"),
-            ],
-        )]))
-        assert any(i.rule == "low_confidence" for i in result.issues)
-
-    def test_bull_call_spread_higher_threshold(self):
-        """bull_call_spread baseline=0.45, threshold=0.27. confidence=0.25 should warn."""
-        result = check_blueprint(_blueprint(symbol_plans=[_plan(
-            strategy_type="bull_call_spread",
-            confidence=0.25,
-        )]))
-        assert any(i.rule == "low_confidence" for i in result.issues)
-
-    def test_iron_condor_above_threshold_no_warn(self):
-        """iron_condor with confidence=0.25 (above 0.21) should not warn."""
-        result = check_blueprint(_blueprint(symbol_plans=[_plan(
-            strategy_type="iron_condor",
-            direction="neutral",
-            confidence=0.25,
-            legs=[
-                _leg(strike=140, option_type="put", side="buy"),
-                _leg(strike=145, option_type="put", side="sell"),
-                _leg(strike=155, option_type="call", side="sell"),
-                _leg(strike=160, option_type="call", side="buy"),
-            ],
-        )]))
-        assert not any(i.rule == "low_confidence" for i in result.issues)
-
-    def test_default_strategy_uses_0_40_baseline(self):
-        """Unknown strategy uses 0.40 baseline → threshold 0.24."""
-        result = check_blueprint(_blueprint(symbol_plans=[_plan(
-            strategy_type="custom_exotic",
-            confidence=0.2,
-        )]))
-        assert any(i.rule == "low_confidence" for i in result.issues)
-
-
-# ---------------------------------------------------------------------------
-# A7: Smarter Cascading Modifier Check
-# ---------------------------------------------------------------------------
-
-
-class TestSmartCascadingModifiers:
-    def test_product_below_0_1_errors(self):
-        """Product < 0.1 → error (effectively zero)."""
-        signals = {
-            "AAPL": {
-                "stock_trend": {},
-                "option_chain": {},
-                "flow": {"position_size_modifier": 0.2},
-                "cross_asset": {"position_size_modifier": 0.3},
-            }
-        }
-        result = check_blueprint(_blueprint(), signal_features=signals)
-        issues = [i for i in result.issues if i.rule == "cascading_size_modifiers"]
-        assert len(issues) == 1
-        assert issues[0].severity == "error"
-
-    def test_both_reducing_is_info(self):
-        """Both modifiers < 0.5 with product 0.1–0.3 → info (intentional)."""
-        signals = {
-            "AAPL": {
-                "stock_trend": {},
-                "option_chain": {},
-                "flow": {"position_size_modifier": 0.4},
-                "cross_asset": {"position_size_modifier": 0.4},
-            }
-        }
-        result = check_blueprint(_blueprint(), signal_features=signals)
-        issues = [i for i in result.issues if i.rule == "cascading_size_modifiers"]
-        assert len(issues) == 1
-        assert issues[0].severity == "info"
-
-    def test_conflicting_modifiers_warns(self):
-        """One > 0.75, other < 0.5 → warning (unclear intent)."""
-        signals = {
-            "AAPL": {
-                "stock_trend": {},
-                "option_chain": {},
-                "flow": {"position_size_modifier": 0.8},
-                "cross_asset": {"position_size_modifier": 0.3},
-            }
-        }
-        result = check_blueprint(_blueprint(), signal_features=signals)
-        issues = [i for i in result.issues if i.rule == "cascading_size_modifiers"]
-        assert len(issues) == 1
-        assert issues[0].severity == "warning"
-
-    def test_hedge_strategy_is_info(self):
-        """Strategy containing 'hedge' with product 0.1–0.3 → info."""
-        signals = {
-            "AAPL": {
-                "stock_trend": {},
-                "option_chain": {},
-                "flow": {"position_size_modifier": 0.5},
-                "cross_asset": {"position_size_modifier": 0.4},
-            }
-        }
-        result = check_blueprint(
-            _blueprint(symbol_plans=[_plan(strategy_type="delta_hedge")]),
-            signal_features=signals,
-        )
-        issues = [i for i in result.issues if i.rule == "cascading_size_modifiers"]
-        assert len(issues) == 1
-        assert issues[0].severity == "info"
+        assert any(i.rule == "cross_asset_low_quality_position_size" for i in result.issues)

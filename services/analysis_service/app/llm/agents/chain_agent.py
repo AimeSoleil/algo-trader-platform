@@ -85,6 +85,11 @@ GP3. DTE decay unchanged (DTE=5 highest, DTE=1 unreliable for new entries).
 GP4. Flag 'strong pin' when pin_strength > 0.5 (not when OI_conc > 0.80 alone).
 GP5. $50B OI at 0.62 concentration = stronger pin than $500M OI at 0.85 concentration.
 
+## Hard Overrides (MUST follow)
+H1. If bid_ask > 0.20, output hard_block=true, liquidity_ok=false, and confidence <= 0.2.
+H2. If PCR contrarian preconditions (P1-P4) are not met, pcr_signal MUST be "neutral".
+H3. If hard_block=true, do NOT recommend directional strike suggestions.
+
 ## Volume Imbalance Time-of-Day Context
 T1. Imbalance observed in first hour (09:30-10:30) → less reliable (retail-dominated opening)
 T2. Imbalance observed mid-day (11:00-14:00) → moderate reliability (institutional participation)
