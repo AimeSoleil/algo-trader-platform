@@ -358,6 +358,24 @@ class AgentOrchestrator:
         trade_sym_set = set(s.upper() for s in trade_symbols) if trade_symbols else set()
         compact_outputs = self._compact_for_synthesis(agent_outputs, trade_sym_set)
 
+        # ── Step 1b: Compute consensus & market condition ──
+        consensus = self._compute_consensus(agent_outputs, trade_sym_set)
+        market_condition = self._classify_market_condition(agent_outputs)
+
+        logger.info(
+            "orchestrator.consensus_computed",
+            symbols=len(consensus),
+            market_condition=market_condition,
+            consensus_snapshot={
+                sym: {"dir": c["consensus_direction"], "agree": c["agreement_count"]}
+                for sym, c in list(consensus.items())[:5]  # log first 5
+            },
+        )
+
+        # Inject consensus into compact outputs for synthesizer context
+        compact_outputs["_consensus"] = consensus
+        compact_outputs["_market_condition"] = market_condition
+
         logger.info(
             "orchestrator.specialists_done",
             agents_succeeded=len(agent_outputs),
@@ -530,6 +548,155 @@ class AgentOrchestrator:
                     out[key] = value
             compact[agent_name] = out
         return compact
+
+    def _compute_consensus(
+        self,
+        agent_outputs: dict[str, Any],
+        trade_syms: set[str],
+    ) -> dict[str, dict[str, Any]]:
+        """Pre-compute directional consensus across agents per symbol.
+
+        Returns a dict mapping symbol → {direction_counts, consensus_direction,
+        consensus_strength, agreement_count} for injection into the synthesizer.
+        """
+        # Collect directional signals per symbol from each agent
+        symbol_directions: dict[str, list[tuple[str, str, float]]] = {}  # sym → [(agent, direction, confidence)]
+
+        direction_field_map = {
+            "trend": ("trend_direction", "confidence"),
+            "volatility": ("iv_rank_zone", "confidence"),  # high=bearish vol edge, low=bullish vol edge
+            "flow": ("flow_signal", "confidence"),
+            "chain": ("pcr_signal", "confidence"),
+            "cross_asset": ("correlation_regime", "confidence"),
+        }
+
+        vol_direction_map = {"high": "bearish", "low": "bullish", "neutral": "neutral"}
+        flow_direction_map = {
+            "strong_buy": "bullish", "moderate_buy": "bullish",
+            "strong_sell": "bearish", "moderate_sell": "bearish",
+            "neutral": "neutral", "conflicting": "neutral",
+        }
+        pcr_direction_map = {
+            "contrarian_bullish": "bullish", "contrarian_bearish": "bearish", "neutral": "neutral",
+        }
+        cross_direction_map = {
+            "fear": "bearish", "bullish_vol": "bullish", "decoupled": "neutral", "normal": "neutral",
+        }
+
+        for agent_name, output in agent_outputs.items():
+            if not isinstance(output, dict):
+                continue
+            symbols_list = output.get("symbols", [])
+            if not isinstance(symbols_list, list):
+                continue
+
+            field_info = direction_field_map.get(agent_name)
+            if not field_info:
+                continue
+            dir_field, conf_field = field_info
+
+            for sym_data in symbols_list:
+                if not isinstance(sym_data, dict):
+                    continue
+                sym = sym_data.get("symbol", "").upper()
+                if sym not in trade_syms:
+                    continue
+
+                raw_dir = sym_data.get(dir_field, "neutral")
+                conf = sym_data.get(conf_field, 0.5)
+
+                # Normalize direction to bullish/bearish/neutral
+                if agent_name == "volatility":
+                    direction = vol_direction_map.get(raw_dir, "neutral")
+                elif agent_name == "flow":
+                    direction = flow_direction_map.get(raw_dir, "neutral")
+                elif agent_name == "chain":
+                    direction = pcr_direction_map.get(raw_dir, "neutral")
+                elif agent_name == "cross_asset":
+                    direction = cross_direction_map.get(raw_dir, "neutral")
+                else:
+                    direction = raw_dir if raw_dir in ("bullish", "bearish", "neutral") else "neutral"
+
+                symbol_directions.setdefault(sym, []).append((agent_name, direction, conf))
+
+        # Compute consensus
+        consensus: dict[str, dict[str, Any]] = {}
+        for sym, directions in symbol_directions.items():
+            counts = {"bullish": 0, "bearish": 0, "neutral": 0}
+            for _, d, _ in directions:
+                counts[d] = counts.get(d, 0) + 1
+
+            max_dir = max(counts, key=counts.get)
+            agreement = counts[max_dir]
+            total = sum(counts.values())
+
+            consensus[sym] = {
+                "direction_counts": counts,
+                "consensus_direction": max_dir if agreement > total / 2 else "neutral",
+                "agreement_count": agreement,
+                "total_agents": total,
+                "consensus_strength": round(agreement / max(total, 1), 2),
+            }
+
+        return consensus
+
+    def _classify_market_condition(
+        self,
+        agent_outputs: dict[str, Any],
+    ) -> str:
+        """Classify current market condition from cross-asset agent output.
+
+        Returns one of: trending_calm, trending_volatile, range_calm,
+        range_volatile, crisis, recovery.
+        """
+        cross = agent_outputs.get("cross_asset", {})
+        if not isinstance(cross, dict):
+            return "unknown"
+
+        vix_summary = cross.get("vix_summary", "")
+        market_regime = cross.get("market_regime", "neutral")
+
+        # Extract VIX environment from symbols (use SPY or first available)
+        vix_env = "normal"
+        for sym_data in cross.get("symbols", []):
+            if isinstance(sym_data, dict):
+                vix_env = sym_data.get("vix_environment", "normal")
+                break
+
+        # Extract trend info from trend agent
+        trend = agent_outputs.get("trend", {})
+        trend_summary = trend.get("market_trend_summary", "")
+
+        # Simple classification logic
+        is_crisis = vix_env in ("panic",)
+        is_elevated_vol = vix_env in ("elevated", "panic")
+        is_calm = vix_env in ("normal", "complacent")
+
+        # Check if market is trending from trend agent
+        trending_count = 0
+        range_count = 0
+        for sym_data in trend.get("symbols", []):
+            if isinstance(sym_data, dict):
+                regime = sym_data.get("regime", "neutral")
+                if regime in ("trending_up", "trending_down"):
+                    trending_count += 1
+                elif regime in ("range_bound", "squeeze"):
+                    range_count += 1
+
+        is_trending = trending_count > range_count
+
+        if is_crisis:
+            return "crisis"
+        elif is_elevated_vol and is_trending:
+            return "trending_volatile"
+        elif is_elevated_vol and not is_trending:
+            return "range_volatile"
+        elif is_calm and is_trending:
+            return "trending_calm"
+        elif is_calm and not is_trending:
+            return "range_calm"
+        else:
+            return "range_calm"  # default
 
     def _serialize_signals(self, features: list[SignalFeatures]) -> list[dict[str, Any]]:
         """Serialize all signal features into dicts for agent consumption.

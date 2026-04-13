@@ -48,9 +48,9 @@ Indicators:
 - Current IV: absolute pricing context
 - HV 20d: realized vol for HV-IV comparison
 - HV-IV Spread: >0=realized_exceeds, <0=implied_rich
-- GARCH Forecast: >15% divergence from current_iv→mean-reversion
+- GARCH Forecast: divergence from current_iv→mean-reversion signal
 - BB Width: <0.03=squeeze
-- Vol Surface Fit Error: >0.02=mispriced
+- Vol Surface Fit Error: mispricing indicator (context-dependent threshold)
 - IV Skew: >0.05=steep put skew
 - Term Structure Slope: >0=contango, <0=backwardation
 
@@ -60,12 +60,31 @@ R2. iv_rank<30→buy premium: straddle,calendar,debit_spreads
 R3. iv_rank 30-70→neutral, use other signals
 R4. hv_iv_spread>0→long gamma(straddle/strangle)
 R5. hv_iv_spread<0→sell vol preferred
-R6. GARCH-IV divergence>15%→fade divergence
-R7. vol_surface_fit_error>0.02→flag mispriced contracts
+R6. GARCH-IV divergence→see graduated thresholds below
+R7. vol_surface_fit_error→see context-dependent threshold below
 R8. iv_skew>0.05→sell OTM put credit for skew premium
 R9. term_structure<0(backwardation)→avoid selling DTE<7
 R10. iv_rank>70+backwardation→iron_butterfly,DTE>14
 R11. BB_width<0.03→straddle/strangle
+
+## IV Rank vs IV Percentile Divergence (CRITICAL)
+D1. When iv_rank and iv_percentile disagree by >20 points:
+   - This signals regime transition (e.g., IV rank dropping but percentile still high due to recent spike)
+   - REDUCE confidence by 25% on all vol-based strategy recommendations
+   - Note divergence explicitly in reasoning
+   - Prefer neutral/defensive strategies until they converge
+D2. When both agree within 10 points: high confidence in vol regime classification
+
+## GARCH Divergence Graduated Thresholds
+G1. |GARCH - current_IV| 10-20% of current_IV → mild divergence, note in reasoning only
+G2. |GARCH - current_IV| 20-35% → moderate, candidate for mean-reversion trade (confidence 0.4-0.6)
+G3. |GARCH - current_IV| >35% → extreme, high-conviction fade (confidence 0.6-0.8)
+G4. Direction matters: GARCH > IV = vol likely to rise (buy premium); GARCH < IV = vol likely to fall (sell premium)
+
+## Surface Fit Error Context
+S1. fit_error > 0.02 with ≥4 expiries available → genuine mispricing, flag for relative-value
+S2. fit_error > 0.02 with <4 expiries → likely insufficient data, reduce confidence 50%
+S3. fit_error > 0.05 → extreme mispricing OR bad data — verify before acting
 
 Constraints:
 - Never sell naked—every short leg needs defined-risk hedge

@@ -56,6 +56,8 @@ class SymbolAnalysis(BaseModel):
     symbol: str
     reasoning: str = ""
     confidence: float = Field(0.5, ge=0.0, le=1.0)
+    data_quality_penalty: float = Field(0.0, ge=0.0, le=1.0, description="Confidence reduction from degraded data quality (0=no penalty, 1=fully degraded)")
+    agreement_count: int = Field(0, ge=0, le=6, description="Number of specialist agents agreeing on direction (0-6). Used for consensus scoring.")
 
 
 # ---------------------------------------------------------------------------
@@ -153,10 +155,12 @@ class CrossAssetSymbolAnalysis(SymbolAnalysis):
     crypto_correlated: bool = False       # IBIT corr > 0.3
     risk_off_signal: bool = False
     regime_transition: bool = False  # SPY / QQQ / IWM correlations diverging
+    regime_days: int = Field(0, ge=0, description="Consecutive days the current correlation regime has persisted. <5 = transitioning, >=5 = confirmed.")
     vix_environment: str = "normal"  # "panic", "elevated", "normal", "complacent"
     position_size_modifier: float = Field(1.0, ge=0.0, le=1.5)
     hedging_needed: bool = False
     hedge_direction: str | None = None  # "buy_shares", "sell_shares"
+    effective_size_modifier: float = Field(1.0, ge=0.0, le=1.5, description="Combined position size modifier after all adjustments. If <0.3, recommend skip.")
 
 
 class CrossAssetAnalysis(BaseModel):

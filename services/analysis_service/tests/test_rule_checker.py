@@ -1,6 +1,8 @@
 """Test deterministic rule checker for blueprint validation."""
 from __future__ import annotations
 
+import datetime
+
 import pytest
 
 from services.analysis_service.app.evaluation.rule_checker import (
@@ -9,6 +11,9 @@ from services.analysis_service.app.evaluation.rule_checker import (
     check_blueprint,
 )
 
+# Dynamic expiry ~30 days out so DTE bounds checks always pass
+_DEFAULT_EXPIRY = (datetime.date.today() + datetime.timedelta(days=30)).isoformat()
+
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -16,7 +21,7 @@ from services.analysis_service.app.evaluation.rule_checker import (
 
 
 def _leg(**overrides) -> dict:
-    d = {"expiry": "2026-04-17", "strike": 150.0, "option_type": "call", "side": "buy", "quantity": 1}
+    d = {"expiry": _DEFAULT_EXPIRY, "strike": 150.0, "option_type": "call", "side": "buy", "quantity": 1}
     d.update(overrides)
     return d
 
@@ -116,7 +121,7 @@ class TestStrategyLegs:
         assert any(i.rule == "strategy_legs_mismatch" for i in result.issues)
 
     def test_leg_missing_field(self):
-        bad_leg = {"expiry": "2026-04-17", "strike": 150.0}  # missing option_type, side
+        bad_leg = {"expiry": _DEFAULT_EXPIRY, "strike": 150.0}  # missing option_type, side
         result = check_blueprint(_blueprint(symbol_plans=[_plan(legs=[bad_leg])]))
         assert any("missing" in i.rule for i in result.issues)
 
@@ -195,3 +200,303 @@ class TestContextAwareChecks:
         warns = [i for i in result.issues if i.rule == "bid_ask_illiquid"]
         assert len(warns) == 1
         assert warns[0].severity == "warning"
+
+
+# ---------------------------------------------------------------------------
+# Strike ordering checks
+# ---------------------------------------------------------------------------
+
+
+class TestStrikeOrdering:
+    def test_valid_bull_call_spread(self):
+        """Buy lower strike, sell higher = valid debit call spread."""
+        result = check_blueprint(_blueprint(symbol_plans=[_plan(
+            strategy_type="vertical_spread",
+            direction="bullish",
+            legs=[
+                _leg(strike=150, option_type="call", side="buy"),
+                _leg(strike=160, option_type="call", side="sell"),
+            ],
+        )]))
+        assert not any(i.rule == "strike_ordering" for i in result.issues)
+
+    def test_invalid_bull_call_spread_reversed(self):
+        """Buy higher strike, sell lower = reversed for debit call spread."""
+        result = check_blueprint(_blueprint(symbol_plans=[_plan(
+            strategy_type="vertical_spread",
+            direction="bullish",
+            legs=[
+                _leg(strike=160, option_type="call", side="buy"),
+                _leg(strike=150, option_type="call", side="sell"),
+            ],
+        )]))
+        assert any(i.rule == "strike_ordering" for i in result.issues)
+
+    def test_valid_iron_condor(self):
+        """Correct ordering: put_long < put_short < call_short < call_long."""
+        result = check_blueprint(_blueprint(symbol_plans=[_plan(
+            strategy_type="iron_condor",
+            direction="neutral",
+            legs=[
+                _leg(strike=140, option_type="put", side="buy"),
+                _leg(strike=145, option_type="put", side="sell"),
+                _leg(strike=155, option_type="call", side="sell"),
+                _leg(strike=160, option_type="call", side="buy"),
+            ],
+        )]))
+        assert not any(i.rule == "strike_ordering" for i in result.issues)
+
+    def test_straddle_same_strike(self):
+        """Straddle legs must have same strike."""
+        result = check_blueprint(_blueprint(symbol_plans=[_plan(
+            strategy_type="straddle",
+            direction="neutral",
+            legs=[
+                _leg(strike=150, option_type="call", side="buy"),
+                _leg(strike=150, option_type="put", side="buy"),
+            ],
+        )]))
+        assert not any(i.rule == "strike_ordering" for i in result.issues)
+
+    def test_straddle_different_strikes_error(self):
+        """Straddle with different strikes should error."""
+        result = check_blueprint(_blueprint(symbol_plans=[_plan(
+            strategy_type="straddle",
+            direction="neutral",
+            legs=[
+                _leg(strike=150, option_type="call", side="buy"),
+                _leg(strike=155, option_type="put", side="buy"),
+            ],
+        )]))
+        assert any(i.rule == "strike_ordering" for i in result.issues)
+
+    def test_strangle_call_above_put(self):
+        """Strangle: call strike should be > put strike."""
+        result = check_blueprint(_blueprint(symbol_plans=[_plan(
+            strategy_type="strangle",
+            direction="neutral",
+            legs=[
+                _leg(strike=145, option_type="put", side="buy"),
+                _leg(strike=155, option_type="call", side="buy"),
+            ],
+        )]))
+        assert not any(i.rule == "strike_ordering" for i in result.issues)
+
+
+# ---------------------------------------------------------------------------
+# Greeks direction checks
+# ---------------------------------------------------------------------------
+
+
+class TestGreeksDirection:
+    def test_bullish_with_all_bearish_legs(self):
+        """Direction=bullish but all legs are sell calls = bearish delta → warning."""
+        result = check_blueprint(_blueprint(symbol_plans=[_plan(
+            strategy_type="vertical_spread",
+            direction="bullish",
+            legs=[
+                _leg(strike=150, option_type="call", side="sell"),
+                _leg(strike=160, option_type="call", side="sell"),
+            ],
+        )]))
+        assert any(i.rule == "greeks_direction_mismatch" for i in result.issues)
+
+    def test_bearish_with_buy_calls_warning(self):
+        """Direction=bearish but net delta is positive → warning."""
+        result = check_blueprint(_blueprint(symbol_plans=[_plan(
+            strategy_type="vertical_spread",
+            direction="bearish",
+            legs=[
+                _leg(strike=150, option_type="call", side="buy"),
+                _leg(strike=160, option_type="call", side="buy"),
+            ],
+        )]))
+        assert any(i.rule == "greeks_direction_mismatch" for i in result.issues)
+
+    def test_neutral_no_warning(self):
+        """Neutral direction should not trigger regardless of legs."""
+        result = check_blueprint(_blueprint(symbol_plans=[_plan(
+            strategy_type="iron_condor",
+            direction="neutral",
+            legs=[
+                _leg(strike=140, option_type="put", side="buy"),
+                _leg(strike=145, option_type="put", side="sell"),
+                _leg(strike=155, option_type="call", side="sell"),
+                _leg(strike=160, option_type="call", side="buy"),
+            ],
+        )]))
+        assert not any(i.rule == "greeks_direction_mismatch" for i in result.issues)
+
+
+# ---------------------------------------------------------------------------
+# DTE bounds checks
+# ---------------------------------------------------------------------------
+
+
+class TestDTEBounds:
+    def test_dte_too_short_error(self):
+        """Legs expiring within 7 days should error."""
+        from datetime import date, timedelta
+        short_expiry = (date.today() + timedelta(days=3)).isoformat()
+        result = check_blueprint(_blueprint(symbol_plans=[_plan(
+            legs=[_leg(expiry=short_expiry)],
+        )]))
+        assert any(i.rule == "dte_bounds" and i.severity == "error" for i in result.issues)
+
+    def test_dte_too_long_warning(self):
+        """Legs expiring beyond 180 days should warn."""
+        from datetime import date, timedelta
+        long_expiry = (date.today() + timedelta(days=200)).isoformat()
+        result = check_blueprint(_blueprint(symbol_plans=[_plan(
+            legs=[_leg(expiry=long_expiry)],
+        )]))
+        assert any(i.rule == "dte_bounds" and i.severity == "warning" for i in result.issues)
+
+    def test_dte_within_bounds_ok(self):
+        """Legs expiring in 30 days should be fine."""
+        from datetime import date, timedelta
+        ok_expiry = (date.today() + timedelta(days=30)).isoformat()
+        result = check_blueprint(_blueprint(symbol_plans=[_plan(
+            legs=[_leg(expiry=ok_expiry)],
+        )]))
+        assert not any(i.rule == "dte_bounds" for i in result.issues)
+
+
+# ---------------------------------------------------------------------------
+# Expiry consistency checks
+# ---------------------------------------------------------------------------
+
+
+class TestExpiryConsistency:
+    def test_vertical_spread_different_expiries_error(self):
+        """Vertical spread legs must have same expiry."""
+        result = check_blueprint(_blueprint(symbol_plans=[_plan(
+            strategy_type="vertical_spread",
+            legs=[
+                _leg(expiry="2026-05-15", strike=150, option_type="call", side="buy"),
+                _leg(expiry="2026-06-15", strike=160, option_type="call", side="sell"),
+            ],
+        )]))
+        assert any(i.rule == "expiry_consistency" for i in result.issues)
+
+    def test_calendar_same_expiry_error(self):
+        """Calendar spread legs must have different expiries."""
+        result = check_blueprint(_blueprint(symbol_plans=[_plan(
+            strategy_type="calendar_spread",
+            legs=[
+                _leg(expiry="2026-05-15", strike=150, side="sell"),
+                _leg(expiry="2026-05-15", strike=150, side="buy"),
+            ],
+        )]))
+        assert any(i.rule == "expiry_consistency" for i in result.issues)
+
+    def test_calendar_different_expiries_ok(self):
+        """Calendar spread with different expiries is correct."""
+        result = check_blueprint(_blueprint(symbol_plans=[_plan(
+            strategy_type="calendar_spread",
+            legs=[
+                _leg(expiry="2026-05-15", strike=150, side="sell"),
+                _leg(expiry="2026-06-15", strike=150, side="buy"),
+            ],
+        )]))
+        assert not any(i.rule == "expiry_consistency" for i in result.issues)
+
+
+# ---------------------------------------------------------------------------
+# Duplicate symbols check
+# ---------------------------------------------------------------------------
+
+
+class TestDuplicateSymbols:
+    def test_duplicate_underlying_warning(self):
+        """Same underlying in multiple plans should warn."""
+        result = check_blueprint(_blueprint(symbol_plans=[
+            _plan(underlying="AAPL"),
+            _plan(underlying="AAPL", strategy_type="straddle", direction="neutral",
+                  legs=[_leg(option_type="call"), _leg(option_type="put")]),
+        ]))
+        assert any(i.rule == "duplicate_symbol" for i in result.issues)
+
+    def test_different_underlyings_no_warning(self):
+        """Different underlyings should not warn."""
+        result = check_blueprint(_blueprint(symbol_plans=[
+            _plan(underlying="AAPL"),
+            _plan(underlying="MSFT"),
+        ]))
+        assert not any(i.rule == "duplicate_symbol" for i in result.issues)
+
+
+# ---------------------------------------------------------------------------
+# Confidence × quality gate check
+# ---------------------------------------------------------------------------
+
+
+class TestConfidenceQualityGate:
+    def test_overconfident_on_bad_data(self):
+        """High confidence + low data quality should warn."""
+        signals = {
+            "AAPL": {
+                "stock_trend": {},
+                "option_chain": {},
+                "data_quality": {"score": 0.3},
+            }
+        }
+        result = check_blueprint(
+            _blueprint(symbol_plans=[_plan(confidence=0.8)]),
+            signal_features=signals,
+        )
+        assert any(i.rule == "overconfident_on_bad_data" for i in result.issues)
+
+    def test_appropriate_confidence_ok(self):
+        """Moderate confidence + low data quality is fine."""
+        signals = {
+            "AAPL": {
+                "stock_trend": {},
+                "option_chain": {},
+                "data_quality": {"score": 0.3},
+            }
+        }
+        result = check_blueprint(
+            _blueprint(symbol_plans=[_plan(confidence=0.5)]),
+            signal_features=signals,
+        )
+        assert not any(i.rule == "overconfident_on_bad_data" for i in result.issues)
+
+
+# ---------------------------------------------------------------------------
+# Cascading modifiers check
+# ---------------------------------------------------------------------------
+
+
+class TestCascadingModifiers:
+    def test_cascading_modifiers_near_zero(self):
+        """Stacked modifiers producing <0.3 effective size should warn."""
+        signals = {
+            "AAPL": {
+                "stock_trend": {},
+                "option_chain": {},
+                "flow": {"position_size_modifier": 0.5},
+                "cross_asset": {"position_size_modifier": 0.4},
+            }
+        }
+        result = check_blueprint(
+            _blueprint(),
+            signal_features=signals,
+        )
+        assert any(i.rule == "cascading_size_modifiers" for i in result.issues)
+
+    def test_reasonable_modifiers_ok(self):
+        """Normal modifiers should not warn."""
+        signals = {
+            "AAPL": {
+                "stock_trend": {},
+                "option_chain": {},
+                "flow": {"position_size_modifier": 0.8},
+                "cross_asset": {"position_size_modifier": 0.9},
+            }
+        }
+        result = check_blueprint(
+            _blueprint(),
+            signal_features=signals,
+        )
+        assert not any(i.rule == "cascading_size_modifiers" for i in result.issues)

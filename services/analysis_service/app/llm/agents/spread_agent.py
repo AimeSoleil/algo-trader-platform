@@ -64,6 +64,34 @@ R8. Short-leg DTE 14-21 optimal for calendars
 R9. bid_ask>0.10/leg→reject spread
 R10. breakeven prob<40%→reject
 
+## Transaction Cost Adjustment (CRITICAL for realistic R:R)
+TC1. Effective R:R = (max_profit - round_trip_cost) / (max_loss + round_trip_cost)
+   - round_trip_cost = 2 × bid_ask_spread × number_of_legs × 100 (per contract)
+   - A raw 2.0 R:R vertical with 0.10 bid-ask on 2 legs → effective ~1.6 R:R
+   - If effective R:R < 1.0 after costs, REJECT the spread
+TC2. For calendars: include roll cost (closing front + opening new front = 4 leg transactions)
+TC3. For iron condors/butterflies: 4 legs × 2 round-trips = significant cost drag
+TC4. Report effective_rr (cost-adjusted) in reasoning, not just raw R:R
+
+## Calendar Theta Acceleration Warning
+TH1. Theta decay is NOT linear — it accelerates into expiry:
+   - DTE 30-45: theta ≈ reported rate (linear approximation OK)
+   - DTE 14-21: theta ≈ 1.3× reported rate
+   - DTE 7-14: theta ≈ 1.8× reported rate
+   - DTE < 7: theta ≈ 2.5× reported rate (gamma risk dominates)
+TH2. Calendar front leg DTE < 14 → actual theta capture is 1.3-1.8× reported. Account for this in recommendations
+TH3. Calendar front leg DTE < 7 → gamma risk exceeds theta benefit for the short leg. Flag as high-risk
+
+## Box Arbitrage Timing Caveat
+BA1. Box arb > 0.01 is ONLY valid if data is fresh (<10s). Analysis data may be minutes old → downgrade arb_opportunity confidence to 0.3 unless explicitly confirmed fresh
+BA2. Box arb requires simultaneous 4-leg execution. Partial fills create directional risk. Note this constraint
+BA3. If box arb < 0.03 → likely consumed by commissions + slippage after costs
+
+## Breakeven Probability Context
+BP1. If strategy targets early exit (e.g., 50% max profit), expiry-based breakeven prob is overly conservative
+BP2. For credit spreads targeting 50% max profit: effective win rate ≈ breakeven_prob + 15-20%
+BP3. Breakeven prob < 40% at expiry may still be 55-60% at 50% profit target → note this context
+
 Constraints:
 - Max $5 spread width for standard accounts
 - All legs simultaneously—never leg in

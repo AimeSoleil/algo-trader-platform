@@ -57,7 +57,7 @@ Multi-Benchmark Beta & Correlation:
 
 VIX:
 - Level: <15=low, 15-25=normal, 25-35=elevated, >35=panic
-- 52w Pct: <0.2=complacent, >0.8=fear extreme
+- 52w Pct(252 trading days lookback): <0.2=complacent, >0.8=fear extreme
 - Corr(20d): most stocks negative; positive=unusual
 
 Rules:
@@ -88,17 +88,39 @@ R24. ibit_corr>0.3→speculative beta→reduce size 20% in high-vol,treat as hig
 R25. gld_corr>0.3+hyg_corr<-0.3→risk-off regime→max defensive,half positions
 R26. hyg_corr>0.3+xle_corr>0.3→reflation/growth→favor cyclicals,sell premium
 
+## Regime Persistence Filter (CRITICAL — #1 source of false positives)
+RP1. Single-day correlation shift MUST be labeled "transitioning" not "confirmed"
+RP2. Regime change requires 5+ consecutive days of consistent signal to be "confirmed"
+   - regime_days < 3 → "preliminary" (confidence cap 0.4, minimal position adjustment)
+   - regime_days 3-4 → "developing" (confidence cap 0.6, partial adjustment)
+   - regime_days ≥ 5 → "confirmed" (full confidence, full adjustment)
+RP3. When reporting regime_transition=true, set regime_days=0 to indicate new regime just started
+RP4. If data shows regime_days < 5, do NOT apply full position size modifiers — scale linearly:
+   effective_modifier = 1.0 + (target_modifier - 1.0) × min(regime_days / 5, 1.0)
+
+## Correlation Confidence Assessment
+CC1. 20d correlation with few data points or high variance → label "weak" correlation
+CC2. Weak correlation signals should reduce modifier impact by 50%
+CC3. When multiple weak correlations are the only basis for a regime call → cap confidence at 0.3
+
+## Size Modifier Floor (prevents cascading to near-zero)
+SM1. Combined effective_size_modifier (after ALL adjustments) must NOT go below 0.3
+SM2. If combined modifiers would push below 0.3 → set effective_size_modifier=0.0 and recommend SKIP
+   (Rationale: a 0.1-0.2× position is noise, not a trade. Either trade at 0.3+ or don't trade)
+SM3. Report effective_size_modifier in output for downstream use
+
 Constraints:
 - No >25% changes with conf<0.5
 - Cross-asset=confirmation only,not standalone
-- Corr regime change needs 5 consecutive days
+- Corr regime change needs 5 consecutive days (RP1-RP4)
 - vol_ratio<0.5→max 2 strike width
 - |hedge_ratio|>200→split tranches(max 100 shares)
 - Multi-benchmark quality≥0.5 required
 - VIX rules need vix_quality=1.0
+- VIX percentile uses 252 trading day lookback
 
 ## Output Schema
-{"symbols":[{"symbol":"AAPL","correlation_regime":"fear|decoupled|bullish_vol|normal","dominant_benchmark":"SPY|QQQ|IWM","rate_sensitive":false,"safe_haven_correlated":false,"credit_stress_exposure":false,"energy_exposure":false,"crypto_correlated":false,"risk_off_signal":false,"regime_transition":false,"vix_environment":"panic|elevated|normal|complacent","position_size_modifier":1.0,"hedging_needed":false,"hedge_direction":null,"reasoning":"","confidence":0.0-1.0}],"market_regime":"","vix_summary":""}
+{"symbols":[{"symbol":"AAPL","correlation_regime":"fear|decoupled|bullish_vol|normal","dominant_benchmark":"SPY|QQQ|IWM","rate_sensitive":false,"safe_haven_correlated":false,"credit_stress_exposure":false,"energy_exposure":false,"crypto_correlated":false,"risk_off_signal":false,"regime_transition":false,"regime_days":0,"vix_environment":"panic|elevated|normal|complacent","position_size_modifier":1.0,"hedging_needed":false,"hedge_direction":null,"effective_size_modifier":1.0,"reasoning":"","confidence":0.0-1.0}],"market_regime":"","vix_summary":""}
 
 Output ONLY valid JSON. No markdown fences. Analyze ALL symbols.
 """

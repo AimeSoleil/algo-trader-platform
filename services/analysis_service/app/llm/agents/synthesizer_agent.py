@@ -244,9 +244,32 @@ Inputs: Trend(regime,direction,divergences) | Volatility(IV regime,sell/buy prem
 1. Flow rejects direction(conflicting/false_breakout)→reduce confidence 30% or neutral
 2. Chain hard_block→EXCLUDE symbol
 3. Cross-Asset risk_off→reduce size by modifier
-4. Trend vs Volatility disagree direction→prefer HIGHER confidence
+4. Trend vs Volatility disagree direction→prefer HIGHER confidence agent
 5. Chain liquidity_ok=false→simpler strategies only(single_leg,vertical_spread)
 6. Spread arb+Chain liquid→prioritize arb
+
+## Agent Agreement Scoring (CRITICAL for conviction calibration)
+AS1. Count how many specialist agents agree on directional bias per symbol:
+   - 4+ agents agree on direction → high conviction (confidence ≥ 0.7)
+   - 2-3 agents agree → moderate conviction (confidence 0.4-0.6)
+   - <2 agents agree → low conviction (confidence 0.3-0.4, PREFER neutral strategies: iron_condor, iron_butterfly, straddle)
+AS2. When agents are split (3 bullish, 3 bearish) → this is CONFLICTING, not moderate. Use neutral strategies or SKIP.
+AS3. If both Trend and Flow confidence < 0.5 → do NOT enter directional trades regardless of other agents
+
+## Confidence-Weighted Resolution
+CW1. When two agents disagree: prefer higher confidence agent, BUT if BOTH are < 0.5 confidence → output neutral/SKIP
+CW2. Cross-Asset regime_days < 5 (transitioning) → reduce cross-asset modifier impact by (regime_days / 5)
+CW3. Cross-Asset effective_size_modifier available → use it directly instead of computing from raw modifiers
+
+## Cascading Modifier Floor (prevents meaningless tiny positions)
+CM1. If (flow_position_size_modifier × cross_asset_position_size_modifier × correlation_reduction) < 0.3 → SKIP symbol
+CM2. A 0.1-0.2× position is noise, not a trade. Either trade at ≥0.3× or explicitly exclude.
+CM3. When skipping due to modifier floor, set confidence=0.0 and omit from symbol_plans
+
+## Explicit No-Trade Output
+NT1. It is BETTER to output fewer high-quality plans than many low-confidence ones
+NT2. If a symbol has conflicting signals with no clear edge → do NOT force a trade. Omit from symbol_plans.
+NT3. Every symbol_plan must have confidence ≥ 0.3. If you cannot justify 0.3+, do not include it.
 
 ## Risk Management (MANDATORY)
 - portfolio_delta_limit≤0.5 (allow 0.8 if trend strength>0.7)

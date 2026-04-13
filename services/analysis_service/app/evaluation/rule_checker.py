@@ -12,6 +12,7 @@ Usage::
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import date as _date_type
 from typing import Any
 
 
@@ -68,15 +69,22 @@ def check_blueprint(
     signal_features = signal_features or {}
 
     _check_portfolio_risk(blueprint, result)
+    _check_duplicate_symbols(blueprint, result)
     for plan in blueprint.get("symbol_plans", []):
         _check_plan_risk(plan, result)
         _check_strategy_legs(plan, result)
         _check_plan_reasoning(plan, result)
+        _check_strike_ordering(plan, result)
+        _check_greeks_direction(plan, result)
+        _check_dte_bounds(plan, result)
+        _check_expiry_consistency(plan, result)
         if signal_features:
             sym = plan.get("underlying", "").upper()
             sig = signal_features.get(sym, {})
             _check_counter_trend(plan, sig, result)
             _check_liquidity(plan, sig, result)
+            _check_confidence_quality_gate(plan, sig, result)
+            _check_cascading_modifiers(plan, sig, result)
 
     result.passed = result.error_count == 0
     return result
@@ -307,4 +315,322 @@ def _check_liquidity(plan: dict, signal: dict, result: CheckResult) -> None:
             symbol=sym,
             rule="bid_ask_illiquid",
             description=f"bid_ask_spread_ratio={bid_ask_ratio:.4f} > 0.15 — illiquid, use wider limits",
+        ))
+
+
+# ---------------------------------------------------------------------------
+# Strike / structure checks
+# ---------------------------------------------------------------------------
+
+
+def _check_strike_ordering(plan: dict, result: CheckResult) -> None:
+    """Validate strike ordering for multi-leg strategies."""
+    sym = plan.get("underlying", "UNKNOWN")
+    strategy = plan.get("strategy_type", "")
+    legs = plan.get("legs", [])
+    direction = plan.get("direction", "neutral")
+
+    if strategy == "vertical_spread" and len(legs) == 2:
+        buy_leg = next((l for l in legs if l.get("side") == "buy"), None)
+        sell_leg = next((l for l in legs if l.get("side") == "sell"), None)
+        if buy_leg and sell_leg:
+            opt_type = buy_leg.get("option_type", "")
+            buy_k = buy_leg.get("strike", 0)
+            sell_k = sell_leg.get("strike", 0)
+            if direction == "bullish" and opt_type == "call" and buy_k >= sell_k:
+                result.issues.append(RuleIssue(
+                    severity="error", category="logic_error", symbol=sym,
+                    rule="strike_ordering",
+                    description=(
+                        f"Debit call spread: buy strike ({buy_k}) must be < "
+                        f"sell strike ({sell_k})"
+                    ),
+                ))
+            if direction == "bearish" and opt_type == "put" and sell_k >= buy_k:
+                result.issues.append(RuleIssue(
+                    severity="error", category="logic_error", symbol=sym,
+                    rule="strike_ordering",
+                    description=(
+                        f"Debit put spread: sell strike ({sell_k}) must be < "
+                        f"buy strike ({buy_k})"
+                    ),
+                ))
+
+    elif strategy == "iron_condor" and len(legs) == 4:
+        sorted_legs = sorted(legs, key=lambda l: l.get("strike", 0))
+        put_long, put_short, call_short, call_long = sorted_legs
+        violations: list[str] = []
+        if put_long.get("option_type") != "put":
+            violations.append(f"lowest strike leg should be a put (got {put_long.get('option_type')})")
+        if put_short.get("option_type") != "put":
+            violations.append(f"second-lowest strike leg should be a put (got {put_short.get('option_type')})")
+        if call_short.get("option_type") != "call":
+            violations.append(f"third strike leg should be a call (got {call_short.get('option_type')})")
+        if call_long.get("option_type") != "call":
+            violations.append(f"highest strike leg should be a call (got {call_long.get('option_type')})")
+        if put_long.get("side") != "buy":
+            violations.append("lowest-strike put should be a buy (long wing)")
+        if put_short.get("side") != "sell":
+            violations.append("second put should be a sell (short)")
+        if call_short.get("side") != "sell":
+            violations.append("first call should be a sell (short)")
+        if call_long.get("side") != "buy":
+            violations.append("highest-strike call should be a buy (long wing)")
+        for v in violations:
+            result.issues.append(RuleIssue(
+                severity="error", category="logic_error", symbol=sym,
+                rule="strike_ordering", description=f"Iron condor: {v}",
+            ))
+
+    elif strategy == "iron_butterfly" and len(legs) == 4:
+        short_legs = [l for l in legs if l.get("side") == "sell"]
+        long_legs = [l for l in legs if l.get("side") == "buy"]
+        if len(short_legs) == 2:
+            k1 = short_legs[0].get("strike", 0)
+            k2 = short_legs[1].get("strike", 0)
+            if k1 != k2:
+                result.issues.append(RuleIssue(
+                    severity="error", category="logic_error", symbol=sym,
+                    rule="strike_ordering",
+                    description=(
+                        f"Iron butterfly: short legs must share the same strike "
+                        f"(got {k1} and {k2})"
+                    ),
+                ))
+            atm_strike = k1
+            for ll in long_legs:
+                ll_k = ll.get("strike", 0)
+                if ll_k == atm_strike:
+                    result.issues.append(RuleIssue(
+                        severity="error", category="logic_error", symbol=sym,
+                        rule="strike_ordering",
+                        description=(
+                            f"Iron butterfly: long wing at {ll_k} should be "
+                            f"further OTM than short strike {atm_strike}"
+                        ),
+                    ))
+
+    elif strategy == "strangle" and len(legs) == 2:
+        call_leg = next((l for l in legs if l.get("option_type") == "call"), None)
+        put_leg = next((l for l in legs if l.get("option_type") == "put"), None)
+        if call_leg and put_leg:
+            if call_leg.get("strike", 0) <= put_leg.get("strike", 0):
+                result.issues.append(RuleIssue(
+                    severity="error", category="logic_error", symbol=sym,
+                    rule="strike_ordering",
+                    description=(
+                        f"Strangle: call strike ({call_leg.get('strike')}) "
+                        f"must be > put strike ({put_leg.get('strike')})"
+                    ),
+                ))
+
+    elif strategy == "straddle" and len(legs) == 2:
+        strikes = [l.get("strike", 0) for l in legs]
+        if strikes[0] != strikes[1]:
+            result.issues.append(RuleIssue(
+                severity="error", category="logic_error", symbol=sym,
+                rule="strike_ordering",
+                description=(
+                    f"Straddle: both legs must share the same strike "
+                    f"(got {strikes[0]} and {strikes[1]})"
+                ),
+            ))
+
+
+def _check_greeks_direction(plan: dict, result: CheckResult) -> None:
+    """Validate that strategy direction matches expected Greeks sign."""
+    sym = plan.get("underlying", "UNKNOWN")
+    direction = plan.get("direction", "neutral")
+    legs = plan.get("legs", [])
+
+    if direction == "neutral" or not legs:
+        return
+
+    # Estimate net delta sign from leg side + option_type
+    delta_proxy = 0.0
+    for leg in legs:
+        side = leg.get("side", "")
+        opt_type = leg.get("option_type", "")
+        if side == "buy" and opt_type == "call":
+            delta_proxy += 1
+        elif side == "sell" and opt_type == "call":
+            delta_proxy -= 1
+        elif side == "buy" and opt_type == "put":
+            delta_proxy -= 1
+        elif side == "sell" and opt_type == "put":
+            delta_proxy += 1
+
+    if direction == "bullish" and delta_proxy < 0:
+        result.issues.append(RuleIssue(
+            severity="warning", category="logic_error", symbol=sym,
+            rule="greeks_direction_mismatch",
+            description=(
+                f"Direction is bullish but estimated net delta is negative "
+                f"(proxy={delta_proxy:+.0f})"
+            ),
+        ))
+    elif direction == "bearish" and delta_proxy > 0:
+        result.issues.append(RuleIssue(
+            severity="warning", category="logic_error", symbol=sym,
+            rule="greeks_direction_mismatch",
+            description=(
+                f"Direction is bearish but estimated net delta is positive "
+                f"(proxy={delta_proxy:+.0f})"
+            ),
+        ))
+
+
+def _check_dte_bounds(plan: dict, result: CheckResult) -> None:
+    """Validate all legs have DTE within [7, 180]."""
+    sym = plan.get("underlying", "UNKNOWN")
+    today = _date_type.today()
+
+    for i, leg in enumerate(plan.get("legs", [])):
+        expiry_str = leg.get("expiry", "")
+        if not expiry_str:
+            continue
+        try:
+            expiry = _date_type.fromisoformat(expiry_str)
+        except (ValueError, TypeError):
+            continue
+        dte = (expiry - today).days
+
+        if dte < 7:
+            result.issues.append(RuleIssue(
+                severity="error", category="risk_breach", symbol=sym,
+                rule="dte_bounds",
+                description=f"Leg {i} expiry {expiry_str} has DTE={dte} < 7 — too short",
+            ))
+        elif dte > 180:
+            result.issues.append(RuleIssue(
+                severity="warning", category="risk_breach", symbol=sym,
+                rule="dte_bounds",
+                description=f"Leg {i} expiry {expiry_str} has DTE={dte} > 180 — unusually long",
+            ))
+
+
+_SAME_EXPIRY_STRATEGIES = frozenset({
+    "vertical_spread", "iron_condor", "iron_butterfly",
+    "straddle", "strangle", "butterfly",
+})
+
+_DIFFERENT_EXPIRY_STRATEGIES = frozenset({
+    "calendar_spread", "diagonal_spread",
+})
+
+
+def _check_expiry_consistency(plan: dict, result: CheckResult) -> None:
+    """Validate expiry dates match strategy requirements."""
+    sym = plan.get("underlying", "UNKNOWN")
+    strategy = plan.get("strategy_type", "")
+    legs = plan.get("legs", [])
+    expiries = [l.get("expiry") for l in legs if l.get("expiry")]
+    if not expiries:
+        return
+
+    unique_expiries = set(expiries)
+
+    if strategy in _SAME_EXPIRY_STRATEGIES and len(unique_expiries) > 1:
+        result.issues.append(RuleIssue(
+            severity="error", category="logic_error", symbol=sym,
+            rule="expiry_consistency",
+            description=(
+                f"{strategy} requires all legs to share the same expiry "
+                f"(found {sorted(unique_expiries)})"
+            ),
+        ))
+    elif strategy in _DIFFERENT_EXPIRY_STRATEGIES and len(unique_expiries) < 2:
+        result.issues.append(RuleIssue(
+            severity="error", category="logic_error", symbol=sym,
+            rule="expiry_consistency",
+            description=(
+                f"{strategy} requires legs with different expiries "
+                f"(all legs expire {expiries[0]})"
+            ),
+        ))
+
+
+# ---------------------------------------------------------------------------
+# Portfolio-level duplicate check
+# ---------------------------------------------------------------------------
+
+
+def _check_duplicate_symbols(bp: dict, result: CheckResult) -> None:
+    """Flag if the same underlying appears in multiple symbol_plans."""
+    seen: dict[str, int] = {}
+    for plan in bp.get("symbol_plans", []):
+        sym = plan.get("underlying", "").upper()
+        if not sym:
+            continue
+        seen[sym] = seen.get(sym, 0) + 1
+
+    for sym, count in seen.items():
+        if count > 1:
+            result.issues.append(RuleIssue(
+                severity="warning", category="logic_error", symbol=sym,
+                rule="duplicate_symbol",
+                description=(
+                    f"Underlying {sym} appears in {count} symbol_plans — "
+                    f"consider consolidating"
+                ),
+            ))
+
+
+# ---------------------------------------------------------------------------
+# Signal-aware quality & modifier checks
+# ---------------------------------------------------------------------------
+
+
+def _check_confidence_quality_gate(
+    plan: dict, signal: dict, result: CheckResult,
+) -> None:
+    """Flag over-confidence on low-quality data."""
+    sym = plan.get("underlying", "UNKNOWN")
+    conf = plan.get("confidence", 0)
+    dq = signal.get("data_quality", {})
+    score = dq.get("score") if isinstance(dq, dict) else None
+    if score is None:
+        return
+
+    if conf > 0.7 and score < 0.5:
+        result.issues.append(RuleIssue(
+            severity="warning", category="risk_breach", symbol=sym,
+            rule="overconfident_on_bad_data",
+            description=(
+                f"Plan confidence={conf:.2f} but data_quality.score={score:.2f} — "
+                f"overconfident on low-quality signal"
+            ),
+        ))
+
+
+def _check_cascading_modifiers(
+    plan: dict, signal: dict, result: CheckResult,
+) -> None:
+    """Warn if stacked position-size modifiers reduce position to near-zero."""
+    sym = plan.get("underlying", "UNKNOWN")
+
+    flow_mod = signal.get("flow", {}).get("position_size_modifier") if isinstance(signal.get("flow"), dict) else None
+    cross_mod = (
+        signal.get("cross_asset", {}).get("position_size_modifier")
+        if isinstance(signal.get("cross_asset"), dict)
+        else None
+    )
+
+    if flow_mod is None or cross_mod is None:
+        return
+
+    try:
+        product = float(flow_mod) * float(cross_mod)
+    except (TypeError, ValueError):
+        return
+
+    if product < 0.3:
+        result.issues.append(RuleIssue(
+            severity="warning", category="risk_breach", symbol=sym,
+            rule="cascading_size_modifiers",
+            description=(
+                f"Stacked modifiers (flow={flow_mod}, cross_asset={cross_mod}, "
+                f"product={product:.2f}) reduce position to near-zero — "
+                f"effectively a skip"
+            ),
         ))
