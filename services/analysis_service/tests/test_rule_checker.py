@@ -189,7 +189,7 @@ class TestContextAwareChecks:
         signals = {
             "AAPL": {
                 "stock_indicators": {},
-                "option_indicators": {"bid_ask_spread_ratio": 0.25},
+                "option_indicators": {"bid_ask_spread_ratio": 0.26},
             }
         }
         result = check_blueprint(

@@ -100,8 +100,7 @@ RP4. If data shows regime_days < 5, do NOT apply full position size modifiers �
    effective_modifier = 1.0 + (target_modifier - 1.0) × min(regime_days / 5, 1.0)
 RP5. Asymmetric hysteresis for regime transitions. To ENTER a new regime: require regime_days ≥ 3 (current). To REVERT to previous regime: require regime_days ≥ 5 in new direction. This prevents whipsaw: a 4-day fear regime reverting on 1 good day should NOT immediately restore full confidence.
 RP6. If regime_days < 3 in new direction, blend: 70% previous regime modifier + 30% current.
-
-RP5. Hard override: if regime_days < 3, you MUST NOT output a confirmed regime-driven aggressive call.
+RP7. Hard override: if regime_days < 3, you MUST NOT output a confirmed regime-driven aggressive call.
 
 ## Correlation Confidence Assessment
 CC1. Use exponentially-weighted correlation (half-life 20 days) instead of flat 60-day window.
