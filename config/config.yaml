@@ -94,12 +94,12 @@ common:
 
   # ── Notifier — 异步通知（不阻塞主流程）──
   notifier:
-    enabled: false
+    enabled: true
     daily_report_time: "16:30"           # ET — 每日交易报告推送时间
     backends:
       - type: "discord"
         enabled: true
-        webhook_url: ""                  # or env: COMMON__NOTIFIER__BACKENDS__0__WEBHOOK_URL
+        webhook_url: "https://discord.com/api/webhooks/1412999975872368843/VOv5UsUszt6BzzyeK62dFDhlX25CHH3f4rCTYzoREzFI125WqGq_t0XxAhDUsu0YCKHa"                  # or env: COMMON__NOTIFIER__BACKENDS__0__WEBHOOK_URL
         timeout: 10.0
 
   # ── Celery 通用运行时 (所有 worker 共享) ──
@@ -248,7 +248,7 @@ analysis_service:
       request_timeout_seconds: 600
     copilot:
       cli_path: "copilot"
-      github_token: ""                  # or env: ANALYSIS_SERVICE__LLM__COPILOT__GITHUB_TOKEN
+      github_token: ""                 # or env: ANALYSIS_SERVICE__LLM__COPILOT__GITHUB_TOKEN
       model: "claude-opus-4.6"          # default model for all agents
       reasoning_effort: "high"        # low / medium / high
       request_timeout_seconds: 600
@@ -293,3 +293,4 @@ trade_service:
       portfolio_loss_limit: 2000.0
       position_loss_limit: 500.0
       cooldown_seconds: 60
+
