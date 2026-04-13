@@ -106,6 +106,18 @@ class TestPlanRisk:
         result = check_blueprint(_blueprint(symbol_plans=[_plan(confidence=0.2)]))
         assert any(i.rule == "low_confidence" for i in result.issues)
 
+    def test_stop_loss_exceeds_max_loss_error(self):
+        result = check_blueprint(
+            _blueprint(symbol_plans=[_plan(stop_loss_amount=700.0, max_loss_per_trade=500.0)])
+        )
+        assert any(i.rule == "stop_loss_exceeds_max_loss" for i in result.issues)
+
+    def test_risk_reward_below_one_warning(self):
+        result = check_blueprint(
+            _blueprint(symbol_plans=[_plan(take_profit_amount=300.0, max_loss_per_trade=500.0)])
+        )
+        assert any(i.rule == "risk_reward_below_one" for i in result.issues)
+
 
 # ---------------------------------------------------------------------------
 # Strategy ↔ legs consistency
@@ -150,8 +162,8 @@ class TestContextAwareChecks:
     def test_counter_trend_adx30_error(self):
         signals = {
             "AAPL": {
-                "stock_trend": {"adx_14": 35.0, "trend_direction": "bullish"},
-                "option_chain": {},
+                "stock_indicators": {"adx_14": 35.0, "trend": "bullish"},
+                "option_indicators": {},
             }
         }
         result = check_blueprint(
@@ -163,8 +175,8 @@ class TestContextAwareChecks:
     def test_no_counter_trend_when_same_direction(self):
         signals = {
             "AAPL": {
-                "stock_trend": {"adx_14": 35.0, "trend_direction": "bullish"},
-                "option_chain": {},
+                "stock_indicators": {"adx_14": 35.0, "trend": "bullish"},
+                "option_indicators": {},
             }
         }
         result = check_blueprint(
@@ -176,8 +188,8 @@ class TestContextAwareChecks:
     def test_bid_ask_hard_block(self):
         signals = {
             "AAPL": {
-                "stock_trend": {},
-                "option_chain": {"bid_ask_spread_ratio": 0.25},
+                "stock_indicators": {},
+                "option_indicators": {"bid_ask_spread_ratio": 0.25},
             }
         }
         result = check_blueprint(
@@ -189,8 +201,8 @@ class TestContextAwareChecks:
     def test_bid_ask_illiquid_warning(self):
         signals = {
             "AAPL": {
-                "stock_trend": {},
-                "option_chain": {"bid_ask_spread_ratio": 0.17},
+                "stock_indicators": {},
+                "option_indicators": {"bid_ask_spread_ratio": 0.17},
             }
         }
         result = check_blueprint(
@@ -436,8 +448,8 @@ class TestConfidenceQualityGate:
         """High confidence + low data quality should warn."""
         signals = {
             "AAPL": {
-                "stock_trend": {},
-                "option_chain": {},
+                "stock_indicators": {},
+                "option_indicators": {},
                 "data_quality": {"score": 0.3},
             }
         }
@@ -451,8 +463,8 @@ class TestConfidenceQualityGate:
         """Moderate confidence + low data quality is fine."""
         signals = {
             "AAPL": {
-                "stock_trend": {},
-                "option_chain": {},
+                "stock_indicators": {},
+                "option_indicators": {},
                 "data_quality": {"score": 0.3},
             }
         }
@@ -463,40 +475,69 @@ class TestConfidenceQualityGate:
         assert not any(i.rule == "overconfident_on_bad_data" for i in result.issues)
 
 
+# Cascading modifier checks were removed from rule_checker because those
+# modifiers are agent outputs, not SignalFeatures fields.
+
+
 # ---------------------------------------------------------------------------
-# Cascading modifiers check
+# Cross-asset quality guard checks
 # ---------------------------------------------------------------------------
 
 
-class TestCascadingModifiers:
-    def test_cascading_modifiers_near_zero(self):
-        """Stacked modifiers producing <0.3 effective size should warn."""
+class TestCrossAssetQualityGuards:
+    def test_low_significance_caps_confidence(self):
         signals = {
             "AAPL": {
-                "stock_trend": {},
-                "option_chain": {},
-                "flow": {"position_size_modifier": 0.5},
-                "cross_asset": {"position_size_modifier": 0.4},
+                "stock_indicators": {},
+                "option_indicators": {},
+                "cross_asset_indicators": {
+                    "confidence_scores": {
+                        "correlation_significance": 0.4,
+                        "data_freshness": 0.9,
+                    }
+                },
             }
         }
         result = check_blueprint(
-            _blueprint(),
+            _blueprint(symbol_plans=[_plan(confidence=0.7)]),
             signal_features=signals,
         )
-        assert any(i.rule == "cascading_size_modifiers" for i in result.issues)
+        assert any(i.rule == "cross_asset_low_significance_confidence_cap" for i in result.issues)
 
-    def test_reasonable_modifiers_ok(self):
-        """Normal modifiers should not warn."""
+    def test_stale_data_blocks_aggressive_directional(self):
         signals = {
             "AAPL": {
-                "stock_trend": {},
-                "option_chain": {},
-                "flow": {"position_size_modifier": 0.8},
-                "cross_asset": {"position_size_modifier": 0.9},
+                "stock_indicators": {},
+                "option_indicators": {},
+                "cross_asset_indicators": {
+                    "confidence_scores": {
+                        "correlation_significance": 0.8,
+                        "data_freshness": 0.3,
+                    }
+                },
             }
         }
         result = check_blueprint(
-            _blueprint(),
+            _blueprint(symbol_plans=[_plan(direction="bullish", confidence=0.7)]),
             signal_features=signals,
         )
-        assert not any(i.rule == "cascading_size_modifiers" for i in result.issues)
+        assert any(i.rule == "cross_asset_stale_data_aggressive_direction" for i in result.issues)
+
+    def test_low_quality_caps_position_size(self):
+        signals = {
+            "AAPL": {
+                "stock_indicators": {},
+                "option_indicators": {},
+                "cross_asset_indicators": {
+                    "confidence_scores": {
+                        "correlation_significance": 0.4,
+                        "data_freshness": 0.3,
+                    }
+                },
+            }
+        }
+        result = check_blueprint(
+            _blueprint(symbol_plans=[_plan(max_position_size=0.9)]),
+            signal_features=signals,
+        )
+        assert any(i.rule == "cross_asset_low_quality_position_size" for i in result.issues)

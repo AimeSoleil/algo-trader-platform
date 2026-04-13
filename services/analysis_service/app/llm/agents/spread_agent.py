@@ -87,6 +87,11 @@ BA1. Box arb > 0.01 is ONLY valid if data is fresh (<10s). Analysis data may be 
 BA2. Box arb requires simultaneous 4-leg execution. Partial fills create directional risk. Note this constraint
 BA3. If box arb < 0.03 → likely consumed by commissions + slippage after costs
 
+## Hard Overrides (MUST follow)
+H1. If effective R:R cannot be estimated from available inputs, cap confidence at <= 0.5.
+H2. If effective R:R < 1.0 after costs, mark setup as reject and set confidence <= 0.2.
+H3. Do NOT promote a spread purely on raw vertical_rr when TC1 cannot be satisfied.
+
 ## Breakeven Probability Context
 BP1. If strategy targets early exit (e.g., 50% max profit), expiry-based breakeven prob is overly conservative
 BP2. For credit spreads targeting 50% max profit: effective win rate ≈ breakeven_prob + 15-20%

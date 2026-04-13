@@ -269,6 +269,13 @@ class AgentOrchestrator:
             for other in chunk_blueprints[1:]:
                 blueprint.symbol_plans.extend(other.symbol_plans)
 
+            # Reconcile portfolio-level limits conservatively across chunks.
+            blueprint.max_total_positions = min(bp.max_total_positions for bp in chunk_blueprints)
+            blueprint.max_daily_loss = min(bp.max_daily_loss for bp in chunk_blueprints)
+            blueprint.max_margin_usage = min(bp.max_margin_usage for bp in chunk_blueprints)
+            blueprint.portfolio_delta_limit = min(bp.portfolio_delta_limit for bp in chunk_blueprints)
+            blueprint.portfolio_gamma_limit = min(bp.portfolio_gamma_limit for bp in chunk_blueprints)
+
             # Keep only plans for trade symbols (drop benchmark-only plans)
             # and de-duplicate (a symbol in multiple chunks keeps the first).
             seen_symbols: set[str] = set()
@@ -564,13 +571,11 @@ class AgentOrchestrator:
 
         direction_field_map = {
             "trend": ("trend_direction", "confidence"),
-            "volatility": ("iv_rank_zone", "confidence"),  # high=bearish vol edge, low=bullish vol edge
             "flow": ("flow_signal", "confidence"),
             "chain": ("pcr_signal", "confidence"),
             "cross_asset": ("correlation_regime", "confidence"),
         }
 
-        vol_direction_map = {"high": "bearish", "low": "bullish", "neutral": "neutral"}
         flow_direction_map = {
             "strong_buy": "bullish", "moderate_buy": "bullish",
             "strong_sell": "bearish", "moderate_sell": "bearish",
@@ -606,9 +611,7 @@ class AgentOrchestrator:
                 conf = sym_data.get(conf_field, 0.5)
 
                 # Normalize direction to bullish/bearish/neutral
-                if agent_name == "volatility":
-                    direction = vol_direction_map.get(raw_dir, "neutral")
-                elif agent_name == "flow":
+                if agent_name == "flow":
                     direction = flow_direction_map.get(raw_dir, "neutral")
                 elif agent_name == "chain":
                     direction = pcr_direction_map.get(raw_dir, "neutral")

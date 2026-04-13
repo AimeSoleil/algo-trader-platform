@@ -261,6 +261,11 @@ CW1. When two agents disagree: prefer higher confidence agent, BUT if BOTH are <
 CW2. Cross-Asset regime_days < 5 (transitioning) → reduce cross-asset modifier impact by (regime_days / 5)
 CW3. Cross-Asset effective_size_modifier available → use it directly instead of computing from raw modifiers
 
+## Cross-Asset Data Quality Guards (MUST follow)
+CQ1. If cross_asset.confidence.correlation_significance < 0.5, cap symbol_plan confidence at <= 0.4.
+CQ2. If cross_asset.confidence.data_freshness < 0.5, do NOT create aggressive directional plans; prefer neutral/defensive structures.
+CQ3. If BOTH correlation_significance < 0.5 and data_freshness < 0.5, constrain max_position_size to <= 0.7x baseline and avoid increasing exposure.
+
 ## Cascading Modifier Floor (prevents meaningless tiny positions)
 CM1. If (flow_position_size_modifier × cross_asset_position_size_modifier × correlation_reduction) < 0.3 → SKIP symbol
 CM2. A 0.1-0.2× position is noise, not a trade. Either trade at ≥0.3× or explicitly exclude.
@@ -270,6 +275,10 @@ CM3. When skipping due to modifier floor, set confidence=0.0 and omit from symbo
 NT1. It is BETTER to output fewer high-quality plans than many low-confidence ones
 NT2. If a symbol has conflicting signals with no clear edge → do NOT force a trade. Omit from symbol_plans.
 NT3. Every symbol_plan must have confidence ≥ 0.3. If you cannot justify 0.3+, do not include it.
+
+## Cost Realism Guard (MUST follow)
+CR1. If spread analysis indicates effective R:R < 1.0 after costs, exclude that setup from symbol_plans.
+CR2. If effective R:R cannot be estimated, cap confidence at <= 0.5 and prefer simpler defined-risk structures.
 
 ## Risk Management (MANDATORY)
 - portfolio_delta_limit≤0.5 (allow 0.8 if trend strength>0.7)

@@ -77,6 +77,8 @@ async def _compute_daily_signals(
     result: dict = {"date": str(td), "symbols_computed": 0, "errors": []}
     symbols_no_data: list[str] = []
 
+    previous_regimes = await _load_previous_volatility_regimes(td, target_symbols)
+
     # ── Pre-load benchmark returns & VIX (once) ─────────────
     benchmark_returns = await load_benchmark_returns(
         settings.common.watchlist.for_signal_benchmark, td,
@@ -184,6 +186,7 @@ async def _compute_daily_signals(
                     cross_asset_indicators=cross_asset,
                     stock_bar_count=len(bars_df),
                     option_row_count=len(option_df),
+                    previous_volatility_regime=previous_regimes.get(symbol),
                 )
 
                 # ── Persist to DB ──────────────────────────
@@ -308,6 +311,42 @@ async def _write_signal(symbol: str, td: date, features) -> None:
             symbol=symbol,
             trading_date=str(td),
         )
+
+
+async def _load_previous_volatility_regimes(
+    td: date,
+    symbols: list[str],
+) -> dict[str, str]:
+    """Load the latest prior-day volatility regime per symbol for hysteresis."""
+    if not symbols:
+        return {}
+
+    async with get_postgres_session() as session:
+        result = await session.execute(
+            text(
+                "SELECT DISTINCT ON (symbol) symbol, features_json "
+                "FROM signal_features "
+                "WHERE symbol = ANY(:symbols) AND date < :date "
+                "ORDER BY symbol, date DESC"
+            ),
+            {"symbols": symbols, "date": td},
+        )
+        rows = result.fetchall()
+
+    regimes: dict[str, str] = {}
+    for row in rows:
+        symbol = str(row[0]).upper()
+        payload = row[1]
+        if isinstance(payload, str):
+            try:
+                payload = json.loads(payload)
+            except (TypeError, ValueError):
+                payload = None
+        if isinstance(payload, dict):
+            regime = payload.get("volatility_regime")
+            if isinstance(regime, str) and regime:
+                regimes[symbol] = regime
+    return regimes
 
 
 # ── Cache helper ───────────────────────────────────────────

@@ -36,6 +36,7 @@ CORR_WINDOW = 20            # trailing days for rolling correlation
 IV_CORR_MIN_SAMPLES = 10    # minimum samples for IV-return correlation
 VIX_LOOKBACK_WEEKS = 52     # weeks for VIX percentile (≈252 trading days)
 VIX_LOOKBACK_DAYS = 252     # trading days for VIX percentile
+FRESHNESS_MAX_LAG_DAYS = 2  # data older than this is treated as stale
 
 # Benchmark names that map to model fields
 BENCHMARK_FIELD_MAP: dict[str, tuple[str, str]] = {
@@ -73,6 +74,71 @@ class MultiBenchmarkResult:
     """Aggregated results from all benchmark computations."""
     benchmarks: dict[str, BetaResult] = field(default_factory=dict)
     vix: VixResult = field(default_factory=VixResult)
+
+
+def _score_correlation_significance(benchmark_results: dict[str, BetaResult]) -> float:
+    """Estimate confidence penalty from weak/insufficient correlations.
+
+    Returns
+    -------
+    float
+        0.0-1.0 multiplier; lower means weaker statistical support.
+    """
+    with_data = [r for r in benchmark_results.values() if r.overlap_days > 0]
+    if not with_data:
+        return 0.0
+
+    weak = 0
+    for res in with_data:
+        if res.overlap_days < CORR_WINDOW or abs(res.correlation_20d) < 0.2:
+            weak += 1
+
+    weak_ratio = weak / len(with_data)
+    if weak_ratio >= 0.7:
+        return 0.3
+    if weak_ratio >= 0.4:
+        return 0.6
+    return 1.0
+
+
+def _score_data_freshness(
+    trading_date: date | None,
+    bars_df: pd.DataFrame,
+    benchmark_returns: dict[str, pd.Series],
+    vix_bars: pd.DataFrame,
+) -> float:
+    """Score freshness (0-1) from lag between trading_date and latest source data."""
+    if trading_date is None:
+        return 1.0
+
+    latest_dates: list[date] = []
+
+    if not bars_df.empty and "timestamp" in bars_df.columns:
+        ts = pd.to_datetime(bars_df["timestamp"], errors="coerce").dropna()
+        if not ts.empty:
+            latest_dates.append(ts.max().date())
+
+    for series in benchmark_returns.values():
+        if series.empty:
+            continue
+        idx = pd.to_datetime(series.index, errors="coerce")
+        if len(idx) > 0:
+            latest_dates.append(idx.max().date())
+
+    if not vix_bars.empty and "timestamp" in vix_bars.columns:
+        vix_ts = pd.to_datetime(vix_bars["timestamp"], errors="coerce").dropna()
+        if not vix_ts.empty:
+            latest_dates.append(vix_ts.max().date())
+
+    if not latest_dates:
+        return 0.0
+
+    max_lag = max((trading_date - d).days for d in latest_dates)
+    if max_lag <= 0:
+        return 1.0
+    if max_lag <= FRESHNESS_MAX_LAG_DAYS:
+        return 0.7
+    return 0.3
 
 
 # ═══════════════════════════════════════════════════════════
@@ -312,16 +378,26 @@ def build_cross_asset_indicators(
     spy_res = benchmark_results.get("SPY", BetaResult())
     total_bench_overlap = sum(r.overlap_days for r in benchmark_results.values())
     max_possible_overlap = BETA_WINDOW * len(BENCHMARK_FIELD_MAP)
+    correlation_significance = _score_correlation_significance(benchmark_results)
+    data_freshness = _score_data_freshness(
+        trading_date=trading_date,
+        bars_df=bars_df,
+        benchmark_returns=benchmark_returns,
+        vix_bars=vix_bars,
+    )
+    cap = min(correlation_significance, data_freshness)
 
     confidence = {
-        "corr_quality": round(min(1.0, len(bar_returns) / 100), 4),
-        "volume_quality": 1.0 if total_volume > 0 else 0.0,
-        "beta_quality": round(min(1.0, spy_res.overlap_days / BETA_WINDOW), 4),
+        "corr_quality": round(min(1.0, len(bar_returns) / 100) * cap, 4),
+        "volume_quality": round((1.0 if total_volume > 0 else 0.0) * data_freshness, 4),
+        "beta_quality": round(min(1.0, spy_res.overlap_days / BETA_WINDOW) * cap, 4),
         "multi_benchmark_quality": round(
-            min(1.0, total_bench_overlap / max(max_possible_overlap, 1)),
+            min(1.0, total_bench_overlap / max(max_possible_overlap, 1)) * cap,
             4,
         ),
-        "vix_quality": 1.0 if vix_result.vix_level > 0 else 0.0,
+        "vix_quality": round((1.0 if vix_result.vix_level > 0 else 0.0) * data_freshness, 4),
+        "correlation_significance": round(correlation_significance, 4),
+        "data_freshness": round(data_freshness, 4),
     }
 
     # ── Earnings proximity ──────────────────────────────────

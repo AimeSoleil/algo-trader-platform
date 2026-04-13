@@ -98,10 +98,17 @@ RP3. When reporting regime_transition=true, set regime_days=0 to indicate new re
 RP4. If data shows regime_days < 5, do NOT apply full position size modifiers — scale linearly:
    effective_modifier = 1.0 + (target_modifier - 1.0) × min(regime_days / 5, 1.0)
 
+RP5. Hard override: if regime_days < 3, you MUST NOT output a confirmed regime-driven aggressive call.
+
 ## Correlation Confidence Assessment
 CC1. 20d correlation with few data points or high variance → label "weak" correlation
 CC2. Weak correlation signals should reduce modifier impact by 50%
 CC3. When multiple weak correlations are the only basis for a regime call → cap confidence at 0.3
+
+## Hard Overrides (MUST follow)
+H1. If cross_asset.confidence.correlation_significance < 0.5, cap symbol confidence at <= 0.4.
+H2. If cross_asset.confidence.data_freshness < 0.5, do NOT issue aggressive regime calls; use normal/transitioning bias only.
+H3. If both correlation_significance < 0.5 and data_freshness < 0.5, set position_size_modifier to [0.7, 1.0] (no aggressive upsize/downsize).
 
 ## Size Modifier Floor (prevents cascading to near-zero)
 SM1. Combined effective_size_modifier (after ALL adjustments) must NOT go below 0.3

@@ -84,7 +84,7 @@ def check_blueprint(
             _check_counter_trend(plan, sig, result)
             _check_liquidity(plan, sig, result)
             _check_confidence_quality_gate(plan, sig, result)
-            _check_cascading_modifiers(plan, sig, result)
+            _check_cross_asset_quality_guards(plan, sig, result)
 
     result.passed = result.error_count == 0
     return result
@@ -165,6 +165,34 @@ def _check_plan_risk(plan: dict, result: CheckResult) -> None:
             rule="max_loss_positive",
             description=f"max_loss_per_trade={max_loss} — must be > 0",
         ))
+
+    # Stop-loss should not exceed plan max loss
+    if isinstance(stop_loss, (int, float)) and isinstance(max_loss, (int, float)) and max_loss > 0:
+        if stop_loss > max_loss:
+            result.issues.append(RuleIssue(
+                severity="error",
+                category="risk_breach",
+                symbol=sym,
+                rule="stop_loss_exceeds_max_loss",
+                description=(
+                    f"stop_loss_amount={stop_loss} exceeds max_loss_per_trade={max_loss}"
+                ),
+            ))
+
+    # Optional R:R sanity check when take-profit is provided
+    take_profit = plan.get("take_profit_amount")
+    if isinstance(take_profit, (int, float)) and take_profit > 0 and isinstance(max_loss, (int, float)) and max_loss > 0:
+        if take_profit / max_loss < 1.0:
+            result.issues.append(RuleIssue(
+                severity="warning",
+                category="risk_breach",
+                symbol=sym,
+                rule="risk_reward_below_one",
+                description=(
+                    f"take_profit_amount={take_profit} vs max_loss_per_trade={max_loss} "
+                    f"(R:R<{1.0})"
+                ),
+            ))
 
     # Confidence sanity
     conf = plan.get("confidence", 0)
@@ -266,9 +294,16 @@ def _check_plan_reasoning(plan: dict, result: CheckResult) -> None:
 def _check_counter_trend(plan: dict, signal: dict, result: CheckResult) -> None:
     """ADX>30 → do NOT enter counter-trend (trend-momentum.md rule 9)."""
     sym = plan.get("underlying", "UNKNOWN")
-    trend = signal.get("stock_trend", {})
+    # Prefer SignalFeatures.model_dump schema; keep legacy fallback for tests/tools.
+    trend = signal.get("stock_indicators", {})
+    if not isinstance(trend, dict):
+        trend = {}
+    if not trend:
+        legacy = signal.get("stock_trend", {})
+        if isinstance(legacy, dict):
+            trend = legacy
     adx = trend.get("adx_14", 0)
-    trend_dir = trend.get("trend_direction", "neutral")
+    trend_dir = trend.get("trend", trend.get("trend_direction", "neutral"))
     plan_dir = plan.get("direction", "neutral")
 
     if adx > 30 and trend_dir != "neutral" and plan_dir != "neutral":
@@ -294,7 +329,14 @@ def _check_counter_trend(plan: dict, signal: dict, result: CheckResult) -> None:
 def _check_liquidity(plan: dict, signal: dict, result: CheckResult) -> None:
     """bid-ask > 0.20 → HARD BLOCK (option-chain-structure.md rule 5)."""
     sym = plan.get("underlying", "UNKNOWN")
-    chain = signal.get("option_chain", {})
+    # Prefer SignalFeatures.model_dump schema; keep legacy fallback for tests/tools.
+    chain = signal.get("option_indicators", {})
+    if not isinstance(chain, dict):
+        chain = {}
+    if not chain:
+        legacy = signal.get("option_chain", {})
+        if isinstance(legacy, dict):
+            chain = legacy
     bid_ask_ratio = chain.get("bid_ask_spread_ratio", 0)
 
     if bid_ask_ratio > 0.20:
@@ -599,6 +641,66 @@ def _check_confidence_quality_gate(
             description=(
                 f"Plan confidence={conf:.2f} but data_quality.score={score:.2f} — "
                 f"overconfident on low-quality signal"
+            ),
+        ))
+
+
+def _check_cross_asset_quality_guards(
+    plan: dict, signal: dict, result: CheckResult,
+) -> None:
+    """Validate cross-asset confidence/freshness caps against plan aggressiveness."""
+    sym = plan.get("underlying", "UNKNOWN")
+    cross = signal.get("cross_asset_indicators", {})
+    if not isinstance(cross, dict):
+        return
+
+    conf_scores = cross.get("confidence_scores", {})
+    if not isinstance(conf_scores, dict):
+        return
+
+    corr_sig = conf_scores.get("correlation_significance")
+    freshness = conf_scores.get("data_freshness")
+    plan_conf = plan.get("confidence", 0)
+    direction = plan.get("direction", "neutral")
+    max_pos = plan.get("max_position_size")
+
+    if isinstance(corr_sig, (int, float)) and corr_sig < 0.5 and plan_conf > 0.4:
+        result.issues.append(RuleIssue(
+            severity="warning",
+            category="risk_breach",
+            symbol=sym,
+            rule="cross_asset_low_significance_confidence_cap",
+            description=(
+                f"cross-asset correlation_significance={corr_sig:.2f} but "
+                f"plan confidence={plan_conf:.2f} exceeds 0.40 cap"
+            ),
+        ))
+
+    if isinstance(freshness, (int, float)) and freshness < 0.5 and direction in {"bullish", "bearish"} and plan_conf > 0.5:
+        result.issues.append(RuleIssue(
+            severity="warning",
+            category="risk_breach",
+            symbol=sym,
+            rule="cross_asset_stale_data_aggressive_direction",
+            description=(
+                f"cross-asset data_freshness={freshness:.2f} with directional "
+                f"plan confidence={plan_conf:.2f} is too aggressive"
+            ),
+        ))
+
+    if (
+        isinstance(corr_sig, (int, float)) and corr_sig < 0.5
+        and isinstance(freshness, (int, float)) and freshness < 0.5
+        and isinstance(max_pos, (int, float)) and max_pos > 0.7
+    ):
+        result.issues.append(RuleIssue(
+            severity="warning",
+            category="risk_breach",
+            symbol=sym,
+            rule="cross_asset_low_quality_position_size",
+            description=(
+                f"cross-asset quality low (significance={corr_sig:.2f}, "
+                f"freshness={freshness:.2f}) but max_position_size={max_pos:.2f} > 0.70"
             ),
         ))
 

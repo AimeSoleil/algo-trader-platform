@@ -522,6 +522,7 @@ class TestGenerateSignal:
         bar_type: str = "unknown",
         stock_indicators: StockIndicators | None = None,
         option_indicators: OptionIndicators | None = None,
+        previous_volatility_regime: str | None = None,
     ) -> SignalFeatures:
         with patch(
             "services.signal_service.app.signal_generator.get_settings",
@@ -542,6 +543,7 @@ class TestGenerateSignal:
                 stock_indicators=stock_indicators or StockIndicators(),
                 cross_asset_indicators=CrossAssetIndicators(),
                 bar_type=bar_type,
+                previous_volatility_regime=previous_volatility_regime,
             )
 
     def test_high_iv_regime(self):
@@ -565,6 +567,21 @@ class TestGenerateSignal:
         """iv_percentile exactly at low threshold (30) → low (<=)."""
         sig = self._make_signal(iv_percentile=30.0)
         assert sig.volatility_regime == "low"
+
+    def test_hysteresis_keeps_high_near_boundary(self):
+        """Previous high regime should persist slightly below high threshold."""
+        sig = self._make_signal(iv_percentile=69.0, previous_volatility_regime="high")
+        assert sig.volatility_regime == "high"
+
+    def test_hysteresis_keeps_low_near_boundary(self):
+        """Previous low regime should persist slightly above low threshold."""
+        sig = self._make_signal(iv_percentile=31.0, previous_volatility_regime="low")
+        assert sig.volatility_regime == "low"
+
+    def test_hysteresis_reverts_to_normal_outside_band(self):
+        """Previous extreme regime should revert when value exits hysteresis band."""
+        sig = self._make_signal(iv_percentile=66.0, previous_volatility_regime="high")
+        assert sig.volatility_regime == "normal"
 
     def test_bar_type_passthrough(self):
         sig = self._make_signal(bar_type="intraday_1min")

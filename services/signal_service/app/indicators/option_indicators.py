@@ -23,6 +23,7 @@ MONEYNESS_OTM_PUT = 0.95       # Fallback: OTM put moneyness 阈值
 MONEYNESS_OTM_CALL = 1.05      # Fallback: OTM call moneyness 阈值
 MIN_IV_SKEW_DELTA = 0.01       # IV skew 中排除 delta 过小的合约
 MIN_POLY_FIT_POINTS = 5        # Vol surface 多项式拟合最少数据点
+TRADING_TO_CALENDAR_DAYS = 365 / 252
 
 
 async def get_historical_iv(symbol: str, lookback_days: int | None = None) -> list[float]:
@@ -39,7 +40,9 @@ async def get_historical_iv(symbol: str, lookback_days: int | None = None) -> li
         from shared.config import get_settings
         lookback_days = get_settings().signal_service.iv_lookback_days
 
-    start_date = today_trading() - timedelta(days=lookback_days)
+    # Config uses trading-day lookback (e.g. 252), but date math is calendar-day based.
+    calendar_days = max(int(round(lookback_days * TRADING_TO_CALENDAR_DAYS)), lookback_days)
+    start_date = today_trading() - timedelta(days=calendar_days)
 
     # ── 1) Prefer pre-aggregated IV daily summary ──
     async with get_timescale_session() as session:
