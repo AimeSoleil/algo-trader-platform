@@ -276,7 +276,7 @@ CW4. Flow conflict resolution is confidence-scaled:
 ## Cross-Asset Data Quality Guards (MUST follow)
 CQ1. If cross_asset.confidence.correlation_significance < 0.5, cap symbol_plan confidence at <= 0.4.
 CQ2. If cross_asset.confidence.data_freshness < 0.5, do NOT create aggressive directional plans; prefer neutral/defensive structures.
-CQ3. If BOTH correlation_significance < 0.5 and data_freshness < 0.5, constrain max_position_size to <= 0.7x baseline and avoid increasing exposure.
+CQ3. If BOTH correlation_significance < 0.5 and data_freshness < 0.5, constrain max_position_size to <= 0.7 and avoid increasing exposure.
 
 ## Cascading Modifier Floor (prevents meaningless tiny positions)
 CM1. If (flow_position_size_modifier × cross_asset_position_size_modifier × correlation_reduction) < 0.3 → SKIP symbol
@@ -303,7 +303,7 @@ CR2. If effective R:R cannot be estimated, cap confidence at <= 0.5 and prefer s
 
 ## Blueprint JSON Schema
 market_regime:str, market_analysis:str(2-3 sentences)
-symbol_plans[]: underlying, strategy_type, direction, legs[{expiry,strike,option_type,side,quantity}], entry_conditions[{field,operator,value,description}], exit_conditions[], adjustment_rules[{trigger:{field,operator,value,timeframe,description},action:hedge_delta|roll_strike|close_leg|add_leg|close_all,params:{},description}], max_position_size, stop_loss_amount, take_profit_amount, max_loss_per_trade, reasoning(MUST reference agents), confidence(0-1)
+symbol_plans[]: underlying, strategy_type, direction, legs[{expiry,strike,option_type,side,quantity}], entry_conditions[{field,operator,value,description}], exit_conditions[], adjustment_rules[{trigger:{field,operator,value,timeframe,description},action:hedge_delta|roll_strike|close_leg|add_leg|close_all,params:{},description}], max_position_size(FLOAT 0.0-1.5, position sizing ratio: 1.0=full, 0.5=half, 0.7=70%), max_contracts(INTEGER ≥1, number of contract sets to trade), stop_loss_amount, take_profit_amount, max_loss_per_trade, reasoning(MUST reference agents), confidence(0-1)
 Top-level: max_total_positions, max_daily_loss, max_margin_usage, portfolio_delta_limit, portfolio_gamma_limit
 
 ## Enums

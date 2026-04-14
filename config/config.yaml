@@ -258,7 +258,7 @@ analysis_service:
       chain: ""
       spread: ""
       cross_asset: ""
-      synthesizer: "claude-sonnet-4.6"    # synthesis needs strongest model
+      synthesizer: ""                     # use provider default (opus) — synthesis needs strongest model
       critic: ""
     cache_enabled: true
     cache_ttl: 3600

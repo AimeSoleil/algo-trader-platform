@@ -283,7 +283,7 @@ def _apply_quality_gate_to_plan(
     # ── 使用可配置的门控逻辑 ──
     settings = get_settings()
     dq_cfg = DataQualityConfig.from_settings(settings)
-    original_size = plan.get("max_position_size", 1)
+    original_size = plan.get("max_position_size", 1.0)
     should_skip, adjusted_size = apply_quality_gate(
         quality_score, original_size, cfg=dq_cfg,
     )
@@ -458,7 +458,8 @@ async def _evaluation_tick(runtime_state: ExecutionRuntimeState) -> None:
                 "entry_conditions": entry_conditions,
                 "exit_conditions": exit_conditions,
                 "confidence": confidence,
-                "max_position_size": bp_plan.get("max_position_size", 1),
+                "max_position_size": bp_plan.get("max_position_size", 1.0),
+                "max_contracts": bp_plan.get("max_contracts", 1),
                 "legs": bp_plan.get("legs", []),
             }
             plan = _apply_quality_gate_to_plan(plan, runtime_state, symbol)

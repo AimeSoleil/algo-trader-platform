@@ -314,10 +314,19 @@ class SymbolPlan(BaseModel):
     adjustment_rules: list[AdjustmentRule] = Field(default_factory=list)
     
     # 风控参数
-    max_position_size: int = 1  # 最大合约组数
+    max_position_size: float = Field(1.0, ge=0.0, le=1.5, description="仓位比例 (1.0=全仓, 0.5=半仓)")
+    max_contracts: int = Field(1, ge=1, description="最大合约组数")
     stop_loss_amount: float | None = None  # 止损金额
     take_profit_amount: float | None = None  # 止盈金额
     max_loss_per_trade: float = Field(500.0, gt=0, description="单笔最大亏损")
+
+    @field_validator("max_contracts", mode="before")
+    @classmethod
+    def _coerce_contracts(cls, v: Any) -> int:
+        """LLMs sometimes return a float for contract count; coerce to int ≥ 1."""
+        if isinstance(v, float):
+            v = max(1, round(v)) if v >= 1 else 1
+        return int(v)
     
     # LLM推理
     reasoning: str = ""  # LLM 推理过程

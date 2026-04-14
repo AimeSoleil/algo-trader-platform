@@ -242,8 +242,18 @@
           "type": "array"
         },
         "max_position_size": {
-          "default": 1,
+          "default": 1.0,
+          "description": "\u4ed3\u4f4d\u6bd4\u4f8b (1.0=\u5168\u4ed3, 0.5=\u534a\u4ed3)",
+          "maximum": 1.5,
+          "minimum": 0.0,
           "title": "Max Position Size",
+          "type": "number"
+        },
+        "max_contracts": {
+          "default": 1,
+          "description": "\u6700\u5927\u5408\u7ea6\u7ec4\u6570",
+          "minimum": 1,
+          "title": "Max Contracts",
           "type": "integer"
         },
         "stop_loss_amount": {

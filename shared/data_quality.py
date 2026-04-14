@@ -203,24 +203,24 @@ def build_quality_warnings(
 
 def apply_quality_gate(
     quality_score: float,
-    max_position_size: int,
+    max_position_size: float,
     *,
     cfg: DataQualityConfig | None = None,
-) -> tuple[bool, int]:
-    """根据质量分数决定是否跳过执行或缩减仓位。
+) -> tuple[bool, float]:
+    """根据质量分数决定是否跳过执行或缩减仓位比例。
 
     Parameters
     ----------
     quality_score : float
         数据质量评分（0.0 ~ 1.0）。
-    max_position_size : int
-        原始最大仓位数量。
+    max_position_size : float
+        原始仓位比例（1.0 = 全仓）。
     cfg : DataQualityConfig | None
         门控配置。None 时使用默认阈值。
 
     Returns
     -------
-    tuple[bool, int]
+    tuple[bool, float]
         (should_skip, adjusted_position_size)
         - should_skip=True  → 应完全跳过该标的
         - should_skip=False → 使用 adjusted_position_size 执行
@@ -230,11 +230,11 @@ def apply_quality_gate(
 
     # 极低质量 → 跳过
     if quality_score < cfg.skip_threshold:
-        return True, 0
+        return True, 0.0
 
-    # 中等质量 → 缩减仓位
+    # 中等质量 → 缩减仓位比例
     if quality_score < cfg.reduce_threshold:
-        reduced = max(1, int(max_position_size * cfg.reduce_factor))
+        reduced = round(max_position_size * cfg.reduce_factor, 4)
         return False, reduced
 
     # 质量合格 → 原样执行
