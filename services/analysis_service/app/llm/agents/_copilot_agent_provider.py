@@ -32,7 +32,6 @@ _REASONING_EFFORT_SUPPORTED_PREFIXES: tuple[str, ...] = (
     "o4",
 )
 
-
 def _resolve_cli_path(configured_cli: str) -> str:
     """Resolve configured Copilot CLI to an executable path when possible."""
     cli = configured_cli.strip() if configured_cli else "copilot"

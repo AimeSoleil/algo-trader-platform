@@ -95,6 +95,13 @@ class SynthesizerAgent:
                 )
 
                 data = parse_llm_json(result.content)
+                logger.debug("synthesizer.raw_output", provider=provider.name, output=data)
+
+                # Normalize symbol_plans: some models (e.g. sonnet) return
+                # a dict keyed by symbol instead of a list.
+                sp = data.get("symbol_plans")
+                if isinstance(sp, dict):
+                    data["symbol_plans"] = list(sp.values())
 
                 # Inject metadata
                 data["trading_date"] = next_trading_day(from_date=signal_date).isoformat()
@@ -135,7 +142,7 @@ class SynthesizerAgent:
                 )
                 return blueprint
 
-            except (json.JSONDecodeError, ValidationError, ValueError) as e:
+            except (json.JSONDecodeError, ValidationError, ValueError, TypeError) as e:
                 last_exc = e
                 llm_retries_total.labels(provider=provider.name, error_type="parse").inc()
                 logger.warning("synthesizer.parse_error", provider=provider.name, attempt=attempt + 1, error=str(e))
