@@ -73,7 +73,7 @@ class CriticAgent:
                     instructions=_CRITIC_SYSTEM_PROMPT,
                     user_prompt=prompt,
                     temperature=0.0,  # deterministic for review
-                    max_tokens=8192,
+                    max_tokens=16384,
                     model=model,
                 )
 

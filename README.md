@@ -195,7 +195,7 @@ llm:
     api_key: ""                # 或通过环境变量 LLM__OPENAI__API_KEY 设置
     model: "gpt-4o"
     temperature: 0.1
-    max_tokens: 8192
+    max_tokens: 16384
 
   copilot:
     cli_path: "copilot"
