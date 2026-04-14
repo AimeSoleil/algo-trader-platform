@@ -160,7 +160,7 @@ def compute_stock_indicators(bars_df: pd.DataFrame) -> StockIndicators:
         extreme_flags.append("rsi_extreme_oversold")
     if adx > 40:
         extreme_flags.append("strong_trend")
-    if bollinger_width < 0.03:
+    if abs(bb_mid) > 1e-9 and bollinger_width < 0.3 * atr / bb_mid:
         extreme_flags.append("volatility_squeeze")
 
     # Data coverage quality signals

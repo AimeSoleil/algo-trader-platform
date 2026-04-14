@@ -49,7 +49,7 @@ Indicators:
 - HV 20d: realized vol for HV-IV comparison
 - HV-IV Spread: >0=realized_exceeds, <0=implied_rich
 - GARCH Forecast: divergence from current_iv→mean-reversion signal
-- BB Width: <0.03=squeeze
+- BB Width: price-normalized; squeeze = BB_width < 0.3×(atr_14/close_price)
 - Vol Surface Fit Error: mispricing indicator (context-dependent threshold)
 - IV Skew: >0.05=steep put skew
 - Term Structure Slope: >0=contango, <0=backwardation
@@ -65,7 +65,7 @@ R7. vol_surface_fit_error→see context-dependent threshold below
 R8. iv_skew>0.05→sell OTM put credit for skew premium
 R9. term_structure<0(backwardation)→avoid selling DTE<7
 R10. iv_rank>70+backwardation→iron_butterfly,DTE>14
-R11. BB_width<0.03→straddle/strangle
+R11. BB_width < 0.3×(atr_14/close_price)→squeeze→straddle/strangle
 
 ## IV Rank vs IV Percentile Divergence (CRITICAL)
 D1. When iv_rank and iv_percentile disagree by >20 points:

@@ -43,7 +43,7 @@ Role: Cross-Asset & Macro specialist. Task: Analyze benchmark exposure, VIX, cro
 Core Cross-Asset:
 - Stock-IV Corr: <-0.5=fear, near 0=decoupled, >0.3=bullish_vol; conf≥0.5 required
 - Opt/Stock Vol Ratio: >3×=catalyst, <0.5×=illiquid options
-- Delta-Adj Hedge Ratio: >0=buy shares, <0=sell; |val|>200=significant
+- Delta-Adj Hedge Ratio: OI-weighted avg delta per contract. >0=net long delta(buy shares to hedge), <0=net short delta(sell shares); |val|>0.3=significant net delta bias
 
 Multi-Benchmark Beta & Correlation:
 - SPY β(60d): >1=amplifies market, <1=defensive; corr(20d): >0.7=market-driven, <0.3=idiosyncratic
@@ -67,7 +67,7 @@ R3. iv_corr>0.3+conf≥0.5→bullish vol→sell calls/spreads
 R4. conf<0.5→discard correlation signal
 R5. vol_ratio>3.0→catalyst→straddle/strangle,widen stops
 R6. vol_ratio<0.5→illiquid options→max 2 strike width
-R7. |hedge_ratio|>200→significant hedging needed
+R7. |hedge_ratio|>0.3→significant hedging bias
 R8. spy_β>1.2+qqq_β<0.5→value/cyclical
 R9. qqq_β>1.5+spy_β<1.0→pure tech
 R10. iwm_corr>0.6+IWM down→risk-off→reduce 30%,tighten stops
@@ -124,7 +124,7 @@ Constraints:
 - Cross-asset=confirmation only,not standalone
 - Corr regime change needs 5 consecutive days (RP1-RP4)
 - vol_ratio<0.5→max 2 strike width
-- |hedge_ratio|>200→split tranches(max 100 shares)
+- |hedge_ratio|>0.5→consider phased delta hedging
 - Multi-benchmark quality≥0.5 required
 - VIX rules need vix_quality=1.0
 - VIX percentile uses 60-trading-day rolling lookback (not 252-day — regime changes distort longer windows)

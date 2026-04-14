@@ -45,6 +45,39 @@ If no positions are provided or the portfolio is flat, focus on fresh entry oppo
 (b) reduce confidence proportionally — score < 0.5 should cap confidence at 0.5; \
 (c) prefer conservative strategies (smaller position sizes, wider stops) for low-quality data symbols; \
 (d) never rely on degraded indicators for entry/exit conditions.
+
+## Data Interpretation Guide
+All specialist agents receive the same signal data. Key unit conventions:
+- **IV / HV / GARCH**: decimal format (0.35 = 35% annualized volatility)
+- **iv_rank / iv_percentile**: 0-100 scale (50 = median)
+- **hv_iv_spread**: hv_20d minus current_iv (both decimal); positive = HV > IV
+- **bollinger_band_width**: price-normalized decimal (not absolute dollar width)
+- **linear_reg_slope**: daily fractional price change (0.001 = +0.1% per day)
+- **atr_14**: absolute dollar value (e.g. 2.50 = $2.50 average daily range)
+- **volume_profile_poc / val / vah**: absolute price levels in dollars
+- **VWAP**: cumulative ~1-year volume-weighted average price (long-term fair value, NOT intraday)
+- **delta_adjusted_hedge_ratio**: OI-weighted average delta per contract (range typically -1 to +1; |val|>0.3 = significant)
+- **portfolio_greeks**: OI-weighted average per contract (delta, gamma, theta, vega)
+- **delta_exposure_profile**: raw sum of delta × OI (total market delta exposure for DEX/GEX analysis)
+- **earnings_proximity_days**: trading days until next earnings; null = unknown or not applicable (e.g. ETFs)
+- **rsi_14**: 0-100 oscillator (>70 overbought, <30 oversold)
+- **stoch_rsi**: 0-1 scale, more sensitive than RSI (>0.8 overbought, <0.2 oversold)
+- **rsi_divergence**: score {-1, 0, +1}; +1 = bearish divergence (price up, RSI weak), -1 = bullish divergence
+- **macd_hist_divergence**: {-1, +1}; +1 = price and MACD direction consistent, -1 = diverging
+- **trend / trend_strength**: trend is "bullish"/"bearish"/"neutral"; strength 0-1
+- **cmf_20**: Chaikin Money Flow, -1 to +1 (>0.1 buying pressure, <-0.1 selling pressure)
+- **tick_volume_delta**: -1 to +1 net up/down volume ratio over recent 20 bars
+- **pcr_volume / pcr_oi**: raw put/call ratios (>1 = more puts; typical range 0.5-1.5)
+- **iv_skew**: 25-delta put IV minus 25-delta call IV (decimal); >0.05 = steep put skew
+- **term_structure_slope**: furthest ATM IV minus nearest ATM IV (decimal); >0 = contango, <0 = backwardation
+- **vix_percentile_52w**: 0-1 scale, percentile rank of current VIX vs trailing 60-day history
+- **vol_surface_fit_error**: RMSE of quadratic moneyness-IV fit (decimal); lower = better fit
+- **option_vs_stock_volume_ratio**: total option volume / stock volume; >3 = elevated, <0.5 = illiquid options
+- **stock_iv_correlation**: Pearson correlation of stock returns vs IV changes (~20d sample)
+- **oi_concentration_top5**: fraction of OI in top 5 strikes per expiry (0-1)
+- **bid_ask_spread_ratio**: average (ask-bid)/mid across all contracts (lower = more liquid)
+- **option_volume_imbalance**: (call_vol - put_vol) / total_vol; range -1 to +1
+- **gld/hyg/xle/ibit/tlt_correlation_20d**: 20-day Pearson correlation with respective ETF (-1 to +1)
 """
 
 # ---------------------------------------------------------------------------
@@ -167,13 +200,17 @@ def _serialize_one_signal(sf: SignalFeatures) -> str:
         "delta_adjusted_hedge_ratio": round(ca.delta_adjusted_hedge_ratio, 4),
         "spy_beta": round(ca.spy_beta, 4),
         "sector_relative_strength": round(ca.sector_relative_strength, 4),
-        "earnings_proximity_days": ca.earnings_proximity_days,
+        "earnings_proximity_days": ca.earnings_proximity_days if ca.earnings_proximity_days >= 0 else None,
         "spy_correlation_20d": round(ca.index_correlation_20d, 4),
         "qqq_beta": round(ca.qqq_beta, 4),
         "qqq_correlation_20d": round(ca.qqq_correlation_20d, 4),
         "iwm_beta": round(ca.iwm_beta, 4),
         "iwm_correlation_20d": round(ca.iwm_correlation_20d, 4),
         "tlt_correlation_20d": round(ca.tlt_correlation_20d, 4),
+        "gld_correlation_20d": round(ca.gld_correlation_20d, 4),
+        "hyg_correlation_20d": round(ca.hyg_correlation_20d, 4),
+        "xle_correlation_20d": round(ca.xle_correlation_20d, 4),
+        "ibit_correlation_20d": round(ca.ibit_correlation_20d, 4),
         "vix_level": round(ca.vix_level, 4),
         "vix_percentile_52w": round(ca.vix_percentile_52w, 4),
         "vix_correlation_20d": round(ca.vix_correlation_20d, 4),

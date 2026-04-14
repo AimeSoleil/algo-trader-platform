@@ -35,7 +35,7 @@ BETA_MIN_OVERLAP = 30       # minimum aligned days required for beta
 CORR_WINDOW = 20            # trailing days for rolling correlation
 IV_CORR_MIN_SAMPLES = 10    # minimum samples for IV-return correlation
 VIX_LOOKBACK_WEEKS = 52     # weeks for VIX percentile (≈252 trading days)
-VIX_LOOKBACK_DAYS = 252     # trading days for VIX percentile
+VIX_LOOKBACK_DAYS = 60      # trading days for VIX percentile (60d avoids regime distortion)
 FRESHNESS_MAX_LAG_DAYS = 2  # data older than this is treated as stale
 
 # Benchmark names that map to model fields
@@ -358,6 +358,11 @@ def build_cross_asset_indicators(
     # ── Multi-benchmark beta & correlation ─────────────────
     benchmark_results: dict[str, BetaResult] = {}
     for bench_name, (beta_field, corr_field) in BENCHMARK_FIELD_MAP.items():
+        # Skip self-benchmark to avoid identity correlation (e.g. IBIT vs IBIT = 1.0)
+        if symbol == bench_name:
+            benchmark_results[bench_name] = BetaResult()
+            continue
+
         returns = benchmark_returns.get(bench_name, pd.Series(dtype=float))
         if returns.empty:
             benchmark_results[bench_name] = BetaResult()

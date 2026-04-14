@@ -250,11 +250,15 @@ async def _compute_iv_metrics(
     historical_iv_30d = float(np.mean(historical_iv)) if historical_iv else 0.0
 
     # iv_rank: min-max normalization
-    if historical_iv and current_iv > 0:
+    if historical_iv and len(historical_iv) >= 2 and current_iv > 0:
         iv_min = float(np.min(historical_iv))
         iv_max = float(np.max(historical_iv))
-        iv_rank = ((current_iv - iv_min) / max(iv_max - iv_min, 1e-9)) * 100
-        iv_rank = float(np.clip(iv_rank, 0.0, 100.0))
+        spread = iv_max - iv_min
+        if spread < 1e-4:
+            iv_rank = 50.0
+        else:
+            iv_rank = ((current_iv - iv_min) / spread) * 100
+            iv_rank = float(np.clip(iv_rank, 0.0, 100.0))
     else:
         iv_rank = 50.0
 
@@ -353,10 +357,10 @@ def _compute_greek_aggregations(option_data: pd.DataFrame) -> dict:
             "put": round(put_delta_exposure, 4),
         },
         "portfolio_greeks": {
-            "delta": round(delta_exposure, 4),
-            "gamma": round(gamma_exposure, 4),
-            "theta": round(theta_exposure, 4),
-            "vega": round(vega_exposure, 4),
+            "delta": round(delta_exposure / total_oi, 4),
+            "gamma": round(gamma_exposure / total_oi, 4),
+            "theta": round(theta_exposure / total_oi, 4),
+            "vega": round(vega_exposure / total_oi, 4),
         },
         "gamma_peak_strike": round(gamma_peak_strike, 4),
         "theta_decay_rate": round(theta_decay_rate, 6),
@@ -503,16 +507,7 @@ def _assess_confidence_and_flags(
     extreme_flags: list[str] = []
     degraded: list[str] = []
 
-    if iv_rank > 90:
-        extreme_flags.append("extreme_high_iv")
-    if iv_rank < 10:
-        extreme_flags.append("extreme_low_iv")
-    if abs(option_volume_imbalance) > 0.6:
-        extreme_flags.append("extreme_volume_imbalance")
-    if bid_ask_spread_ratio > 0.2:
-        extreme_flags.append("poor_liquidity")
-
-    # Data sufficiency checks
+    # Data sufficiency checks — must run BEFORE extreme flags
     n_rows = len(option_data)
     n_expiries = option_data["expiry"].nunique() if "expiry" in option_data.columns else 0
     n_hist_iv = len(historical_iv)
@@ -523,6 +518,18 @@ def _assess_confidence_and_flags(
         degraded.extend(["term_structure_slope", "calendar_spread_theta_capture"])
     if n_rows < 20:
         degraded.extend(["vol_surface_fit_error", "iv_skew"])
+
+    # Extreme value flags — skip IV flags when iv_rank is degraded
+    if "iv_rank" not in degraded:
+        if iv_rank > 90:
+            extreme_flags.append("extreme_high_iv")
+        if iv_rank < 10:
+            extreme_flags.append("extreme_low_iv")
+    if abs(option_volume_imbalance) > 0.6:
+        extreme_flags.append("extreme_volume_imbalance")
+    if bid_ask_spread_ratio > 0.2:
+        extreme_flags.append("poor_liquidity")
+
     if degraded:
         extreme_flags.append("partial_option_data")
 

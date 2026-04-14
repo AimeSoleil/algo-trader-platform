@@ -356,8 +356,12 @@ def tick_volume_delta(
     Returns:
         归一化净值，保留 4 位小数。
     """
-    signed = np.where(close >= open_, volume, -volume)
-    denom = float(volume.sum()) if float(volume.sum()) > 0 else 1.0
+    # Use last 20 bars to match CMF window — recent directional flow
+    open_t = open_.tail(20)
+    close_t = close.tail(20)
+    volume_t = volume.tail(20)
+    signed = np.where(close_t >= open_t, volume_t, -volume_t)
+    denom = float(volume_t.sum()) if float(volume_t.sum()) > 0 else 1.0
     return round(float(np.sum(signed) / denom), 4)
 
 
