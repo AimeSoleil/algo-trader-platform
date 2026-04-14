@@ -406,10 +406,10 @@ def build_cross_asset_indicators(
     }
 
     # ── Earnings proximity ──────────────────────────────────
-    earnings_proximity = -1
+    earnings_proximity: int | None = None
     if earnings_date is not None and trading_date is not None:
         delta_days = (earnings_date - trading_date).days
-        earnings_proximity = delta_days if delta_days >= 0 else -1
+        earnings_proximity = delta_days if delta_days >= 0 else None
 
     # ── Assemble ───────────────────────────────────────────
     spy = benchmark_results.get("SPY", BetaResult())

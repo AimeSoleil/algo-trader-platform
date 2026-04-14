@@ -126,7 +126,7 @@ class CrossAssetIndicators(BaseModel):
 
     # ── Placeholders (next iteration) ─────────────────────
     sector_relative_strength: float = 0.0  # Relative strength vs sector ETF
-    earnings_proximity_days: int = -1      # Days until next earnings (-1 = unknown)
+    earnings_proximity_days: int | None = None  # Days until next earnings (None = unknown)
 
     confidence_scores: dict[str, float] = Field(default_factory=dict)
 

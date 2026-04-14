@@ -326,7 +326,7 @@ Example: {"field":"time","operator":"between","value":[10.0,11.0],"description":
 ## Earnings Proximity (cross_asset.earnings_proximity_days)
 - ≤3d: IV elevated→sell-premium benefits, tighter stops. Note in reasoning.
 - 1d: no NEW positions unless explicit earnings play(straddle/strangle)
-- -1(unknown): normal rules
+- null(unknown): normal rules
 - >10d: ignore earnings effect
 
 ## DTE Guidelines (bounds: min 7, max 180)

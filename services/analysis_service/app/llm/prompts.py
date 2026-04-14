@@ -200,7 +200,7 @@ def _serialize_one_signal(sf: SignalFeatures) -> str:
         "delta_adjusted_hedge_ratio": round(ca.delta_adjusted_hedge_ratio, 4),
         "spy_beta": round(ca.spy_beta, 4),
         "sector_relative_strength": round(ca.sector_relative_strength, 4),
-        "earnings_proximity_days": ca.earnings_proximity_days if ca.earnings_proximity_days >= 0 else None,
+        "earnings_proximity_days": ca.earnings_proximity_days,
         "spy_correlation_20d": round(ca.index_correlation_20d, 4),
         "qqq_beta": round(ca.qqq_beta, 4),
         "qqq_correlation_20d": round(ca.qqq_correlation_20d, 4),
