@@ -444,7 +444,7 @@ async def _evaluation_tick(runtime_state: ExecutionRuntimeState) -> None:
                 opt = sig.get("option_indicators", {})
                 market_ctx.setdefault("iv", opt.get("current_iv", 0.0))
                 market_ctx.setdefault("iv_rank", opt.get("iv_rank", 0.0))
-                market_ctx.setdefault("delta", opt.get("delta_exposure_profile", {}).get("net", 0.0))
+                market_ctx.setdefault("delta", opt.get("delta_exposure_profile", {}).get("total", 0.0))
                 market_ctx.setdefault("volume", sig.get("volume", 0))
 
             # ── Extract conditions from blueprint symbol plan ──

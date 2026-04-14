@@ -99,6 +99,9 @@ class CopilotAgentProvider:
             "on_permission_request": self._on_permission_request,
         }
 
+        if max_tokens:
+            session_opts["max_tokens"] = max_tokens
+
         # Only attach reasoning_effort for models known to support it;
         # other models (e.g. gemini-*) will reject the parameter.
         if self._reasoning_effort and any(

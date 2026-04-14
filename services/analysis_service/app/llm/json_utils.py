@@ -57,6 +57,13 @@ def extract_json_str(text: str) -> str:
     if _is_valid_json(fixed_candidate):
         return fixed_candidate
 
+    # Stage 4 — handle concatenated JSON objects ("Extra data" scenario)
+    # LLMs sometimes emit multiple JSON objects back-to-back; take the first.
+    for src in (text, fixed, candidate, fixed_candidate):
+        first = _try_raw_decode(src)
+        if first is not None:
+            return first
+
     # Return the best effort — caller's json.loads will surface a clear error
     return fixed_candidate
 
@@ -200,6 +207,20 @@ def _fix_json(text: str) -> str:
     text = re.sub(r",\s*([}\]])", r"\1", text)
 
     return text
+
+
+def _try_raw_decode(text: str) -> str | None:
+    """Use ``json.JSONDecoder.raw_decode`` to extract the first valid JSON value.
+
+    Returns the JSON string if successful and there was trailing data
+    (i.e. the "Extra data" case), otherwise ``None``.
+    """
+    try:
+        decoder = json.JSONDecoder()
+        obj, end = decoder.raw_decode(text.lstrip())
+        return json.dumps(obj, ensure_ascii=False)
+    except (json.JSONDecodeError, ValueError):
+        return None
 
 
 def _regex_extract(text: str) -> str | None:

@@ -342,7 +342,7 @@ class OpenAILLMSettings(BaseSettings):
     api_key: str = ""
     model: str = "claude-opus-4.6"
     temperature: float = 0.1
-    max_tokens: int = 8192
+    max_tokens: int = 16384
     request_timeout_seconds: int = 600
 
 class CopilotLLMSettings(BaseSettings):
