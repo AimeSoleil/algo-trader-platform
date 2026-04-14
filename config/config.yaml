@@ -197,9 +197,8 @@ data_service:
   worker:
     schedule:
       options_capture_every_minutes: 5     # 盘中期权链采集间隔（分钟）
-      options_post_close_time: "17:00"    # 盘后期权聚合（收盘后 60 分钟缓冲）
-      stock_pipeline_time: "17:25"        # 盘后股票采集（options 聚合完成后）
-      refresh_earnings_time: "17:50"      # 刷新 earnings cache（stock pipeline 完成后）
+      post_market_time: "17:00"            # 统一盘后流水线：options 聚合 → stock 采集 → signals → blueprint
+      refresh_earnings_time: "17:50"       # 刷新 earnings cache（pipeline 完成后）
     pipeline:
       chunk_size: 5                         # 每个 chunked stage 的 symbol 分块大小
       stop_after: "generate_daily_blueprint"  # 流水线执行到此步为止（含），后续步骤跳过

@@ -38,7 +38,6 @@ def create_celery_app() -> Celery:
             "services.data_service.app.tasks.intraday",
             "services.data_service.app.tasks.aggregation",
             "services.data_service.app.tasks.pipeline",
-            "services.data_service.app.tasks.options_pipeline",
             "services.data_service.app.tasks.coordination",
             "services.data_service.app.tasks.earnings",
             "services.data_service.app.tasks.manual",
@@ -95,49 +94,43 @@ def create_celery_app() -> Celery:
     # ── Beat schedules ─────────────────────────────────────
     #
     # Timeline (ET, weekdays):
-    #   09:30-16:00  intraday-option-capture (every 5 min)
-    #   17:00        options-post-close      — aggregate 5-min snapshots → daily
-    #   17:25        stock-pipeline          — capture post-market 1m bars + daily
+    #   09:30-15:55  intraday-option-capture (every 5 min)
+    #   16:00        intraday-option-capture-close (final tick)
+    #   17:00        post-market-pipeline    — options agg + stock capture → downstream
     #   17:50        refresh-earnings-cache  — update Redis earnings cache
     #   (16:30)      daily-trading-report    — if notifier enabled
-    #
-    # Tasks are staggered so each finishes before the next starts,
-    # avoiding data-queue contention on a single-concurrency worker.
-    #
-    # Coordination: both stock-pipeline and options-post-close set Redis flags
-    # and call check_pipelines_and_continue.  Downstream stages (backfill →
-    # signals → blueprint) only dispatch when both flags are present.
 
-    _stock_h, _stock_m = map(int, settings.data_service.worker.schedule.stock_pipeline_time.split(":"))
     intraday_interval = settings.data_service.worker.schedule.options_capture_every_minutes
 
-    # Market hours: crontab fires at 09:30, 09:35, ... 15:55 (ET, weekdays)
-    # The task's is_market_open() guard handles the 09:00-09:29 window.
     _mkt_start_h, _mkt_start_m = map(int, settings.common.market_hours.start.split(":"))
     _mkt_end_h, _mkt_end_m = map(int, settings.common.market_hours.end.split(":"))
 
-    # Options post-close — configurable (default 16:20 ET)
-    _opt_h, _opt_m = map(int, settings.data_service.worker.schedule.options_post_close_time.split(":"))
+    # Unified post-market pipeline
+    _pm_h, _pm_m = map(int, settings.data_service.worker.schedule.post_market_time.split(":"))
 
-    # Earnings cache refresh — configurable (default 17:15 ET)
+    # Earnings cache refresh
     _earn_h, _earn_m = map(int, settings.data_service.worker.schedule.refresh_earnings_time.split(":"))
 
     app.conf.beat_schedule = {
-        "stock-pipeline": {
-            "task": "data_service.tasks.run_stock_pipeline",
-            "schedule": crontab(hour=_stock_h, minute=_stock_m, day_of_week="1-5"),
-            "options": {"queue": "data"},
-        },
-        "options-post-close": {
-            "task": "data_service.tasks.run_options_post_close",
-            "schedule": crontab(hour=_opt_h, minute=_opt_m, day_of_week="1-5"),
+        "post-market-pipeline": {
+            "task": "data_service.tasks.run_post_market_pipeline",
+            "schedule": crontab(hour=_pm_h, minute=_pm_m, day_of_week="1-5"),
             "options": {"queue": "data"},
         },
         "intraday-option-capture": {
             "task": "data_service.tasks.capture_intraday_options",
             "schedule": crontab(
                 minute=f"*/{intraday_interval}",
-                hour=f"{_mkt_start_h}-{int(settings.common.market_hours.end.split(':')[0])}",
+                hour=f"{_mkt_start_h}-{_mkt_end_h - 1}",
+                day_of_week="1-5",
+            ),
+            "options": {"queue": "data"},
+        },
+        "intraday-option-capture-close": {
+            "task": "data_service.tasks.capture_intraday_options",
+            "schedule": crontab(
+                minute=_mkt_end_m,
+                hour=_mkt_end_h,
                 day_of_week="1-5",
             ),
             "options": {"queue": "data"},

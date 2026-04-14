@@ -1,4 +1,4 @@
-"""Pipeline coordination — trigger downstream stages when both pipelines complete."""
+"""Pipeline coordination — dispatch downstream stages after post-market capture."""
 from __future__ import annotations
 
 import asyncio
@@ -13,13 +13,11 @@ from shared.utils import get_logger
 
 logger = get_logger("data_tasks")
 
-
-def _options_done_key(td: str) -> str:
-    return f"pipeline:options_done:{td}"
+_FLAG_TTL_SECONDS = 86_400  # 24 h
 
 
-def _stock_done_key(td: str) -> str:
-    return f"pipeline:stock_done:{td}"
+def _pipeline_done_key(td: str) -> str:
+    return f"pipeline:done:{td}"
 
 
 # ── Downstream step names (ordered, critical path only) ─────
@@ -45,6 +43,9 @@ def stage_barrier(results, stage_name: str, trading_date: str) -> dict:
         chunks=len(results) if isinstance(results, list) else 1,
     )
     return {"stage": stage_name, "trading_date": trading_date}
+
+
+# ── Downstream dispatch (called by pipeline finalize) ──────
 
 
 def _dispatch_backfill(td: str) -> None:
@@ -73,11 +74,7 @@ def _dispatch_backfill(td: str) -> None:
 
 
 def _build_downstream_steps(td: str) -> list[tuple[str, object]]:
-    """Build the critical-path downstream steps: signals → blueprint.
-
-    Backfill is dispatched separately via ``_dispatch_backfill`` so it
-    never blocks the signal / analysis stages.
-    """
+    """Build the critical-path downstream steps: signals → blueprint."""
     settings = get_settings()
     symbols = settings.common.watchlist.all
     chunk_size = settings.data_service.worker.pipeline.chunk_size
@@ -96,7 +93,6 @@ def _build_downstream_steps(td: str) -> list[tuple[str, object]]:
                     )
                     for chunk in chunks
                 ),
-                # Use .s() so chord results arrive as first arg
                 stage_barrier.s("compute_daily_signals", td).set(queue="data"),
             ),
         ),
@@ -112,35 +108,12 @@ def _build_downstream_steps(td: str) -> list[tuple[str, object]]:
     ]
 
 
-@celery_app.task(
-    name="data_service.tasks.check_pipelines_and_continue",
-    queue="data",
-)
-def check_pipelines_and_continue(trading_date: str) -> dict:
-    """Check whether both stock and options pipelines have completed.
+def dispatch_downstream(trading_date: str) -> dict:
+    """Dispatch backfill (fire-and-forget) and critical-path chain (signals → blueprint).
 
-    Called by both ``run_stock_pipeline`` and ``run_options_post_close``
-    after they set their respective Redis flags.  When both flags are
-    present, this task dispatches backfill (fire-and-forget) and the
-    critical-path chain (signals → blueprint) in parallel.
+    Called directly by the unified post-market pipeline finalize callback.
     """
-    stock_ready, options_ready = asyncio.run(_check_flags(trading_date))
-
-    if not (stock_ready and options_ready):
-        missing = []
-        if not stock_ready:
-            missing.append("stock")
-        if not options_ready:
-            missing.append("options")
-        logger.info(
-            "coordination.waiting",
-            trading_date=trading_date,
-            missing=missing,
-        )
-        return {"status": "waiting", "trading_date": trading_date, "missing": missing}
-
-    # ── Both ready — dispatch downstream ──
-    logger.info("coordination.both_ready", trading_date=trading_date)
+    logger.info("coordination.dispatching_downstream", trading_date=trading_date)
 
     # Notify: pipeline started
     from shared.notifier.helpers import notify_sync
@@ -148,14 +121,14 @@ def check_pipelines_and_continue(trading_date: str) -> dict:
     notify_sync(NotificationEvent(
         event_type=EventType.PIPELINE_STARTED,
         title="🚀 Post-Market Pipeline Started",
-        message=f"Both stock and options capture completed for {trading_date}. "
+        message=f"Options aggregation and stock capture completed for {trading_date}. "
                 f"Starting downstream: signals → blueprint.",
         severity=Severity.INFO,
         payload={"trading_date": trading_date},
     ))
 
-    # Clean up flags
-    asyncio.run(_delete_flags(trading_date))
+    # Set done flag for timeout check
+    asyncio.run(_set_done_flag(trading_date))
 
     # Backfill — fire-and-forget, does not block signals / analysis
     _dispatch_backfill(trading_date)
@@ -164,7 +137,6 @@ def check_pipelines_and_continue(trading_date: str) -> dict:
     stop_after = settings.data_service.worker.pipeline.stop_after
 
     if stop_after not in _DOWNSTREAM_STEP_NAMES:
-        # stop_after is set to a data-stage name — no downstream to run
         logger.info(
             "coordination.no_downstream",
             trading_date=trading_date,
@@ -212,53 +184,40 @@ def check_pipelines_and_continue(trading_date: str) -> dict:
 def coordination_timeout_check(trading_date: str) -> dict:
     """Fallback — triggered after coordination_timeout_minutes.
 
-    If downstream hasn't run yet (flags still exist), log a warning.
-    This does NOT auto-dispatch to avoid running on stale/missing data.
+    If pipeline done flag is not set, downstream likely never ran.
     """
-    stock_ready, options_ready = asyncio.run(_check_flags(trading_date))
+    done = asyncio.run(_check_done_flag(trading_date))
 
-    if stock_ready or options_ready:
-        missing = []
-        if not stock_ready:
-            missing.append("stock")
-        if not options_ready:
-            missing.append("options")
+    if not done:
         logger.warning(
             "coordination.timeout",
             trading_date=trading_date,
-            stock_done=stock_ready,
-            options_done=options_ready,
-            missing=missing,
         )
 
-        # Notify: pipeline coordination timeout
         from shared.notifier.helpers import notify_sync
         from shared.notifier.base import NotificationEvent, EventType, Severity
         notify_sync(NotificationEvent(
             event_type=EventType.PIPELINE_FAILED,
             title="⚠️ Pipeline Coordination Timeout",
-            message=f"Pipeline coordination timed out for {trading_date}. "
-                    f"Missing: {', '.join(missing)}. Manual intervention may be needed.",
+            message=f"Post-market pipeline may not have completed for {trading_date}. "
+                    f"Manual intervention may be needed.",
             severity=Severity.ERROR,
-            payload={"trading_date": trading_date, "phase": "coordination", "missing": str(missing)},
+            payload={"trading_date": trading_date, "phase": "coordination"},
         ))
 
-        return {"status": "timeout", "trading_date": trading_date, "missing": missing}
+        return {"status": "timeout", "trading_date": trading_date}
 
-    # Flags already cleaned up — downstream already ran
     return {"status": "already_completed", "trading_date": trading_date}
 
 
 # ── Redis helpers ──────────────────────────────────────────
 
 
-async def _check_flags(td: str) -> tuple[bool, bool]:
+async def _set_done_flag(td: str) -> None:
     redis = get_redis()
-    stock = await redis.exists(_stock_done_key(td))
-    options = await redis.exists(_options_done_key(td))
-    return bool(stock), bool(options)
+    await redis.set(_pipeline_done_key(td), "1", ex=_FLAG_TTL_SECONDS)
 
 
-async def _delete_flags(td: str) -> None:
+async def _check_done_flag(td: str) -> bool:
     redis = get_redis()
-    await redis.delete(_stock_done_key(td), _options_done_key(td))
+    return bool(await redis.exists(_pipeline_done_key(td)))

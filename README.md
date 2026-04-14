@@ -65,23 +65,21 @@ docker compose ps
 
 | 时间 | 队列 | 任务 | 说明 |
 |------|------|------|------|
-| 09:30-16:00 每5分钟 | data | `capture_intraday_options` | 盘中期权链快照采集 |
-| 17:00 | data | `run_options_post_close` | 期权 5min 快照 → option_daily 聚合 → set flag |
-| 17:25 | data | `run_stock_pipeline` | 股票 1min + daily bars 采集 → set flag → schedule timeout |
+| 09:30-15:55 每5分钟 | data | `capture_intraday_options` | 盘中期权链快照采集 |
+| 16:00 | data | `capture_intraday_options` | 收盘 tick（独立 crontab 保证准时） |
+| 17:00 | data | `run_post_market_pipeline` | 统一盘后：期权聚合 → 股票采集 chord → 触发下游 |
 | 17:50 | data | `refresh_earnings_cache` | 刷新 Redis 中 earnings 日期缓存 |
-| ~17:40 | data | `check_pipelines_and_continue` | 两管线 flag 齐 → 触发下游 |
-| ~17:40 | backfill | `detect_gaps_chunk` × N | fire-and-forget 缺口检测回填（不阻塞关键路径） |
-| ~17:45 | signal | `compute_signals_chunk` × N (chord) | 并行分块信号计算 → stage_barrier |
-| ~18:00 | analysis | `generate_daily_blueprint` | 6 specialist + synthesizer + critic 多智能体蓝图生成 |
+| ~17:15 | backfill | `detect_gaps_chunk` × N | fire-and-forget 缺口检测回填（不阻塞关键路径） |
+| ~17:20 | signal | `compute_signals_chunk` × N (chord) | 并行分块信号计算 → stage_barrier |
+| ~17:35 | analysis | `generate_daily_blueprint` | 6 specialist + synthesizer + critic 多智能体蓝图生成 |
 | 16:30 | data | `send_daily_report` | 每日交易报告推送（if notifier enabled） |
 
 ### 设计决策
 
-- **17:00 起步**：与最后一次盘中采集（16:00）间隔 60 分钟，确保所有 snapshot 写入完成
-- **25 分钟间隔**：options → stock → earnings 各步骤错开，避免 data 队列争抢
-- **coordination 模式**：两管线各自完成后 set Redis flag + call `check_pipelines_and_continue`；
-  第二个到达时 flag 齐全 → 触发 backfill + signal → blueprint 链
-- **coordination timeout**：60 分钟（countdown from stock pipeline），超时仅告警不自动重试
+- **17:00 统一盘后**：单一 `run_post_market_pipeline` 依次执行 options 聚合 + stock 采集 chord，chord callback 直接触发下游
+- **无 Redis flag 协调**：不再需要两管线各自 set flag + 等待；统一 pipeline 线性执行，chord callback 确保数据完整后直接 dispatch downstream
+- **intraday 16:00 收盘 tick**：独立 crontab 条目确保最后一次采集在 16:00 准时触发
+- **coordination timeout**：60 分钟（countdown from chord callback），超时仅告警不自动重试
 
 ### Celery 调优
 

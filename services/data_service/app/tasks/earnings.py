@@ -14,6 +14,22 @@ logger = get_logger("data_tasks")
 
 EARNINGS_HASH_KEY = "earnings:next_date"
 
+# Symbols that never have earnings reports: ETFs, bond funds, commodity funds,
+# crypto ETFs, and index tickers (^ prefix handled separately in the filter).
+_NO_EARNINGS_SYMBOLS: frozenset[str] = frozenset({
+    # Broad-market / equity ETFs
+    "SPY", "QQQ", "IWM", "DIA", "VOO", "VTI", "IVV",
+    # Fixed-income / rates
+    "TLT", "IEF", "SHY", "AGG", "BND", "HYG", "LQD",
+    # Commodities / REIT
+    "GLD", "GDX", "SLV", "USO", "VNQ", "XLE",
+    # Crypto ETFs
+    "IBIT", "FBTC", "BITB",
+    # Sector / factor ETFs
+    "XLF", "XLK", "XLV", "XLY", "XLI", "XLP", "XLU", "XLB",
+    "ARKK", "ARKW", "SMH",
+})
+
 
 def _seconds_until_midnight_et() -> int:
     """Return seconds remaining until 00:00 ET (next day), minimum 3600."""
@@ -64,7 +80,11 @@ def refresh_earnings_cache(self) -> dict:
 
 async def _refresh_earnings_cache_async() -> dict:
     settings = get_settings()
-    symbols = [s for s in settings.common.watchlist.all if not s.startswith("^")]
+    symbols = [
+        s for s in settings.common.watchlist.all
+        if not s.startswith("^")
+        and s not in _NO_EARNINGS_SYMBOLS
+    ]
 
     t0 = perf_counter()
     results = await fetch_and_cache_earnings(symbols)
