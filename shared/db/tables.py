@@ -62,6 +62,25 @@ class StockBar(TimescaleBase):
     )
 
 
+class StockBar5Min(TimescaleBase):
+    """5-minute stock bars (intraday capture, aligned with option snapshots)."""
+
+    __tablename__ = "stock_5min_bars"
+
+    symbol = Column(String(20), primary_key=True, nullable=False)
+    timestamp = Column(DateTime(timezone=True), primary_key=True, nullable=False)
+    open = Column(Float, nullable=False)
+    high = Column(Float, nullable=False)
+    low = Column(Float, nullable=False)
+    close = Column(Float, nullable=False)
+    volume = Column(BigInteger, nullable=False, default=0)
+    vwap = Column(Float, nullable=True)
+
+    __table_args__ = (
+        Index("idx_stock_5min_bars_symbol_time", "symbol", "timestamp"),
+    )
+
+
 class OptionSnapshot(TimescaleBase):
     """5-minute option snapshots.
 

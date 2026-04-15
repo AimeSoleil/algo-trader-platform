@@ -40,6 +40,7 @@ def create_celery_app() -> Celery:
             # data_service
             "services.data_service.app.tasks.capture",
             "services.data_service.app.tasks.intraday",
+            "services.data_service.app.tasks.intraday_stock",
             "services.data_service.app.tasks.aggregation",
             "services.data_service.app.tasks.pipeline",
             "services.data_service.app.tasks.coordination",
@@ -55,6 +56,7 @@ def create_celery_app() -> Celery:
             "services.analysis_service.app.tasks.analyze",
             # trade_service
             "services.trade_service.app.execution.tasks",
+            "services.trade_service.app.execution.tasks_intraday",
             "services.trade_service.app.portfolio.tasks",
             "services.trade_service.app.tasks.daily_report",
         ],
@@ -99,7 +101,10 @@ def create_celery_app() -> Celery:
     #
     # Timeline (ET, weekdays):
     #   09:30-15:55  intraday-option-capture (every 5 min)
+    #   09:30-15:55  intraday-stock-capture  (every 5 min)
+    #   09:31-15:56  intraday-entry-optimizer (every 5 min, +1 min offset)
     #   16:00        intraday-option-capture-close (final tick)
+    #   16:00        intraday-stock-capture-close  (final tick)
     #   16:50        refresh-earnings-cache  — update Redis earnings cache
     #   17:00        post-market-pipeline    — options agg + stock capture → downstream
     #   (16:30)      daily-trading-report    — if notifier enabled
@@ -157,9 +162,36 @@ def create_celery_app() -> Celery:
             ),
             "options": {"queue": "data"},
         },
+        "intraday-stock-capture": {
+            "task": "data_service.tasks.capture_intraday_stock",
+            "schedule": crontab(
+                minute=f"*/{intraday_interval}",
+                hour=f"{_mkt_start_h}-{_mkt_end_h - 1}",
+                day_of_week="1-5",
+            ),
+            "options": {"queue": "data"},
+        },
+        "intraday-stock-capture-close": {
+            "task": "data_service.tasks.capture_intraday_stock",
+            "schedule": crontab(
+                minute=_mkt_end_m,
+                hour=_mkt_end_h,
+                day_of_week="1-5",
+            ),
+            "options": {"queue": "data"},
+        },
         "refresh-earnings-cache": {
             "task": "data_service.tasks.refresh_earnings_cache",
             "schedule": crontab(hour=_earn_h, minute=_earn_m, day_of_week="1-5"),
+            "options": {"queue": "data"},
+        },
+        "intraday-entry-optimizer": {
+            "task": "trade_service.tasks.evaluate_entry_windows",
+            "schedule": crontab(
+                minute="1,6,11,16,21,26,31,36,41,46,51,56",
+                hour=f"{_mkt_start_h}-{_mkt_end_h}",
+                day_of_week="1-5",
+            ),
             "options": {"queue": "data"},
         },
     }

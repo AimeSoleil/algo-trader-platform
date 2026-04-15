@@ -313,8 +313,13 @@ AdjustmentAction: hedge_delta|roll_strike|close_leg|add_leg|close_all
 ConditionField: underlying_price|iv|iv_rank|delta|gamma|theta|portfolio_delta|spread_width|time|pnl_percent|volume
 ConditionOperator: >|>=|<|<=|==|between|crosses_above|crosses_below
 
+## Entry Conditions Role
+entry_conditions = HARD GATES (strategic prerequisites). The intraday optimizer evaluates ALL non-time entry_conditions as boolean AND-gates before scoring timing quality. If any condition fails, the plan is skipped entirely.
+- Non-time conditions (iv_rank, underlying_price, delta, volume, etc.) → hard prerequisites. Include conditions that, if not met, invalidate the trade thesis.
+- field=time conditions → SOFT REFERENCE only (logged for auditability). The optimizer's continuous time-of-day scoring replaces binary time gates with nuanced preferred-window weighting.
+
 ## Entry Timing (24h decimal: 9.5=09:30, 14.25=14:15)
-Every plan SHOULD include field=time entry_condition with `between` operator.
+Every plan SHOULD include field=time entry_condition as a soft reference for the recommended window.
 - AVOID 09:30-10:00(9.5-10.0): wide spreads,unstable IV
 - Sell-premium(iron_condor,iron_butterfly,credit vertical,covered_call,short strangle): 10:00-11:00(10.0-11.0)
 - Buy-premium(debit vertical,straddle,long strangle,protective_put): 11:30-14:00(11.5-14.0)

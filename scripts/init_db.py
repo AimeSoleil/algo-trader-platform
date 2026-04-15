@@ -30,6 +30,7 @@ from shared.db.tables import BusinessBase, TimescaleBase
 
 TIMESCALE_TABLES = [
     "stock_1min_bars",
+    "stock_5min_bars",
     "option_5min_snapshots",
     "stock_daily",
     "option_daily",
@@ -240,6 +241,18 @@ async def create_hypertables() -> None:
             text(
                 """
                 SELECT create_hypertable(
+                    'stock_5min_bars',
+                    'timestamp',
+                    if_not_exists => TRUE,
+                    chunk_time_interval => INTERVAL '1 day'
+                );
+                """
+            )
+        )
+        await conn.execute(
+            text(
+                """
+                SELECT create_hypertable(
                     'option_5min_snapshots',
                     'timestamp',
                     if_not_exists => TRUE,
@@ -265,6 +278,7 @@ async def apply_retention_policies() -> None:
 
         # 幂等更新策略：先移除旧策略（若存在）再添加目标值
         await conn.execute(text("SELECT remove_retention_policy('stock_1min_bars', if_exists => TRUE)"))
+        await conn.execute(text("SELECT remove_retention_policy('stock_5min_bars', if_exists => TRUE)"))
         await conn.execute(text("SELECT remove_retention_policy('option_5min_snapshots', if_exists => TRUE)"))
 
         if stock_days > 0:
@@ -280,6 +294,17 @@ async def apply_retention_policies() -> None:
                 )
             )
         if option_days > 0:
+            await conn.execute(
+                text(
+                    f"""
+                    SELECT add_retention_policy(
+                        'stock_5min_bars',
+                        INTERVAL '{int(option_days)} days',
+                        if_not_exists => TRUE
+                    );
+                    """
+                )
+            )
             await conn.execute(
                 text(
                     f"""
@@ -302,7 +327,7 @@ async def truncate_all_tables() -> None:
     async with t_engine.begin() as conn:
         await conn.execute(text(
             "TRUNCATE TABLE "
-            "stock_1min_bars, option_5min_snapshots, stock_daily, option_daily, option_iv_daily "
+            "stock_1min_bars, stock_5min_bars, option_5min_snapshots, stock_daily, option_daily, option_iv_daily "
             "RESTART IDENTITY"
         ))
 
@@ -324,6 +349,7 @@ async def drop_all_tables() -> None:
     async with t_engine.begin() as conn:
         await conn.execute(text("DROP TABLE IF EXISTS option_5min_snapshots CASCADE"))
         await conn.execute(text("DROP TABLE IF EXISTS stock_1min_bars CASCADE"))
+        await conn.execute(text("DROP TABLE IF EXISTS stock_5min_bars CASCADE"))
         await conn.execute(text("DROP TABLE IF EXISTS option_daily CASCADE"))
         await conn.execute(text("DROP TABLE IF EXISTS option_iv_daily CASCADE"))
         await conn.execute(text("DROP TABLE IF EXISTS stock_daily CASCADE"))

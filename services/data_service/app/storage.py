@@ -79,6 +79,32 @@ async def write_intraday_stock(rows: Sequence[dict]) -> int:
     return len(rows)
 
 
+async def write_intraday_stock_5min(rows: Sequence[dict]) -> int:
+    if not rows:
+        return 0
+
+    stmt = text(
+        """
+        INSERT INTO stock_5min_bars (symbol, timestamp, open, high, low, close, volume, vwap)
+        VALUES (:symbol, :timestamp, :open, :high, :low, :close, :volume, :vwap)
+        ON CONFLICT (symbol, timestamp)
+        DO UPDATE SET
+            open = EXCLUDED.open,
+            high = EXCLUDED.high,
+            low = EXCLUDED.low,
+            close = EXCLUDED.close,
+            volume = EXCLUDED.volume,
+            vwap = EXCLUDED.vwap
+        """
+    )
+
+    async with get_timescale_session() as session:
+        await session.execute(stmt, list(rows))
+        await session.commit()
+
+    return len(rows)
+
+
 async def write_intraday_options(rows: Sequence[dict]) -> int:
     if not rows:
         return 0

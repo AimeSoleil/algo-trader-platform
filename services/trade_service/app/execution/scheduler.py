@@ -25,6 +25,7 @@ from services.trade_service.app.audit import log_event
 from services.trade_service.app.broker import create_broker
 from services.trade_service.app.broker.base import BrokerInterface
 from services.trade_service.app.broker.paper import PaperBroker
+from services.trade_service.app.execution.market_context import build_market_context
 from services.trade_service.app.execution.risk.risk_monitor import run_stop_loss_checks
 from services.trade_service.app.execution.rule_engine import BlueprintRuleEngine
 from services.trade_service.app.helpers import safe_float
@@ -397,55 +398,18 @@ async def _evaluation_tick(runtime_state: ExecutionRuntimeState) -> None:
                 if sym:
                     symbol_plan_map[sym] = sp
 
-        # ── Compute market time once (decimal hours in market TZ) ──
-        mt = now_market()
-        market_time_decimal = mt.hour + mt.minute / 60.0
-
-        # ── Pre-load signal features for market context enrichment ──
-        import json as _json
-
-        signal_cache: dict[str, dict] = {}
         sig_date = runtime_state.loaded_trading_date
-        if sig_date:
-            for symbol in settings.common.watchlist.for_trade:
-                sig_key = f"signal:features:{symbol.upper()}:{sig_date.isoformat()}"
-                sig_data = await redis_client.get(sig_key)
-                if sig_data:
-                    try:
-                        signal_cache[symbol.upper()] = _json.loads(sig_data)
-                    except Exception:
-                        pass
 
         for symbol in settings.common.watchlist.for_trade:
-            quote_key = f"market:quote:{symbol}"
-            quote = await redis_client.hgetall(quote_key)
-            if not quote:
+            market_ctx = await build_market_context(symbol, sig_date.isoformat() if sig_date else "")
+            if market_ctx is None:
                 continue
 
-            quote_price = safe_float(quote.get("price"), 0.0)
-
+            quote_price = market_ctx["price"]
             if isinstance(broker, PaperBroker) and quote_price > 0:
                 broker.update_price(symbol, quote_price)
 
             quotes_found += 1
-
-            # ── Build enriched market context ──
-            market_ctx: dict[str, Any] = {
-                "underlying_price": quote_price,
-                "price": quote_price,
-                "bid": safe_float(quote.get("bid"), 0.0),
-                "ask": safe_float(quote.get("ask"), 0.0),
-                "time": market_time_decimal,
-            }
-
-            # Enrich from signal features cache
-            sig = signal_cache.get(symbol.upper())
-            if sig:
-                opt = sig.get("option_indicators", {})
-                market_ctx.setdefault("iv", opt.get("current_iv", 0.0))
-                market_ctx.setdefault("iv_rank", opt.get("iv_rank", 0.0))
-                market_ctx.setdefault("delta", opt.get("delta_exposure_profile", {}).get("total", 0.0))
-                market_ctx.setdefault("volume", sig.get("volume", 0))
 
             # ── Extract conditions from blueprint symbol plan ──
             bp_plan = symbol_plan_map.get(symbol.upper(), {})
@@ -470,15 +434,18 @@ async def _evaluation_tick(runtime_state: ExecutionRuntimeState) -> None:
             symbols_evaluated += 1
 
             if result["action"] == "enter":
-                await _handle_entry_signal(
-                    symbol=symbol,
-                    plan=plan,
-                    market_ctx=market_ctx,
-                    broker=broker,
-                    runtime_state=runtime_state,
-                    tick_trades=tick_trades,
-                    tick_errors=tick_errors,
-                )
+                # When intraday optimizer is enabled, it handles entries via
+                # the 5-min Celery task — skip entry signals in the tick loop.
+                if not settings.trade_service.intraday_optimizer.enabled:
+                    await _handle_entry_signal(
+                        symbol=symbol,
+                        plan=plan,
+                        market_ctx=market_ctx,
+                        broker=broker,
+                        runtime_state=runtime_state,
+                        tick_trades=tick_trades,
+                        tick_errors=tick_errors,
+                    )
             elif result["action"] == "exit":
                 await _handle_exit_signal(
                     symbol=symbol,

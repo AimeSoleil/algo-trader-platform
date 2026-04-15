@@ -162,6 +162,7 @@ data_service:
   # ── 数据保留策略 ──
   retention_days:
     stock_1min: 90                     # 盘中 1m bars 热存储保留天数
+    stock_5min: 60                     # 盘中 5m bars 热存储保留天数
     option_5min: 60                    # 盘中 option snapshots 保留天数
 
   # ── 采集器韧性（provider 无关）──
@@ -292,4 +293,17 @@ trade_service:
       portfolio_loss_limit: 2000.0
       position_loss_limit: 500.0
       cooldown_seconds: 60
+
+  # ── 盘中入场优化器 ──
+  intraday_optimizer:
+    enabled: false                       # 启用后接管 entry 逻辑（tick loop 仅保留 exit/stop-loss）
+    entry_score_threshold: 0.65          # 综合评分 >= 此值触发入场
+    lookback_bars: 6                     # 5m 期权快照回溯条数（30 min）
+    stock_lookback_bars: 6               # 5m K 线回溯条数（与 option lookback 对齐）
+    preferred_windows:                   # 偏好入场时段（ET）
+      - "10:00-11:30"
+      - "14:00-15:30"
+    blackout_minutes_after_open: 15      # 开盘后黑名单（分钟）
+    execution_mode: "auto"               # auto = 自动下单（纸盘）/ notify = 发 Discord 通知
+    notify_min_score: 0.55               # notify 模式下最低通知分数
 

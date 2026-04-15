@@ -236,6 +236,7 @@ class DataProviderSettings(BaseSettings):
 
 class IntradayRetentionSettings(BaseSettings):
     stock_1min: int = 90
+    stock_5min: int = 60
     option_5min: int = 60
 
 class ResilienceSettings(BaseSettings):
@@ -421,12 +422,24 @@ class BrokerSettings(BaseSettings):
 class RiskSettings(BaseSettings):
     stop_loss: StopLossSettings = Field(default_factory=StopLossSettings)
 
+class IntradayOptimizerSettings(BaseSettings):
+    """trade_service.intraday_optimizer — 盘中入场优化器."""
+    enabled: bool = False
+    entry_score_threshold: float = 0.65
+    lookback_bars: int = 6                     # 5m bars (30 min)
+    stock_lookback_bars: int = 6              # 5m bars (aligned with option lookback)
+    preferred_windows: list[str] = ["10:00-11:30", "14:00-15:30"]
+    blackout_minutes_after_open: int = 15
+    execution_mode: str = "auto"               # auto | notify
+    notify_min_score: float = 0.55
+
 class TradeServiceSettings(BaseSettings):
     """trade_service 顶级配置."""
     execution_interval: int = 300
     trade_start_time: str = "09:20"        # 盘前加载蓝图 + 启动执行 tick
     broker: BrokerSettings = Field(default_factory=BrokerSettings)
     risk: RiskSettings = Field(default_factory=RiskSettings)
+    intraday_optimizer: IntradayOptimizerSettings = Field(default_factory=IntradayOptimizerSettings)
 
 
 # ── Root Settings ────────────────────────────────────────────
