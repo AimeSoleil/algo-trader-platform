@@ -6,6 +6,10 @@ from celery.schedules import crontab
 from celery.signals import after_setup_logger
 
 from shared.config.settings import get_settings
+from shared.utils import get_logger
+
+
+logger = get_logger("celery_app")
 
 
 # ── Celery logging hook ────────────────────────────────────
@@ -96,8 +100,8 @@ def create_celery_app() -> Celery:
     # Timeline (ET, weekdays):
     #   09:30-15:55  intraday-option-capture (every 5 min)
     #   16:00        intraday-option-capture-close (final tick)
+    #   16:50        refresh-earnings-cache  — update Redis earnings cache
     #   17:00        post-market-pipeline    — options agg + stock capture → downstream
-    #   17:50        refresh-earnings-cache  — update Redis earnings cache
     #   (16:30)      daily-trading-report    — if notifier enabled
 
     intraday_interval = settings.data_service.worker.schedule.options_capture_every_minutes
@@ -110,6 +114,24 @@ def create_celery_app() -> Celery:
 
     # Earnings cache refresh
     _earn_h, _earn_m = map(int, settings.data_service.worker.schedule.refresh_earnings_time.split(":"))
+
+    pm_minutes = _pm_h * 60 + _pm_m
+    earn_minutes = _earn_h * 60 + _earn_m
+    earnings_before_pipeline = earn_minutes < pm_minutes
+
+    logger.info(
+        "celery.schedule.order",
+        post_market_time=settings.data_service.worker.schedule.post_market_time,
+        refresh_earnings_time=settings.data_service.worker.schedule.refresh_earnings_time,
+        earnings_before_pipeline=earnings_before_pipeline,
+    )
+    if not earnings_before_pipeline:
+        logger.warning(
+            "celery.schedule.order_unexpected",
+            post_market_time=settings.data_service.worker.schedule.post_market_time,
+            refresh_earnings_time=settings.data_service.worker.schedule.refresh_earnings_time,
+            reason="refresh_earnings_time should be before post_market_time",
+        )
 
     app.conf.beat_schedule = {
         "post-market-pipeline": {

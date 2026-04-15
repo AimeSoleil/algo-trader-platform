@@ -36,12 +36,33 @@ _DOWNSTREAM_STEP_NAMES: list[str] = [
 )
 def stage_barrier(results, stage_name: str, trading_date: str) -> dict:
     """Chord callback — logs stage completion and forwards trading_date."""
+    chunks = len(results) if isinstance(results, list) else 1
     logger.info(
         "pipeline.stage_completed",
         stage=stage_name,
         trading_date=trading_date,
-        chunks=len(results) if isinstance(results, list) else 1,
+        chunks=chunks,
     )
+    if stage_name == "compute_daily_signals":
+        errors = sum(
+            len(r.get("errors", [])) for r in results if isinstance(r, dict)
+        )
+        from shared.notifier.helpers import notify_sync
+        from shared.notifier.base import NotificationEvent, EventType, Severity
+        notify_sync(NotificationEvent(
+            event_type=EventType.PIPELINE_SIGNALS_COMPUTED,
+            title="📊 Signals Computed",
+            message=(
+                f"Daily signal features computed for {trading_date}: "
+                f"{chunks} chunk(s), {errors} error(s)."
+            ),
+            severity=Severity.WARNING if errors else Severity.INFO,
+            payload={
+                "trading_date": trading_date,
+                "chunks": str(chunks),
+                "symbol_errors": str(errors),
+            },
+        ))
     return {"stage": stage_name, "trading_date": trading_date}
 
 
@@ -115,12 +136,12 @@ def dispatch_downstream(trading_date: str) -> dict:
     """
     logger.info("coordination.dispatching_downstream", trading_date=trading_date)
 
-    # Notify: pipeline started
+    # Notify: downstream dispatch starting
     from shared.notifier.helpers import notify_sync
     from shared.notifier.base import NotificationEvent, EventType, Severity
     notify_sync(NotificationEvent(
-        event_type=EventType.PIPELINE_STARTED,
-        title="🚀 Post-Market Pipeline Started",
+        event_type=EventType.PIPELINE_DOWNSTREAM_DISPATCHED,
+        title="⏩ Downstream Pipeline Dispatched",
         message=f"Options aggregation and stock capture completed for {trading_date}. "
                 f"Starting downstream: signals → blueprint.",
         severity=Severity.INFO,

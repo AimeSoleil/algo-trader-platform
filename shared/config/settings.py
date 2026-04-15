@@ -277,7 +277,7 @@ class DataWorkerScheduleSettings(BaseSettings):
     """data_service.worker.schedule — 盘中/盘后调度时间."""
     options_capture_every_minutes: int = 5      # 盘中期权链采集间隔（分钟）
     post_market_time: str = "17:00"             # 统一盘后流水线（options 聚合 + stock 采集 + 下游）
-    refresh_earnings_time: str = "17:50"        # 刷新 earnings cache
+    refresh_earnings_time: str = "16:50"        # 刷新 earnings cache（pipeline 前）
 
 class DataPipelineSettings(BaseSettings):
     """data_service.worker.pipeline — 流水线 stop-after 门控.

@@ -36,6 +36,16 @@ def run_post_market_pipeline(self, trading_date: str | None = None) -> dict:
 
     logger.info("post_market_pipeline.start", trading_date=td)
 
+    from shared.notifier.helpers import notify_sync
+    from shared.notifier.base import NotificationEvent, EventType, Severity
+    notify_sync(NotificationEvent(
+        event_type=EventType.PIPELINE_STARTED,
+        title="🔄 Post-Market Pipeline Started",
+        message=f"Post-market pipeline initiated for {td}.",
+        severity=Severity.INFO,
+        payload={"trading_date": td},
+    ))
+
     try:
         # ── Step 1: Options aggregation (sync, ~80s) ──
         from services.data_service.app.tasks.aggregation import aggregate_option_daily
@@ -47,6 +57,21 @@ def run_post_market_pipeline(self, trading_date: str | None = None) -> dict:
             daily_rows=agg_result.get("daily_rows", 0),
             iv_underlyings=agg_result.get("iv_underlyings", 0),
         )
+        notify_sync(NotificationEvent(
+            event_type=EventType.PIPELINE_OPTIONS_AGGREGATED,
+            title="📋 Options Data Aggregated",
+            message=(
+                f"Options aggregated for {td}: "
+                f"{agg_result.get('daily_rows', 0)} daily rows, "
+                f"{agg_result.get('iv_underlyings', 0)} IV underlyings."
+            ),
+            severity=Severity.INFO,
+            payload={
+                "trading_date": td,
+                "daily_rows": str(agg_result.get("daily_rows", 0)),
+                "iv_underlyings": str(agg_result.get("iv_underlyings", 0)),
+            },
+        ))
 
         # ── Step 2: Stock capture (chord → finalize) ──
         settings = get_settings()
@@ -105,6 +130,22 @@ def _post_market_finalize(
         chunks=stock_chunks,
         stock_errors=len(stock_errors),
     )
+    from shared.notifier.helpers import notify_sync
+    from shared.notifier.base import NotificationEvent, EventType, Severity
+    notify_sync(NotificationEvent(
+        event_type=EventType.PIPELINE_STOCK_CAPTURED,
+        title="📈 Stock Data Captured",
+        message=(
+            f"Stock capture complete for {trading_date}: "
+            f"{stock_chunks} chunk(s), {len(stock_errors)} error(s)."
+        ),
+        severity=Severity.WARNING if stock_errors else Severity.INFO,
+        payload={
+            "trading_date": trading_date,
+            "chunks": str(stock_chunks),
+            "errors": str(len(stock_errors)),
+        },
+    ))
 
     # ── Dispatch downstream: backfill + signals → blueprint ──
     from services.data_service.app.tasks.coordination import dispatch_downstream

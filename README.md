@@ -67,8 +67,8 @@ docker compose ps
 |------|------|------|------|
 | 09:30-15:55 每5分钟 | data | `capture_intraday_options` | 盘中期权链快照采集 |
 | 16:00 | data | `capture_intraday_options` | 收盘 tick（独立 crontab 保证准时） |
+| 16:50 | data | `refresh_earnings_cache` | 刷新 Redis 中 earnings 日期缓存（pipeline 前） |
 | 17:00 | data | `run_post_market_pipeline` | 统一盘后：期权聚合 → 股票采集 chord → 触发下游 |
-| 17:50 | data | `refresh_earnings_cache` | 刷新 Redis 中 earnings 日期缓存 |
 | ~17:15 | backfill | `detect_gaps_chunk` × N | fire-and-forget 缺口检测回填（不阻塞关键路径） |
 | ~17:20 | signal | `compute_signals_chunk` × N (chord) | 并行分块信号计算 → stage_barrier |
 | ~17:35 | analysis | `generate_daily_blueprint` | 6 specialist + synthesizer + critic 多智能体蓝图生成 |

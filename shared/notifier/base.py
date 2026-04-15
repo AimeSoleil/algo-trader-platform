@@ -15,6 +15,10 @@ class Severity:
 
 class EventType:
     PIPELINE_STARTED = "pipeline_started"
+    PIPELINE_OPTIONS_AGGREGATED = "pipeline_options_aggregated"
+    PIPELINE_STOCK_CAPTURED = "pipeline_stock_captured"
+    PIPELINE_DOWNSTREAM_DISPATCHED = "pipeline_downstream_dispatched"
+    PIPELINE_SIGNALS_COMPUTED = "pipeline_signals_computed"
     PIPELINE_FAILED = "pipeline_failed"
     PIPELINE_FINISHED = "pipeline_finished"
     TRADE_EXECUTED = "trade_executed"
