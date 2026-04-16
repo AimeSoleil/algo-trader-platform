@@ -134,3 +134,26 @@ uv run python -m scripts.get_option_contract META260323C00607500
 - Example parse: `META260323C00607500` = `META` + `2026-03-23` + `CALL` + `607.5`
 - Data source: `yfinance` live option chain (not historical chain replay)
 - Output includes both `quote` (normalized) and `raw_quote` (raw yfinance row JSON)
+
+## 6) Migrate all DB data/schema to new databases
+
+```bash
+uv run python -m scripts.migrate_db \
+	--target-timescale-url postgresql://trader:password@NEW_HOST:5432/algo_trader \
+	--target-postgres-url postgresql://trader:password@NEW_HOST:5432/algo_trader_biz
+```
+
+- Source DB URLs default to current settings (`infra.database.timescale_url` / `infra.database.postgres_url`)
+- You can override source DBs explicitly:
+
+```bash
+uv run python -m scripts.migrate_db \
+	--source-timescale-url postgresql://trader:password@OLD_HOST:5432/algo_trader \
+	--source-postgres-url postgresql://trader:password@OLD_HOST:5432/algo_trader_biz \
+	--target-timescale-url postgresql://trader:password@NEW_HOST:5432/algo_trader \
+	--target-postgres-url postgresql://trader:password@NEW_HOST:5432/algo_trader_biz
+```
+
+- Requires `pg_dump` and `pg_restore` commands available in PATH
+- Migration order: Timescale DB first, then business PostgreSQL DB
+- For Timescale target DB, ensure `timescaledb` extension is available before restore
