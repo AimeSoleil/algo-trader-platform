@@ -202,12 +202,15 @@ def _annotate_blueprint_quality(
 # ── Daily blueprint task ──────────────────────────────────────
 
 
-@celery_app.task(name="analysis_service.tasks.generate_daily_blueprint", bind=True, max_retries=2,
+@celery_app.task(name="analysis_service.tasks.generate_daily_blueprint", bind=True, max_retries=0,
                  soft_time_limit=2400, time_limit=2700)
 def generate_daily_blueprint(self, trading_date: str | None = None, prev_result=None) -> dict:
     """
     17:10 Celery 任务：生成次日交易蓝图
     prev_result: 上游任务 (compute_signals) 的结果
+    
+    Fails immediately on error with detailed notification — no automatic retries.
+    Manual retry via Celery or scheduled re-run required.
     """
     resolved_trading_date = resolve_trading_date_arg(trading_date, prev_result)
     logger.debug(
@@ -217,51 +220,59 @@ def generate_daily_blueprint(self, trading_date: str | None = None, prev_result=
         task_id=getattr(self.request, "id", None),
         trading_date=trading_date,
         resolved_trading_date=resolved_trading_date,
-        retry=getattr(self.request, "retries", 0),
     )
+    result = None
+    success = False
     try:
         result = run_async(_generate_blueprint_async(resolved_trading_date))
-
-        # Notify: pipeline finished (blueprint is the final stage)
-        from shared.notifier.helpers import notify_sync
-        from shared.notifier.base import NotificationEvent, EventType, Severity
-        notify_sync(NotificationEvent(
-            event_type=EventType.PIPELINE_FINISHED,
-            title="✅ Daily Pipeline Completed",
-            message=f"Blueprint generated for {resolved_trading_date}. "
-                    f"{result.get('plans_count', 0)} symbol plans, "
-                    f"provider: {result.get('provider', 'unknown')}.",
-            severity=Severity.INFO,
-            payload={
-                "trading_date": str(resolved_trading_date),
-                "blueprint_id": str(result.get("blueprint_id", "")),
-                "plans_count": str(result.get("plans_count", 0)),
-            },
-        ))
-
+        success = True
         return result
     except Exception as exc:
-        retries = getattr(self.request, "retries", 0)
-        logger.warning(
-            "blueprint.generate.retrying",
+        logger.error(
+            "blueprint.generate.failed",
             error=str(exc),
-            retry=retries,
+            exc_info=True,
         )
 
-        # Notify on final retry failure
-        if retries >= self.max_retries:
-            from shared.notifier.helpers import notify_sync
-            from shared.notifier.base import NotificationEvent, EventType, Severity
+        # Notify immediately with root cause (no retry)
+        from shared.notifier.helpers import notify_sync
+        from shared.notifier.base import NotificationEvent, EventType, Severity
+        try:
             notify_sync(NotificationEvent(
                 event_type=EventType.PIPELINE_FAILED,
                 title="❌ Blueprint Generation Failed",
-                message=f"Blueprint generation failed for {resolved_trading_date} "
-                        f"after {retries + 1} attempts. Error: {exc}",
+                message=f"Blueprint generation failed for {resolved_trading_date}. "
+                        f"Root cause: {exc}",
                 severity=Severity.ERROR,
                 payload={"trading_date": str(resolved_trading_date), "phase": "generate_daily_blueprint", "error": str(exc)},
             ))
+        except Exception as notify_exc:
+            logger.warning("blueprint.notify_failed_on_error", error=str(notify_exc))
 
-        raise self.retry(exc=exc, countdown=60)
+        # Re-raise to mark task as failed (no auto-retry)
+        raise
+    finally:
+        # Fire success notification after successful blueprint generation
+        # (wrapped in try-except to prevent notification errors from affecting task)
+        if success and result is not None:
+            from shared.notifier.helpers import notify_sync
+            from shared.notifier.base import NotificationEvent, EventType, Severity
+            try:
+                notify_sync(NotificationEvent(
+                    event_type=EventType.PIPELINE_FINISHED,
+                    title="✅ Daily Pipeline Completed",
+                    message=f"Blueprint generated for {resolved_trading_date}. "
+                            f"{result.get('plans_count', 0)} symbol plans, "
+                            f"provider: {result.get('provider', 'unknown')}.",
+                    severity=Severity.INFO,
+                    payload={
+                        "trading_date": str(resolved_trading_date),
+                        "blueprint_id": str(result.get("blueprint_id", "")),
+                        "plans_count": str(result.get("plans_count", 0)),
+                    },
+                ))
+            except Exception as notify_exc:
+                logger.warning("blueprint.notify_success_failed", error=str(notify_exc))
 
 
 async def _generate_blueprint_async(trading_date_str: str | None = None) -> dict:
