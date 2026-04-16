@@ -145,9 +145,27 @@ async def migrate_business_columns() -> None:
 
 
 async def reconcile_timeseries_constraints() -> None:
-    """Normalize legacy constraints so hypertable conversion always succeeds."""
-    print("[init_db] 对齐时序表约束（兼容旧 schema）...")
+    """Normalize legacy constraints so hypertable conversion always succeeds.
+
+    This is a one-time migration guard. If the tables are already hypertables
+    (normal state after first init), the whole function is skipped to avoid
+    blocking on ACCESS EXCLUSIVE locks while workers are running.
+    """
     engine = get_timescale_engine()
+    async with engine.connect() as conn:
+        result = await conn.execute(
+            text(
+                "SELECT count(*) FROM timescaledb_information.hypertables "
+                "WHERE hypertable_name = 'stock_1min_bars'"
+            )
+        )
+        already_hypertable = (result.scalar() or 0) > 0
+
+    if already_hypertable:
+        print("[init_db] 时序表已是 hypertable，跳过约束对齐（避免锁等待）")
+        return
+
+    print("[init_db] 对齐时序表约束（兼容旧 schema）...")
     async with engine.begin() as conn:
         await conn.execute(text("CREATE EXTENSION IF NOT EXISTS timescaledb"))
 
