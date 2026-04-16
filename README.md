@@ -3,7 +3,7 @@
 面向期权交易的量化微服务平台，采用“盘后智能 + 盘中机械执行”模式：盘后批量计算特征并生成次日交易蓝图，盘中仅按蓝图条件执行。
 
 ## 当前实现状态
-- 服务层：Data / Backfill / Signal / Analysis / Trade / Gateway
+- 服务层：Data / Signal / Analysis / Trade / Gateway
 ## 系统架构
 - 可观测性：各服务内置 Prometheus `/metrics`，配套 Prometheus + Grafana
 - 运维脚本：数据库初始化、watchlist 种子、Celery worker 启动脚本
@@ -69,7 +69,6 @@ docker compose ps
 | 16:00 | data | `capture_intraday_options` | 收盘 tick（独立 crontab 保证准时） |
 | 16:50 | data | `refresh_earnings_cache` | 刷新 Redis 中 earnings 日期缓存（pipeline 前） |
 | 17:00 | data | `run_post_market_pipeline` | 统一盘后：期权聚合 → 股票采集 chord → 触发下游 |
-| ~17:15 | backfill | `detect_gaps_chunk` × N | fire-and-forget 缺口检测回填（不阻塞关键路径） |
 | ~17:20 | signal | `compute_signals_chunk` × N (chord) | 并行分块信号计算 → stage_barrier |
 | ~17:35 | analysis | `generate_daily_blueprint` | 6 specialist + synthesizer + critic 多智能体蓝图生成 |
 | 16:30 | data | `send_daily_report` | 每日交易报告推送（if notifier enabled） |
@@ -150,7 +149,6 @@ curl "http://localhost:8000/trade/api/v1/blueprint/status?trading_date=2026-03-1
 | 服务 | 目录 | 说明 |
 |------|------|------|
 | Data Service | `services/data_service` | 盘中采集与双层缓存、盘后批量入库 |
-| Backfill Service | `services/backfill_service` | 缺口检测、冷启动历史回填 |
 | Signal Service | `services/signal_service` | 盘后批量指标计算与信号生成 |
 | Analysis Service | `services/analysis_service` | LLM 蓝图生成（Agentic 多智能体编排） |
 | Trade Service | `services/trade_service` | 蓝图加载、规则评估、止损风控、持仓快照、绩效查询 |

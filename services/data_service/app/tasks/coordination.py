@@ -21,8 +21,6 @@ def _pipeline_done_key(td: str) -> str:
 
 
 # ── Downstream step names (ordered, critical path only) ─────
-# Backfill is NOT in this list — it runs as fire-and-forget in parallel
-# so it never blocks the signal / analysis stages.
 
 _DOWNSTREAM_STEP_NAMES: list[str] = [
     "compute_daily_signals",
@@ -69,31 +67,6 @@ def stage_barrier(results, stage_name: str, trading_date: str) -> dict:
 # ── Downstream dispatch (called by pipeline finalize) ──────
 
 
-def _dispatch_backfill(td: str) -> None:
-    """Fire-and-forget: fan out gap-detection chunks on the backfill queue.
-
-    Backfill only fills historical gaps and does not produce data that
-    signals depend on for the current trading_date, so it runs in
-    parallel with the critical path (signals → blueprint).
-    """
-    settings = get_settings()
-    symbols = settings.common.watchlist.all
-    chunk_size = settings.data_service.worker.pipeline.chunk_size
-    chunks = chunk_symbols(symbols, chunk_size)
-
-    backfill_group = group(
-        celery_app.signature(
-            "backfill_service.tasks.detect_gaps_chunk",
-            args=[chunk, td],
-            queue="backfill",
-            immutable=True,
-        )
-        for chunk in chunks
-    )
-    backfill_group.apply_async()
-    logger.info("coordination.backfill_dispatched", trading_date=td, chunks=len(chunks))
-
-
 def _build_downstream_steps(td: str) -> list[tuple[str, object]]:
     """Build the critical-path downstream steps: signals → blueprint."""
     settings = get_settings()
@@ -130,7 +103,7 @@ def _build_downstream_steps(td: str) -> list[tuple[str, object]]:
 
 
 def dispatch_downstream(trading_date: str) -> dict:
-    """Dispatch backfill (fire-and-forget) and critical-path chain (signals → blueprint).
+    """Dispatch critical-path chain (signals → blueprint).
 
     Called directly by the unified post-market pipeline finalize callback.
     """
@@ -150,9 +123,6 @@ def dispatch_downstream(trading_date: str) -> dict:
 
     # Set done flag for timeout check
     asyncio.run(_set_done_flag(trading_date))
-
-    # Backfill — fire-and-forget, does not block signals / analysis
-    _dispatch_backfill(trading_date)
 
     settings = get_settings()
     stop_after = settings.data_service.worker.pipeline.stop_after

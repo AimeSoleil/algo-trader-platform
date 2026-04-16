@@ -42,7 +42,6 @@ BUSINESS_TABLES = [
     "orders",
     "positions",
     "signal_features",
-    "backfill_logs",
     "watchlist_symbols",
     "execution_events",
 ]
@@ -335,7 +334,7 @@ async def truncate_all_tables() -> None:
     async with p_engine.begin() as conn:
         await conn.execute(text(
             "TRUNCATE TABLE "
-            "llm_trading_blueprint, orders, positions, signal_features, backfill_logs, watchlist_symbols, execution_events "
+            "llm_trading_blueprint, orders, positions, signal_features, watchlist_symbols, execution_events "
             "RESTART IDENTITY"
         ))
 
@@ -356,7 +355,6 @@ async def drop_all_tables() -> None:
 
     p_engine = get_postgres_engine()
     async with p_engine.begin() as conn:
-        await conn.execute(text("DROP TABLE IF EXISTS backfill_logs CASCADE"))
         await conn.execute(text("DROP TABLE IF EXISTS signal_features CASCADE"))
         await conn.execute(text("DROP TABLE IF EXISTS positions CASCADE"))
         await conn.execute(text("DROP TABLE IF EXISTS orders CASCADE"))

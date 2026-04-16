@@ -3,7 +3,7 @@
 # run_workers.sh — Enhanced Celery worker manager for local development
 #
 # Capabilities:
-#   • Starts data / backfill / signal / analysis workers + beat (+ flower)
+#   • Starts data / signal / analysis workers + beat (+ flower)
 #   • Auto-restarts crashed processes with exponential backoff (2s → 60s)
 #   • Background health-check watchdog (celery inspect ping)
 #   • Graceful two-phase shutdown: SIGTERM → grace period → SIGKILL
@@ -19,7 +19,7 @@
 #   HEALTH_CHECK_FAILURES   Consecutive fails before kill (default: 3)
 #   SHUTDOWN_GRACE          Seconds before SIGKILL        (default: 30)
 #   WORKERS                 Comma-separated worker list  (default: all)
-#                           Choices: data,backfill,signal,analysis
+#                           Choices: data,signal,analysis
 #   ENABLE_FLOWER           Set to 1 to start Flower     (default: 0)
 #   FLOWER_PORT             Flower listen port           (default: 5555)
 #   LOG_LEVEL               Celery worker log level      (default: INFO)
@@ -38,7 +38,6 @@
 #
 # Available workers:
 #   data       行情数据采集与盘后批量入库 (queue: data)
-#   backfill   缺口检测与历史数据回填     (queue: backfill)
 #   signal     盘后特征计算与信号生成     (queue: signal)
 #   analysis   LLM 蓝图生成与分析        (queue: analysis)
 ###############################################################################
@@ -62,12 +61,11 @@ LOG_LEVEL="${LOG_LEVEL:-INFO}"
 
 FOREGROUND=0
 
-ALL_QUEUES=(data backfill signal analysis)
+ALL_QUEUES=(data signal analysis)
 
 # Worker descriptions (used by --list and --help)
 declare -A WORKER_DESC=(
   [data]="行情数据采集与盘后批量入库"
-  [backfill]="缺口检测与历史数据回填"
   [signal]="盘后特征计算与信号生成"
   [analysis]="LLM 蓝图生成与分析"
 )
@@ -372,7 +370,6 @@ fi
 # Map process names → colours
 declare -A NAME_CLR=(
   [data]="$CLR_CYAN"
-  [backfill]="$CLR_MAGENTA"
   [signal]="$CLR_YELLOW"
   [analysis]="$CLR_GREEN"
   [beat]="$CLR_BLUE"

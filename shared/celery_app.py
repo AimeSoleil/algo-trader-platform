@@ -46,9 +46,6 @@ def create_celery_app() -> Celery:
             "services.data_service.app.tasks.coordination",
             "services.data_service.app.tasks.earnings",
             "services.data_service.app.tasks.manual",
-            # backfill_service
-            "services.backfill_service.app.tasks.gap_detection",
-            "services.backfill_service.app.tasks.maintenance",
             # signal_service
             "services.signal_service.app.tasks.signal",
             # analysis_service
@@ -79,7 +76,6 @@ def create_celery_app() -> Celery:
         # Task routes — each service handles its own tasks
         task_routes={
             "data_service.tasks.*": {"queue": "data"},
-            "backfill_service.tasks.*": {"queue": "backfill"},
             "signal_service.tasks.*": {"queue": "signal"},
             "analysis_service.tasks.*": {"queue": "analysis"},
             "trade_service.tasks.*": {"queue": "data"},

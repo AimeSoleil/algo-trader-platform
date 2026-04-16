@@ -80,7 +80,7 @@ uv run celery -A shared.celery_app.celery_app worker -Q data -l info
 capture_post_market_data   — 仅采集 1m bars / daily bar → DB（不含期权）
   → batch_flush_to_db      — 盘中 Parquet 缓存 → option_5min_snapshots
   → aggregate_option_daily  — 仅从 option_5min_snapshots 聚合 → option_daily + option_iv_daily
-  → detect_and_backfill_gaps → compute_daily_signals → generate_daily_blueprint
+  → compute_daily_signals → generate_daily_blueprint
 ```
 
 > **注意**：`capture_post_market_data` 不再采集期权数据。盘后 yfinance 期权链 bid=ask=0、IV 不可靠

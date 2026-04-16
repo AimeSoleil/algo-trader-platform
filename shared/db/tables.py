@@ -286,23 +286,6 @@ class SignalFeatureRecord(BusinessBase):
     )
 
 
-class BackfillLog(BusinessBase):
-    """Backfill run logs."""
-
-    __tablename__ = "backfill_logs"
-
-    id = Column(BigInteger, primary_key=True, autoincrement=True)
-    symbol = Column(String(20), nullable=False)
-    data_type = Column(String(20), nullable=False)
-    date = Column(Date, nullable=False)
-    gap_start = Column(DateTime(timezone=True), nullable=True)
-    gap_end = Column(DateTime(timezone=True), nullable=True)
-    records_filled = Column(Integer, nullable=False, default=0)
-    status = Column(String(20), nullable=False, default="pending")
-    error_message = Column(Text, nullable=True)
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
-
-
 class ExecutionEventRecord(BusinessBase):
     """Audit trail for execution events (stop-loss triggers, order lifecycle, etc.)."""
 

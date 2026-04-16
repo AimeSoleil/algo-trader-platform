@@ -3,7 +3,7 @@
 # =============================================================================
 # This image can run ANY Celery worker in the algo-trader-platform project.
 # All service dependencies are installed so that a single image serves
-# data_service, backfill_service, signal_service, analysis_service, and
+# data_service, signal_service, analysis_service, and
 # trade_service workers.  The concrete queue / concurrency / loglevel is
 # controlled at runtime via docker-compose command overrides.
 #
@@ -30,7 +30,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY shared/          /app/shared/
 COPY config/          /app/config/
 COPY services/data_service/      /app/services/data_service/
-COPY services/backfill_service/  /app/services/backfill_service/
 COPY services/signal_service/    /app/services/signal_service/
 COPY services/analysis_service/  /app/services/analysis_service/
 COPY services/trade_service/     /app/services/trade_service/
@@ -39,7 +38,6 @@ COPY services/trade_service/     /app/services/trade_service/
 RUN pip install --upgrade pip setuptools wheel && \
     pip install -e /app/shared && \
     pip install -e /app/services/data_service && \
-    pip install -e /app/services/backfill_service && \
     pip install -e /app/services/signal_service && \
     pip install -e /app/services/analysis_service && \
     pip install -e /app/services/trade_service && \

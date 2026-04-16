@@ -84,7 +84,6 @@ uv run celery -A shared.celery_app.celery_app beat --loglevel=INFO
 | Queue | Worker name | Description |
 |-------|-------------|-------------|
 | `data` | `data@hostname` | 行情数据采集与入库 |
-| `backfill` | `backfill@hostname` | 缺口检测与历史回填 |
 | `signal` | `signal@hostname` | 特征计算与信号生成 |
 | `analysis` | `analysis@hostname` | LLM 蓝图生成 |
 

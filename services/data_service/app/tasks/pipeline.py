@@ -29,7 +29,7 @@ def run_post_market_pipeline(self, trading_date: str | None = None) -> dict:
 
     1. Options aggregation — 5-min snapshots → option_daily + option_iv_daily
     2. Stock capture — fan-out 1m bars + daily bars via chord
-    3. Chord callback → dispatch downstream (backfill + signals → blueprint)
+    3. Chord callback → dispatch downstream (signals → blueprint)
     """
     td = trading_date or today_trading().isoformat()
     started = perf_counter()

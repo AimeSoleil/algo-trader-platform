@@ -143,7 +143,7 @@ class WatchlistSettings(BaseSettings):
                      no blueprints are generated.
 
     Use ``.all`` to get the deduplicated union across all three lists
-    (for data collection, backfill, and maintenance).
+    (for data collection and maintenance).
     """
     for_trade: list[str] = Field(
         default_factory=lambda: [
@@ -285,8 +285,6 @@ class DataPipelineSettings(BaseSettings):
 
     Valid values (ordered):
       compute_daily_signals → generate_daily_blueprint
-
-    Backfill runs as fire-and-forget and is not gated by stop_after.
     """
     chunk_size: int = 5
     stop_after: str = "generate_daily_blueprint"

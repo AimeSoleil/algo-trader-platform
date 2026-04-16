@@ -11,7 +11,6 @@
 #
 # ── Recommended concurrency (2-CPU / 100-symbol / IO-bound) ──
 #   celery-data:     -c 4   (IO-heavy fetches;  2 CPU × 2 overcommit)
-#   celery-backfill: -c 2   (light DB queries)
 #   celery-signal:   -c 4   (CPU+IO mix;        2 CPU × 2 overcommit)
 #   celery-analysis: -c 1   (single LLM call, no intra-task parallelism)
 #
@@ -42,34 +41,6 @@ services:
         condition: service_healthy
     healthcheck:
       test: ["CMD", "celery", "-A", "shared.celery_app.celery_app", "inspect", "ping", "-d", "celery@data", "--timeout=5"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 60s
-    networks:
-      - algo_trader_net
-
-  celery-backfill:
-    build:
-      context: .
-      dockerfile: services/celery_worker/Dockerfile
-    command: worker -Q backfill -n backfill@%h --loglevel=${COMMON__LOGGING__LEVEL:-INFO}
-    env_file:
-      - .env
-    environment:
-      PYTHONPATH: /app
-    restart: unless-stopped
-    depends_on:
-      timescaledb:
-        condition: service_healthy
-      postgres:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
-      rabbitmq:
-        condition: service_healthy
-    healthcheck:
-      test: ["CMD", "celery", "-A", "shared.celery_app.celery_app", "inspect", "ping", "-d", "celery@backfill", "--timeout=5"]
       interval: 30s
       timeout: 10s
       retries: 3
