@@ -1,114 +1,176 @@
 # Data Service
 
-行情与期权链采集服务（盘中缓存 + 盘后批量入库）。
+Data Service 负责市场数据采集、盘中期权快照缓冲、盘后股票入库、期权日级聚合，以及下游 signals → blueprint 流水线的触发。
 
-## What it does
-- 提供历史数据查询 API（stock daily / option daily）
-- 提供手动采集 API（异步 Celery task）
-- 盘后任务入口：`data_service.tasks.capture_post_market_data`
-- 通过 FetcherProtocol 抽象数据源，支持配置切换（当前实现：yfinance）
+## Scope
+
+- 提供 stock_daily 与 option_daily 查询 API
+- 提供手动股票采集 API
+- 提供 earnings 查询与缓存
+- 运行盘后统一流水线入口
+- 将下游流程派发到 signal queue 与 analysis queue
+
+核心入口：
+
+- `services/data_service/app/main.py`
+- `services/data_service/app/routes.py`
+- `services/data_service/app/tasks/pipeline.py`
+- `services/data_service/app/tasks/capture.py`
+- `services/data_service/app/tasks/aggregation.py`
+- `services/data_service/app/tasks/coordination.py`
+
+## Architecture Overview
+
+Data Service 当前分成两类职责：
+
+- API 进程：对外提供查询与手动触发接口
+- Celery data worker：执行采集、聚合、协调、通知等任务
+
+核心设计点：
+
+- 盘中期权链先进入缓存/快照表，不直接生成日级 option 数据
+- 盘后股票数据单独采集
+- `option_daily` 与 `option_iv_daily` 只从 intraday snapshots 聚合，不走盘后 yfinance 兜底
+- 下游 `compute_daily_signals` 与 `generate_daily_blueprint` 由 data service 统一派发
+
+## Post-Market Pipeline
+
+统一盘后流水线入口：`data_service.tasks.run_post_market_pipeline`
+
+当前流程：
+
+- Step 1: `aggregate_option_daily`
+- Step 2: `capture_post_market_chunk` fan-out 采集股票 1m bars 和 daily bars
+- Step 3: chord callback `_post_market_finalize`
+- Step 4: `dispatch_downstream` 触发 `compute_daily_signals` → `generate_daily_blueprint`
+- Step 5: 安排 `coordination_timeout_check` 作为兜底超时检查
+
+注意：
+
+- `capture_post_market_data` / `capture_post_market_chunk` 不再盘后采集期权链
+- 如果当天没有 intraday 5min snapshots，`option_daily` 和 `option_iv_daily` 为空是预期行为
+- `stop_after` 可以在配置里裁剪下游链路
+
+## Why `option_iv_daily` Exists
+
+`option_iv_daily` 是按标的聚合后的日级 IV 汇总表，目的是让 signal service 快速计算 IV Rank / IV Percentile，而不是每次从大量 option rows 实时聚合。
+
+典型字段：
+
+- `avg_iv`
+- `atm_iv`
+- `call_iv`
+- `put_iv`
+- `sample_size`
+
+这是一个典型的“为下游分析降维”的表，而不是面向交易直接执行的表。
+
+## Data Model And Providers
+
+Data Service 使用 fetcher registry 做 provider 抽象。
+
+当前默认：
+
+- `data_service.providers.stock = yfinance`
+- `data_service.providers.options = yfinance`
+
+切换 provider 的步骤：
+
+- 实现对应 fetcher protocol
+- 在 registry 注册
+- 修改 `config/config.yaml`
+
+相关目录：
+
+- `services/data_service/app/fetchers`
+- `services/data_service/app/storage.py`
+- `services/data_service/app/cache.py`
 
 ## HTTP API
+
 - Base URL: `http://localhost:8001`
 - Docs: `http://localhost:8001/docs`
+- Health: `GET /api/v1/health`
 
-### Health & Config
-- `GET /api/v1/health` — 服务健康检查
-- `GET /api/v1/data/config` — 当前运行模式与配置
-- `POST /api/v1/data/config` — 切换 intraday 模式
+### Market Data Queries
 
-### Stock Data
-- `GET /data/{symbol}/stock` — 日线列表
-  - Filters: `start_date`, `end_date`
-  - Pagination: `page`, `page_size`
-  - Response model: `StockDailyResponse`
-- `GET /data/{symbol}/stock/dates` — 已有数据日期列表
-
-### Option Data
-- `GET /data/{symbol}/options` — 期权链列表
-  - Filters: `snapshot_date` | `start_date`+`end_date`（范围查询）, `expiry`, `option_type`, `min_strike`, `max_strike`, `min_volume`, `min_open_interest`
-  - Pagination: `page`, `page_size`
-  - Response model: `OptionDailyResponse`（含 `underlying_price`）
-- `GET /data/{symbol}/options/dates` — 已有快照日期列表
+- `GET /api/v1/data/{symbol}/stock`
+- `GET /api/v1/data/{symbol}/stock/dates`
+- `GET /api/v1/data/{symbol}/options`
+- `GET /api/v1/data/{symbol}/options/dates`
 
 ### Manual Collection
-- `POST /api/v1/collect/stock` — 触发手动股票数据采集（异步 Celery task）
-- `GET /api/v1/collect/{task_id}` — 查询采集任务状态
 
-#### Stock Collection 日期规则 (`end_date`)
-| 场景 | 行为 |
-|------|------|
-| `end_date` 在未来 | `422`，建议改为今日 |
-| `end_date == today` + 盘前 | `422`，建议改为上一交易日 |
-| `end_date == today` + 盘中 | `422`，提示盘后再执行 |
-| `end_date == today` + 盘后 | 正常执行 |
-| `end_date` 在过去 | 正常执行 |
+- `POST /api/v1/data/collect/stock`
+- `GET /api/v1/data/collect/{task_id}`
 
-所有日期相关 `422` 错误会在 `detail.suggested_request_body` 中返回可直接重试的建议请求体。
+### Earnings
 
-## Data Providers (FetcherProtocol)
-配置位于 `config/config.yaml` → `data_service.providers`:
-```yaml
-providers:
-  stock: "yfinance"
-  options: "yfinance"                # intraday option chain provider (盘中 5min 采集)
-```
-- `options`: 盘中 5 分钟期权链采集使用的 provider（如 yfinance）。`option_daily` 不再盘后直接采集，改由 `aggregate_option_daily` 从盘中快照聚合
+- `POST /api/v1/data/earnings`
 
-新增数据源只需：
-1. 实现 `StockFetcherProtocol` / `OptionFetcherProtocol`
-2. 在 `fetchers/registry.py` 注册
-3. 修改 config 即可切换
+## Manual Collection Rules
 
-## Manual start (without Docker)
-From repo root:
+`POST /api/v1/data/collect/stock` 目前只做股票数据手动采集，支持：
+
+- `bars_1m`
+- `bars_daily`
+
+对 `end_date` 有明确校验：
+
+- 未来日期会返回 `422`
+- 当天盘前会返回 `422`，并建议改到上一交易日
+- 当天盘中会返回 `422`，要求盘后再跑
+- 当天盘后允许正常执行
+
+很多 `422` 会附带 `suggested_request_body`，可以直接重试。
+
+## Workers And Queues
+
+Data Service 主要依赖 `data` 队列 worker。
+
+data worker 负责：
+
+- 盘后统一流水线
+- 股票盘后采集
+- option_daily / option_iv_daily 聚合
+- 手动股票采集
+- 协调 downstream 派发
+- timeout fallback
+
+但完整盘后链路还需要：
+
+- `signal` 队列 worker，用于 `compute_signals_chunk`
+- `analysis` 队列 worker，用于 `generate_daily_blueprint`
+
+如果你只启动 data worker，下游 signals / blueprint 不会自动完成。
+
+## Local Run
+
+从仓库根目录运行：
 
 ```bash
-# 1) Install deps (workspace)
+# 1) Install deps
 uv sync --package data-service
 
 # 2) Start API server
 uv run uvicorn services.data_service.app.main:app --host 0.0.0.0 --port 8001 --reload
 
-# 3) (Optional) start Celery worker for data tasks
+# 3) Start data worker
 uv run celery -A shared.celery_app.celery_app worker -Q data -l info
 ```
 
-## 盘后管线 (Post-Market Pipeline)
+如果要跑完整盘后流程，还应同时启动：
 
-```
-capture_post_market_data   — 仅采集 1m bars / daily bar → DB（不含期权）
-  → batch_flush_to_db      — 盘中 Parquet 缓存 → option_5min_snapshots
-  → aggregate_option_daily  — 仅从 option_5min_snapshots 聚合 → option_daily + option_iv_daily
-  → compute_daily_signals → generate_daily_blueprint
+```bash
+uv run celery -A shared.celery_app.celery_app worker -Q signal -l info
+uv run celery -A shared.celery_app.celery_app worker -Q analysis -l info
 ```
 
-> **注意**：`capture_post_market_data` 不再采集期权数据。盘后 yfinance 期权链 bid=ask=0、IV 不可靠
-> （Yahoo Finance 在非交易时段清空报价）。`aggregate_option_daily` 也不会改用 yfinance 兜底 —
-> 如果当天没有盘中 5 分钟快照（intraday 未启用或非交易日），该天的 `option_daily` 和 `option_iv_daily`
-> 为空，这是预期行为。
+如果你依赖定时调度，还需要 Celery Beat。
 
-### 为什么需要 option_iv_daily
+## Dev Notes
 
-`option_daily` 已改由盘中 5 分钟快照的最后一条回填（而非盘后 yfinance 采集）。
-
-`option_iv_daily` 是在此基础上按标的聚合的 **每日 IV 汇总表**，用于 IV Rank / IV Percentile 计算：
-
-| 查询源 | 扫描行数 (10 标的 × 252 天) | 需要运行时聚合 |
-|--------|---------------------------|--------------|
-| `option_5min_snapshots` | **~39,000,000** (200 合约 × 78 条/天) | ATM 过滤 + AVG + GROUP BY |
-| `option_daily` | **~500,000** (200 合约/标的) | ATM 过滤 + AVG + GROUP BY |
-| **`option_iv_daily`** | **2,520** | **直接读，无聚合** |
-
-字段：
-- `avg_iv` — 全链平均 IV
-- `atm_iv` — ATM 合约 IV（strike 在标的价 ±5% 内），**IV Rank 的核心输入**
-- `call_iv` / `put_iv` — 分 call/put 的平均 IV，用于偏差分析
-- `sample_size` — 参与聚合的合约数（数据质量校验）
-
-写入成本：每天 ~10 行（= watchlist 标的数），存储开销可忽略。
-
-## Notes
-- Requires TimescaleDB + Postgres + Redis + RabbitMQ running.
-- 首次运行前执行 `uv run python -m scripts.init_db` 初始化表结构。
-- 手动采集在盘前触发时可能看到 `end_date` 被自动调整为上一个交易日（避免请求尚未开盘当日数据）。
+- 需要 TimescaleDB、Postgres、Redis、RabbitMQ 可用
+- 首次运行前执行 `uv run python -m scripts.init_db`
+- Data Service 本身不负责执行分析或交易，只负责数据层和流水线协调
+- API 进程不是采集调度器；真正的盘后执行由 Celery tasks / Beat 驱动
