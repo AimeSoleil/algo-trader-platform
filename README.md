@@ -10,6 +10,10 @@
 
 **data 负责采集，signal 负责特征，analysis 负责生成交易计划，trade 负责执行，gateway 负责统一入口，celery 负责把整条链路自动跑起来。**
 
+> [!WARNING]
+> `trade_service` 目前仍处于持续开发阶段，尚未完成完整测试与实盘级验证。
+> 当前 README 中关于 trade 的内容应理解为“当前设计与实现方向”，而不是已经完全稳定、可直接用于真实资金交易的最终状态。
+
 ## 1. 平台总览
 
 平台由 6 个核心模块组成：
@@ -19,7 +23,7 @@
 | Data Service | `services/data_service` | 8001 | 市场数据采集、盘后聚合、下游流水线协调 |
 | Signal Service | `services/signal_service` | 8002 | 日级特征与信号计算 |
 | Analysis Service | `services/analysis_service` | 8003 | Agentic LLM blueprint 生成与校验 |
-| Trade Service | `services/trade_service` | 8004 | blueprint 加载、执行、风控、持仓与绩效 |
+| Trade Service | `services/trade_service` | 8004 | blueprint 加载、执行、风控、持仓与绩效；当前仍在开发中，未完整测试 |
 | Gateway Service | `services/gateway_service` | 8000 | 统一 API 入口、文档聚合、反向代理 |
 | Celery Worker | `services/celery_worker` | n/a | worker / beat / flower 的通用运行镜像 |
 
@@ -155,6 +159,8 @@ flowchart LR
 ### 3.1 盘后智能，盘中机械
 
 平台不是在盘中实时用 LLM 做决策。
+
+需要单独说明的是：这个设计方向已经在仓库中落地了主体框架，但 `trade_service` 仍在开发中，因此“盘中机械执行”这一段目前更适合理解为目标架构，而不是已经完全验收完毕的生产能力。
 
 当前设计是：
 
