@@ -105,7 +105,7 @@ common:
   # ── Celery 通用运行时 (所有 worker 共享) ──
   celery:
     prefetch_multiplier: 4             # 每次从 broker 预取的任务数（analysis worker 单独覆盖为 1）
-    max_memory_per_child: 500000       # KB — 子进程超出后自动重启（500 MB）
+    max_memory_per_child: 300000       # KB — 子进程超出后自动重启（300 MB）
     task_acks_late: true               # true = 任务完成后才 ack（崩溃时可重投递）
     task_track_started: true           # true = 任务开始执行即标记 STARTED 状态
     task_soft_time_limit: 600          # 秒 — 超时抛 SoftTimeLimitExceeded（优雅终止）

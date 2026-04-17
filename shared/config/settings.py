@@ -78,7 +78,7 @@ class InfraSettings(BaseSettings):
 class CelerySettings(BaseSettings):
     """Celery runtime settings — applied to all workers."""
     prefetch_multiplier: int = 4           # 预取任务数（analysis worker 单独覆盖为 1）
-    max_memory_per_child: int = 500_000    # KB, 500 MB — exceeded → auto-restart
+    max_memory_per_child: int = 300_000    # KB, 300 MB — exceeded → auto-restart
     task_acks_late: bool = True            # ack after completion, not on delivery
     task_track_started: bool = True        # track STARTED state
     task_soft_time_limit: int = 600        # seconds — SoftTimeLimitExceeded (graceful)

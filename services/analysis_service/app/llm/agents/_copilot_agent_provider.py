@@ -11,6 +11,7 @@ agent's ``system_prompt``.
 """
 from __future__ import annotations
 
+import asyncio
 import shutil
 from pathlib import Path
 
@@ -53,6 +54,7 @@ class CopilotAgentProvider:
         self._reasoning_effort = settings.analysis_service.llm.copilot.reasoning_effort
         self._timeout = settings.analysis_service.llm.copilot.request_timeout_seconds
         self._client = None
+        self._bound_loop_id: int | None = None
         self._on_permission_request = None
 
     @property
@@ -60,7 +62,17 @@ class CopilotAgentProvider:
         return "copilot"
 
     async def _get_client(self):
-        """Lazy-init the CopilotClient."""
+        """Lazy-init the CopilotClient; rebuild when the event loop changes."""
+        current_loop_id = id(asyncio.get_running_loop())
+
+        if self._client is not None and self._bound_loop_id != current_loop_id:
+            logger.info("copilot_agent.loop_changed, rebuilding client")
+            try:
+                await self._client.stop()
+            except Exception:
+                pass
+            self._client = None
+
         if self._client is None:
             from copilot import CopilotClient, PermissionHandler
 
@@ -77,6 +89,7 @@ class CopilotAgentProvider:
             self._client = CopilotClient(config)
             self._on_permission_request = PermissionHandler.approve_all
             await self._client.start()
+            self._bound_loop_id = current_loop_id
             logger.info("copilot_agent.client_started")
         return self._client
 
