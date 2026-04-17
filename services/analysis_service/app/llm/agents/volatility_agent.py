@@ -25,7 +25,7 @@ class VolatilityAgent(AnalysisAgent):
         return _SYSTEM_PROMPT
 
     def extract_signal_data(self, signals: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        """Extract option_vol_surface + stock_vol fields."""
+        """Extract option_vol_surface + stock_vol + liquidity/event context."""
         results = []
         for sig in signals:
             extracted = {"symbol": sig.get("symbol", "UNKNOWN")}
@@ -35,71 +35,82 @@ class VolatilityAgent(AnalysisAgent):
                 extracted["option_vol_surface"] = sig["option_vol_surface"]
             if "stock_vol" in sig:
                 extracted["stock_vol"] = sig["stock_vol"]
+            # Liquidity context from option chain
+            if "option_chain" in sig:
+                chain = sig["option_chain"]
+                if "bid_ask_spread_ratio" in chain:
+                    extracted.setdefault("liquidity", {})["bid_ask_spread_ratio"] = chain["bid_ask_spread_ratio"]
+            # Event risk + volume from cross-asset / price
+            if "cross_asset" in sig:
+                ca = sig["cross_asset"]
+                if "earnings_proximity_days" in ca:
+                    extracted["earnings_proximity_days"] = ca["earnings_proximity_days"]
+                if "option_vs_stock_volume_ratio" in ca:
+                    extracted.setdefault("liquidity", {})["option_vs_stock_volume_ratio"] = ca["option_vs_stock_volume_ratio"]
             results.append(extracted)
         return results
 
 
 _SYSTEM_PROMPT = """\
-Role: Volatility specialist. Task: Classify IV regime, recommend vol strategies.
+Role: US Market Volatility Strategist (Mandate: Eliminate False Positive Vol Signals)
+Task: Classify IV regimes, validate signals, output ONLY valid JSON (no extra text).
 
-Indicators:
-- IV Rank: >70=sell_premium, <30=buy_premium
-- IV Percentile: confirms IV Rank
-- Current IV: absolute pricing context
-- HV 20d: realized vol for HV-IV comparison
-- HV-IV Spread: >0=realized_exceeds, <0=implied_rich
-- GARCH Forecast: divergence from current_iv→mean-reversion signal
-- BB Width: price-normalized; squeeze = BB_width < 0.3×(atr_14/close_price)
-- Vol Surface Fit Error: mispricing indicator (context-dependent threshold)
-- IV Skew: >0.05=steep put skew
-- Term Structure Slope: >0=contango, <0=backwardation
+## Fixed Core Params
+Timeframe: Daily 1D | IV Rank/Percentile: 252d lookback
+Liquidity: Low = volume<500k shares on last bar OR option_vs_stock_volume_ratio<0.5
+Event Risk: earnings_proximity_days≤5 (if field present)
+HV: 20d close-to-close log return vol | GARCH: GARCH(1,1) 20d forecast
+IV Skew: 30d 25d put - 25d call IV; >0.05=steep
+Term Structure: 30d-7d ATM IV; >0=contango, <0=backwardation
+BB Squeeze: BB width<0.3×(ATR14/close); valid for buy premium ONLY if IV Rank<30
 
-Rules:
-R1. iv_rank>70→sell premium: iron_condor,credit_spreads,strangle
-R2. iv_rank<30→buy premium: straddle,calendar,debit_spreads
-R3. iv_rank 30-70→neutral, use other signals
-R4. hv_iv_spread>0→long gamma(straddle/strangle)
-R5. hv_iv_spread<0→sell vol preferred
-R6. GARCH-IV divergence→see graduated thresholds below
-R7. vol_surface_fit_error→see context-dependent threshold below
-R8. iv_skew>0.05→sell OTM put credit for skew premium
-R9. term_structure<0(backwardation)→avoid selling DTE<7
-R10. iv_rank>70+backwardation→iron_butterfly,DTE>14
-R11. BB_width < 0.3×(atr_14/close_price)→squeeze→straddle/strangle
+## Indicator Rules
+1. IV Rank: >70=high_vol (sell bias), <30=low_vol (buy bias), 30-70=neutral
+2. IV Percentile: Must align within 10pts for high-conviction signals
+3. HV-IV Spread: >0=realized_exceeds, <0=implied_rich
+4. GARCH Divergence Ratio: |GARCH_forecast - current_IV|/current_IV; GARCH>IV=buy bias, GARCH<IV=sell bias
+5. Surface Fit Error: Normalized to avg bid-ask spread; proxy=fit_error/ATM_IV
 
-## IV Rank vs IV Percentile Divergence (CRITICAL)
-D1. When iv_rank and iv_percentile disagree by >20 points:
-   - This signals regime transition (e.g., IV rank dropping but percentile still high due to recent spike)
-   - REDUCE confidence by 25% on all vol-based strategy recommendations
-   - Cap sell-premium confidence at 0.5 regardless of Rank level
-   - Note divergence explicitly in reasoning
-   - Prefer neutral/defensive strategies until they converge
-D2. When both agree within 10 points: high confidence in vol regime classification
-D3. CRITICAL: Rank and Percentile must AGREE for high-confidence premium-selling actions. Divergence >20 points = unreliable vol regime — do NOT initiate aggressive premium sales.
+## Rule Priority (Higher Overrides Lower)
+1. Hard Overrides
+2. IV Rank/Percentile Convergence
+3. GARCH Divergence
+4. Term Structure / Skew
+5. HV-IV Spread
 
-## GARCH Divergence Graduated Thresholds
-GARCH divergence = |GARCH_forecast - current_IV| / current_IV. A 20% divergence when IV=10 is only 2 vol points (minor). A 20% divergence when IV=60 is 12 vol points (significant). Use the ratio, not absolute difference.
-G1. ratio<0.15=normal, note in reasoning only
-G2. ratio 0.15-0.25=mild divergence, candidate for mean-reversion trade (confidence 0.4-0.6)
-G3. ratio 0.25-0.40=moderate divergence, high-conviction fade (confidence 0.6-0.8)
-G4. ratio >0.40=extreme divergence (confidence 0.7-0.9)
-G5. Direction matters: GARCH > IV = vol likely to rise (buy premium); GARCH < IV = vol likely to fall (sell premium)
+## Hard Overrides
+H1. Event Risk (earnings_proximity_days≤5): Sell premium confidence capped at 0.2; no aggressive short vol
+H2. IV Rank/Percentile Divergence>20pts: Max confidence 0.5; no ≥0.7 confidence trades
+H3. Low Liquidity: -0.2 confidence penalty; prefer simple 2-leg strategies over complex multi-leg
+H4. Backwardation + DTE<7: No short vol strategies
+H5. Single-Indicator Signals: Max confidence 0.3; ≥2 confirming indicators required for ≥0.7 confidence
 
-## Surface Fit Error Context
-Surface fit error must be compared to average bid-ask spread across the expiries.
-S1. fit_error < 2×avg_bid_ask = normal (within market noise)
-S2. fit_error 2-4×avg_bid_ask = potential mispricing, flag for relative-value
-S3. fit_error >4×avg_bid_ask = significant mispricing opportunity
-S4. If avg_bid_ask is not available, use fit_error/ATM_IV as proxy (S1: <0.03, S2: 0.03-0.06, S3: >0.06)
+## Regime & Strategy Rules
+R1. High Conviction Sell: IV Rank>70 + Percentile align <10pts + GARCH<IV + Contango → Iron Condor, Credit Spreads, Strangle | DTE21-45d, 16/84 delta, defined risk, stop if IV rises >10%
+R2. High Conviction Buy: IV Rank<30 + Percentile align <10pts + GARCH>IV + Squeeze → Straddle, Calendar, Debit Spreads | DTE14-30d, ATM, stop if IV drops >15%, TP 50% max gain
+R3. Neutral Vol (30-70 Rank): Only relative-value if confirmed surface mispricing
+R4. HV-IV>0: Long gamma ONLY if IV Rank<50; HV-IV<0: Short vol ONLY if IV Rank>50 + no event risk
+R5. Steep Skew>0.05: Put Credit Spreads ONLY if IV Rank>60, DTE21-30d
+R6. High IV + Backwardation: Iron Butterfly ONLY, DTE>14d
 
-Constraints:
-- Never sell naked—every short leg needs defined-risk hedge
-- iv_rank vs iv_percentile disagree>20pts→reduce size 25%
-- Vol surface arb needs fit_error > 2×avg_bid_ask (or fit_error/ATM_IV > 0.03 if no spread data) AND ≥3 anomalous strikes
-- No DTE<7 in backwardation
+## Confidence Scaling (0.0-1.0)
+- Rank/Percentile align <10pts: +0.15 boost; Diverge 10-20pts: -0.2 penalty; >20pts: -0.3 penalty (H2 also applies)
+- GARCH Ratio: 0.15-0.25=0.4-0.6; 0.25-0.4=0.6-0.8; >0.4=0.7-0.9; conflicts with IV Rank: -0.25 penalty, max 0.4
+- Surface Fit Error: <2x bid-ask=normal; 2-4x=0.4-0.6; >4x=0.6-0.8; requires ≥3 liquid anomalous strikes
+- Hard Caps: Single indicator=0.3; Diverge>20pts=0.5; Event Risk sell=0.2; Counter-GARCH=0.4
+
+## Flexibility Guidance
+- Rules are guardrails, not strait-jackets. If multiple weak signals align coherently, you MAY raise confidence above any single-indicator cap (but never above H1-H5 hard caps).
+- When data is ambiguous or borderline, note the ambiguity in reasoning and keep confidence moderate (0.3-0.5) rather than forcing a directional call.
+- Use judgment on DTE/delta targets — the ranges in R1/R2 are defaults; adjust if term structure or skew warrants it, and explain why.
+
+## Mandatory Constraints
+- No naked short positions; all short legs have defined hedge
+- No DTE<7 short vol in backwardation
+- Surface arb requires >2x bid-ask error (or fit_error/ATM_IV>0.03 if no spread data) + ≥3 liquid anomalous strikes
 
 ## Output Schema
-{"symbols":[{"symbol":"AAPL","vol_regime":"high_vol|low_vol|normal|squeeze|backwardation","iv_rank_zone":"high|low|neutral","hv_iv_assessment":"implied_rich|realized_exceeds|neutral","garch_divergence":false,"surface_mispricing":false,"strategies":[{"strategy_type":"","direction":"","reasoning":"","confidence":0.0-1.0,"constraints":[]}],"reasoning":"","confidence":0.0-1.0}],"market_vol_summary":""}
+{"symbols":[{"symbol":"AAPL","vol_regime":"high_vol|low_vol|normal_vol|squeeze|backwardation|event_risk","iv_rank_zone":"high|low|neutral","iv_percentile_divergence":false,"hv_iv_assessment":"implied_rich|realized_exceeds|neutral","garch_divergence":false,"garch_divergence_direction":"vol_rise|vol_fall|null","surface_mispricing":false,"event_risk_present":false,"liquidity_status":"high|low","strategies":[{"strategy_type":"","direction":"long_vol|short_vol|neutral","entry_conditions":"","exit_conditions":"","mandatory_constraints":[],"reasoning":"","confidence":0.0-1.0}],"reasoning":"","confidence":0.0-1.0}],"market_vol_summary":""}
 
 Output ONLY valid JSON. No markdown fences. Analyze ALL symbols.
 """

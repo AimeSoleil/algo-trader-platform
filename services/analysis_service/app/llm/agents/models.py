@@ -29,8 +29,10 @@ class VolRegime(str, Enum):
     HIGH_VOL = "high_vol"
     LOW_VOL = "low_vol"
     NORMAL = "normal"
+    NORMAL_VOL = "normal_vol"
     SQUEEZE = "squeeze"
     BACKWARDATION = "backwardation"
+    EVENT_RISK = "event_risk"
 
 
 class FlowSignal(str, Enum):
@@ -49,6 +51,8 @@ class StrategyCandidate(BaseModel):
     reasoning: str
     confidence: float = Field(0.5, ge=0.0, le=1.0)
     constraints: list[str] = Field(default_factory=list, description="Conditions or caveats")
+    entry_conditions: str = Field("", description="Specific conditions required to enter the position")
+    exit_conditions: str = Field("", description="Exit triggers: stop-loss, take-profit, time-based")
 
 
 class SymbolAnalysis(BaseModel):
@@ -71,8 +75,11 @@ class TrendSymbolAnalysis(SymbolAnalysis):
     trend_direction: str = "neutral"  # "bullish", "bearish", "neutral"
     trend_strength: float = 0.0
     adx_zone: str = "transition"  # "trending", "range_bound", "transition", "extreme"
+    adx_z_score: float = 0.0
+    iv_rank: float = Field(0.0, ge=0.0, le=100.0, description="IV Rank 0-100")
     divergence_detected: bool = False
-    divergence_type: str | None = None  # "bullish", "bearish"
+    divergence_type: str | None = None  # "rsi_macd_bullish", "rsi_macd_bearish"
+    false_positive_risk: str = "medium"  # "low", "medium", "high"
     strategies: list[StrategyCandidate] = Field(default_factory=list)
 
 
@@ -86,9 +93,13 @@ class VolatilitySymbolAnalysis(SymbolAnalysis):
     """Per-symbol output from VolatilityAgent."""
     vol_regime: VolRegime = VolRegime.NORMAL
     iv_rank_zone: str = "neutral"  # "high", "low", "neutral"
+    iv_percentile_divergence: bool = False
     hv_iv_assessment: str = "neutral"  # "implied_rich", "realized_exceeds", "neutral"
     garch_divergence: bool = False
+    garch_divergence_direction: str | None = Field(None, description="vol_rise, vol_fall, or null")
     surface_mispricing: bool = False
+    event_risk_present: bool = False
+    liquidity_status: str = Field("high", description="high or low")
     strategies: list[StrategyCandidate] = Field(default_factory=list)
 
 
@@ -104,7 +115,10 @@ class FlowSymbolAnalysis(SymbolAnalysis):
     volume_anomaly: bool = False
     vwap_bias: str = "neutral"  # "bullish", "bearish", "neutral"
     position_size_modifier: float = Field(1.0, ge=0.0, le=1.5, description="1.0 = full, 0.5 = half, etc.")
-    false_breakout_risk: bool = False
+    false_breakout_risk: str = Field("low", description="low, medium, or high")
+    event_risk_present: bool = False
+    liquidity_status: str = Field("high", description="high or low")
+    confirming_indicators_count: int = Field(0, ge=0, description="Number of confirming flow indicators")
 
 
 class FlowAnalysis(BaseModel):
@@ -114,12 +128,18 @@ class FlowAnalysis(BaseModel):
 
 class ChainSymbolAnalysis(SymbolAnalysis):
     """Per-symbol output from ChainAgent."""
+    front_expiry_dte: int = Field(0, ge=0, description="Estimated DTE of front-month expiry analyzed")
     liquidity_ok: bool = True
-    hard_block: bool = False  # bid-ask > 0.20
-    pcr_signal: str = "neutral"  # "contrarian_bullish", "contrarian_bearish", "neutral"
+    hard_block: bool = False  # bid-ask ratio > 0.20
+    liquidity_tier: str = Field("L1", description="L1 (excellent) through L5 (hard block)")
+    event_risk_present: bool = False
+    pcr_signal: str = "neutral"  # "contrarian_bullish", "contrarian_bearish", "directional_bullish", "directional_bearish", "neutral"
     gamma_pin_active: bool = False
     gamma_pin_strike: float | None = None
+    pin_strength: float = Field(0.0, ge=0.0, le=1.0, description="OI_concentration × DTE_decay")
     institutional_flow: str = "neutral"  # "call_buying", "put_buying", "neutral"
+    net_delta_exposure: str = "neutral"  # "bullish", "bearish", "neutral"
+    confirming_indicators_count: int = Field(0, ge=0, description="Number of confirming chain indicators")
     suggested_strikes: dict[str, Any] = Field(default_factory=dict, description="Optimal strike recommendations")
 
 
@@ -132,10 +152,13 @@ class SpreadSymbolAnalysis(SymbolAnalysis):
     """Per-symbol output from SpreadAgent."""
     best_spread_type: str | None = None  # "vertical", "calendar", "butterfly", "box_arb"
     risk_reward_ratio: float = 0.0
+    effective_rr: float | None = Field(None, description="Cost-adjusted R:R after transaction costs")
     theta_capture: float = 0.0
     mispricing_detected: bool = False
     arb_opportunity: bool = False
     optimal_dte: int | None = None
+    liquidity_status: str = Field("adequate", description="adequate, wide, illiquid")
+    event_risk_present: bool = False
     constraints: list[str] = Field(default_factory=list)
 
 
@@ -146,21 +169,18 @@ class SpreadAnalysis(BaseModel):
 
 class CrossAssetSymbolAnalysis(SymbolAnalysis):
     """Per-symbol output from CrossAssetAgent."""
-    correlation_regime: str = "normal"  # "fear", "decoupled", "bullish_vol", "normal"
-    dominant_benchmark: str = "SPY"  # which benchmark explains most variance
+    correlation_regime: str = "normal"  # "fear", "decoupled", "bullish_vol", "normal", "event_driven"
+    dominant_benchmark: str = "SPY"  # "SPY", "QQQ", "IWM", "idiosyncratic"
     rate_sensitive: bool = False
-    safe_haven_correlated: bool = False   # GLD corr > 0.3
-    credit_stress_exposure: bool = False  # HYG corr > 0.3
-    energy_exposure: bool = False         # XLE corr > 0.3
-    crypto_correlated: bool = False       # IBIT corr > 0.3
     risk_off_signal: bool = False
     regime_transition: bool = False  # SPY / QQQ / IWM correlations diverging
     regime_days: int = Field(0, ge=0, description="Consecutive days the current correlation regime has persisted. <5 = transitioning, >=5 = confirmed.")
     vix_environment: str = "normal"  # "panic", "elevated", "normal", "complacent"
+    gex_regime: str = Field("neutral", description="positive (vol suppressed), negative (vol amplified), neutral")
     position_size_modifier: float = Field(1.0, ge=0.0, le=1.5)
     hedging_needed: bool = False
-    hedge_direction: str | None = None  # "buy_shares", "sell_shares"
     effective_size_modifier: float = Field(1.0, ge=0.0, le=1.5, description="Combined position size modifier after all adjustments. If <0.3, recommend skip.")
+    master_override: bool = Field(True, description="True = this modifier overrides all other strategy module sizing")
 
 
 class CrossAssetAnalysis(BaseModel):
@@ -168,6 +188,7 @@ class CrossAssetAnalysis(BaseModel):
     symbols: list[CrossAssetSymbolAnalysis] = Field(default_factory=list)
     market_regime: str = "neutral"
     vix_summary: str = ""
+    cross_asset_summary: str = ""
 
 
 # ---------------------------------------------------------------------------

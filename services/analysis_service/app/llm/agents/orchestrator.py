@@ -564,15 +564,20 @@ class AgentOrchestrator:
         "regime", "trend_direction", "trend_strength",
         # volatility
         "vol_regime", "iv_rank_zone", "hv_iv_assessment",
+        "iv_percentile_divergence", "garch_divergence_direction",
+        "event_risk_present", "liquidity_status",
         # flow
         "flow_signal", "volume_anomaly", "vwap_bias",
+        "event_risk_present", "liquidity_status",
+        "confirming_indicators_count",
         # chain
         "pcr_signal", "gamma_pin_active", "institutional_flow",
+        "liquidity_tier", "event_risk_present", "net_delta_exposure",
+        "confirming_indicators_count",
         # spread — not useful for benchmark context
         # cross_asset
         "correlation_regime", "risk_off_signal", "vix_environment",
-        "safe_haven_correlated", "credit_stress_exposure",
-        "energy_exposure", "crypto_correlated",
+        "gex_regime", "master_override",
     })
 
     def _compact_for_synthesis(
