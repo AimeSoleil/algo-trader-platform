@@ -26,6 +26,37 @@ from services.analysis_service.app.tasks.helpers import (
 logger = get_logger("analysis_tasks")
 
 
+async def _claim_terminal_notification_slot_async(trading_date: str, outcome: str) -> bool:
+    """Claim one terminal notification slot per trading_date.
+
+    Returns True when this execution wins and should send the notification.
+    Returns False when another execution has already sent a terminal
+    notification (success or failure) for the same trading date.
+    """
+    from shared.redis_pool import get_redis
+
+    redis = get_redis()
+    key = f"analysis:blueprint:terminal_notify:{trading_date}"
+    # Keep for 2 days to cover retries/redelivery around the same run window.
+    claimed = await redis.set(key, outcome, nx=True, ex=172800)
+    return bool(claimed)
+
+
+def _claim_terminal_notification_slot(trading_date: str, outcome: str) -> bool:
+    """Sync wrapper for Celery task context; best-effort on Redis errors."""
+    try:
+        return bool(run_async(_claim_terminal_notification_slot_async(trading_date, outcome)))
+    except Exception as exc:
+        logger.warning(
+            "blueprint.notify_dedup_check_failed",
+            trading_date=trading_date,
+            outcome=outcome,
+            error=str(exc),
+        )
+        # Fail open so we still notify when Redis is temporarily unavailable.
+        return True
+
+
 # ── Common pipeline (steps 2-4) ───────────────────────────────
 
 
@@ -237,17 +268,23 @@ def generate_daily_blueprint(self, trading_date: str | None = None, prev_result=
         # Notify immediately with root cause (no retry)
         from shared.notifier.helpers import notify_sync
         from shared.notifier.base import NotificationEvent, EventType, Severity
-        try:
-            notify_sync(NotificationEvent(
-                event_type=EventType.PIPELINE_FAILED,
-                title="❌ Blueprint Generation Failed",
-                message=f"Blueprint generation failed for {resolved_trading_date}. "
-                        f"Root cause: {exc}",
-                severity=Severity.ERROR,
-                payload={"trading_date": str(resolved_trading_date), "phase": "generate_daily_blueprint", "error": str(exc)},
-            ))
-        except Exception as notify_exc:
-            logger.warning("blueprint.notify_failed_on_error", error=str(notify_exc))
+        if _claim_terminal_notification_slot(str(resolved_trading_date), "failed"):
+            try:
+                notify_sync(NotificationEvent(
+                    event_type=EventType.PIPELINE_FAILED,
+                    title="❌ Blueprint Generation Failed",
+                    message=f"Blueprint generation failed for {resolved_trading_date}. "
+                            f"Root cause: {exc}",
+                    severity=Severity.ERROR,
+                    payload={"trading_date": str(resolved_trading_date), "phase": "generate_daily_blueprint", "error": str(exc)},
+                ))
+            except Exception as notify_exc:
+                logger.warning("blueprint.notify_failed_on_error", error=str(notify_exc))
+        else:
+            logger.info(
+                "blueprint.notify_failed_skipped_dedup",
+                trading_date=str(resolved_trading_date),
+            )
 
         # Re-raise to mark task as failed (no auto-retry)
         raise
@@ -257,22 +294,28 @@ def generate_daily_blueprint(self, trading_date: str | None = None, prev_result=
         if success and result is not None:
             from shared.notifier.helpers import notify_sync
             from shared.notifier.base import NotificationEvent, EventType, Severity
-            try:
-                notify_sync(NotificationEvent(
-                    event_type=EventType.PIPELINE_FINISHED,
-                    title="✅ Daily Pipeline Completed",
-                    message=f"Blueprint generated for {resolved_trading_date}. "
-                            f"{result.get('plans_count', 0)} symbol plans, "
-                            f"provider: {result.get('provider', 'unknown')}.",
-                    severity=Severity.INFO,
-                    payload={
-                        "trading_date": str(resolved_trading_date),
-                        "blueprint_id": str(result.get("blueprint_id", "")),
-                        "plans_count": str(result.get("plans_count", 0)),
-                    },
-                ))
-            except Exception as notify_exc:
-                logger.warning("blueprint.notify_success_failed", error=str(notify_exc))
+            if _claim_terminal_notification_slot(str(resolved_trading_date), "success"):
+                try:
+                    notify_sync(NotificationEvent(
+                        event_type=EventType.PIPELINE_FINISHED,
+                        title="✅ Daily Pipeline Completed",
+                        message=f"Blueprint generated for {resolved_trading_date}. "
+                                f"{result.get('plans_count', 0)} symbol plans, "
+                                f"provider: {result.get('provider', 'unknown')}.",
+                        severity=Severity.INFO,
+                        payload={
+                            "trading_date": str(resolved_trading_date),
+                            "blueprint_id": str(result.get("blueprint_id", "")),
+                            "plans_count": str(result.get("plans_count", 0)),
+                        },
+                    ))
+                except Exception as notify_exc:
+                    logger.warning("blueprint.notify_success_failed", error=str(notify_exc))
+            else:
+                logger.info(
+                    "blueprint.notify_success_skipped_dedup",
+                    trading_date=str(resolved_trading_date),
+                )
 
 
 async def _generate_blueprint_async(trading_date_str: str | None = None) -> dict:

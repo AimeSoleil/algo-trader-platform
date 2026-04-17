@@ -55,6 +55,7 @@ class CopilotAgentProvider:
         self._timeout = settings.analysis_service.llm.copilot.request_timeout_seconds
         self._client = None
         self._bound_loop_id: int | None = None
+        self._client_lock = asyncio.Lock()
         self._on_permission_request = None
 
     @property
@@ -63,35 +64,37 @@ class CopilotAgentProvider:
 
     async def _get_client(self):
         """Lazy-init the CopilotClient; rebuild when the event loop changes."""
-        current_loop_id = id(asyncio.get_running_loop())
+        async with self._client_lock:
+            current_loop_id = id(asyncio.get_running_loop())
 
-        if self._client is not None and self._bound_loop_id != current_loop_id:
-            logger.info("copilot_agent.loop_changed, rebuilding client")
-            try:
-                await self._client.stop()
-            except Exception:
-                pass
-            self._client = None
+            if self._client is not None and self._bound_loop_id != current_loop_id:
+                logger.info("copilot_agent.loop_changed, rebuilding client")
+                try:
+                    await self._client.stop()
+                except Exception:
+                    pass
+                self._client = None
+                self._bound_loop_id = None
 
-        if self._client is None:
-            from copilot import CopilotClient, PermissionHandler
+            if self._client is None:
+                from copilot import CopilotClient, PermissionHandler
 
-            settings = get_settings()
-            config = {
-                "cli_path": _resolve_cli_path(settings.analysis_service.llm.copilot.cli_path),
-                "auto_start": True,
-            }
-            if settings.analysis_service.llm.copilot.github_token:
-                config["github_token"] = settings.analysis_service.llm.copilot.github_token
-            else:
-                config["use_logged_in_user"] = True
+                settings = get_settings()
+                config = {
+                    "cli_path": _resolve_cli_path(settings.analysis_service.llm.copilot.cli_path),
+                    "auto_start": True,
+                }
+                if settings.analysis_service.llm.copilot.github_token:
+                    config["github_token"] = settings.analysis_service.llm.copilot.github_token
+                else:
+                    config["use_logged_in_user"] = True
 
-            self._client = CopilotClient(config)
-            self._on_permission_request = PermissionHandler.approve_all
-            await self._client.start()
-            self._bound_loop_id = current_loop_id
-            logger.info("copilot_agent.client_started")
-        return self._client
+                self._client = CopilotClient(config)
+                self._on_permission_request = PermissionHandler.approve_all
+                self._bound_loop_id = current_loop_id
+                await self._client.start()
+                logger.info("copilot_agent.client_started")
+            return self._client
 
     async def generate(
         self,

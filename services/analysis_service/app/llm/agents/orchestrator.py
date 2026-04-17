@@ -363,7 +363,21 @@ class AgentOrchestrator:
         ]
 
         # ── Step 1: Run 6 specialist agents in parallel ──
-        agent_outputs = await self._run_specialists(serialized, provider=provider, usage_tracker=usage_tracker)
+        logger.info(
+            "orchestrator.phase_started",
+            phase="specialists",
+            agents=6,
+            symbols=len(signal_features),
+            is_chunk=is_chunk,
+        )
+        specialists_t0 = perf_counter()
+        agent_outputs = await self._run_specialists(serialized_signals, provider=provider, usage_tracker=usage_tracker)
+        logger.info(
+            "orchestrator.phase_completed",
+            phase="specialists",
+            agents_succeeded=len(agent_outputs),
+            elapsed_s=round(perf_counter() - specialists_t0, 1),
+        )
 
         # Compact copy for synthesizer/critic prompts (strip reasoning, trim benchmarks)
         trade_sym_set = set(s.upper() for s in trade_symbols) if trade_symbols else set()
@@ -398,6 +412,13 @@ class AgentOrchestrator:
         synth_model = agent_models_cfg.synthesizer or None
         critic_model = agent_models_cfg.critic or None
 
+        logger.info(
+            "orchestrator.phase_started",
+            phase="synthesizer",
+            is_chunk=is_chunk,
+            has_critic_feedback=False,
+        )
+        synth_t0 = perf_counter()
         blueprint = await self._synthesizer.synthesize(
             agent_outputs=compact_outputs,
             signals_summary=signals_summary,
@@ -411,15 +432,24 @@ class AgentOrchestrator:
         )
 
         logger.info(
-            "orchestrator.synthesis_done",
+            "orchestrator.phase_completed",
+            phase="synthesizer",
             plans=len(blueprint.symbol_plans),
             is_chunk=is_chunk,
+            elapsed_s=round(perf_counter() - synth_t0, 1),
         )
 
         # ── Step 3: Critic review loop ──
         max_revisions = get_settings().analysis_service.llm.max_critic_revisions
         critic_history: list[dict] = []
         for revision in range(max_revisions):
+            logger.info(
+                "orchestrator.phase_started",
+                phase="critic",
+                revision=revision,
+                max_revisions=max_revisions,
+            )
+            critic_t0 = perf_counter()
             verdict = await self._critic.review(
                 blueprint_json=blueprint.model_dump(mode="json"),
                 agent_outputs=compact_outputs,
@@ -437,10 +467,12 @@ class AgentOrchestrator:
             })
 
             logger.info(
-                "orchestrator.critic_verdict",
+                "orchestrator.phase_completed",
+                phase="critic",
                 revision=revision,
                 verdict=verdict.verdict,
                 issues=len(verdict.issues),
+                elapsed_s=round(perf_counter() - critic_t0, 1),
             )
 
             if verdict.verdict == "pass":
@@ -448,11 +480,12 @@ class AgentOrchestrator:
 
             # Revision needed — feed critic feedback back to synthesizer
             logger.info(
-                "orchestrator.revision_requested",
+                "orchestrator.phase_started",
+                phase="synthesizer_revision",
                 revision=revision + 1,
                 error_count=sum(1 for i in verdict.issues if i.severity == "error"),
             )
-
+            rev_t0 = perf_counter()
             blueprint = await self._synthesizer.synthesize(
                 agent_outputs=compact_outputs,
                 signals_summary=signals_summary,
@@ -468,6 +501,13 @@ class AgentOrchestrator:
                 usage_tracker=usage_tracker,
                 trade_symbols=trade_symbols,
                 model=synth_model,
+            )
+            logger.info(
+                "orchestrator.phase_completed",
+                phase="synthesizer_revision",
+                revision=revision + 1,
+                plans=len(blueprint.symbol_plans),
+                elapsed_s=round(perf_counter() - rev_t0, 1),
             )
 
         # ── Attach reasoning context for auditability ──
