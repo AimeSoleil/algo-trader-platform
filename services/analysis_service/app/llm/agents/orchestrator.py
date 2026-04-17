@@ -371,7 +371,7 @@ class AgentOrchestrator:
             is_chunk=is_chunk,
         )
         specialists_t0 = perf_counter()
-        agent_outputs = await self._run_specialists(serialized_signals, provider=provider, usage_tracker=usage_tracker)
+        agent_outputs = await self._run_specialists(serialized, provider=provider, usage_tracker=usage_tracker)
         logger.info(
             "orchestrator.phase_completed",
             phase="specialists",
