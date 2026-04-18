@@ -1,10 +1,9 @@
 """Pipeline coordination — dispatch downstream stages after post-market capture."""
 from __future__ import annotations
 
-import asyncio
-
 from celery import chain as celery_chain, chord, group
 
+from shared.async_bridge import run_async
 from shared.celery_app import celery_app
 from shared.config import get_settings
 from shared.pipeline import chunk_symbols
@@ -61,6 +60,36 @@ def stage_barrier(results, stage_name: str, trading_date: str) -> dict:
                 "symbol_errors": str(errors),
             },
         ))
+
+    # If this is the terminal step, mark the pipeline as done
+    settings = get_settings()
+    stop_after = settings.data_service.worker.pipeline.stop_after
+    if stage_name == stop_after:
+        run_async(_set_done_flag(trading_date))
+        last_step = _DOWNSTREAM_STEP_NAMES[-1]
+        if stop_after != last_step:
+            remaining = _DOWNSTREAM_STEP_NAMES[
+                _DOWNSTREAM_STEP_NAMES.index(stop_after) + 1 :
+            ]
+            from shared.notifier.helpers import notify_sync as _notify
+            from shared.notifier.base import (
+                NotificationEvent, EventType, Severity,
+            )
+            _notify(NotificationEvent(
+                event_type=EventType.PIPELINE_FINISHED,
+                title="✅ Pipeline Completed (Early Stop)",
+                message=(
+                    f"Pipeline stopped after '{stop_after}' for {trading_date}. "
+                    f"Skipped: {', '.join(remaining)}."
+                ),
+                severity=Severity.WARNING,
+                payload={
+                    "trading_date": trading_date,
+                    "stop_after": stop_after,
+                    "skipped_steps": ", ".join(remaining),
+                },
+            ))
+
     return {"stage": stage_name, "trading_date": trading_date}
 
 
@@ -121,13 +150,12 @@ def dispatch_downstream(trading_date: str) -> dict:
         payload={"trading_date": trading_date},
     ))
 
-    # Set done flag for timeout check
-    asyncio.run(_set_done_flag(trading_date))
-
     settings = get_settings()
     stop_after = settings.data_service.worker.pipeline.stop_after
 
     if stop_after not in _DOWNSTREAM_STEP_NAMES:
+        # No downstream steps to run — set done flag immediately
+        run_async(_set_done_flag(trading_date))
         logger.info(
             "coordination.no_downstream",
             trading_date=trading_date,
@@ -177,7 +205,7 @@ def coordination_timeout_check(trading_date: str) -> dict:
 
     If pipeline done flag is not set, downstream likely never ran.
     """
-    done = asyncio.run(_check_done_flag(trading_date))
+    done = run_async(_check_done_flag(trading_date))
 
     if not done:
         logger.warning(
