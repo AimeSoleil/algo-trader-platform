@@ -55,7 +55,8 @@ class CopilotAgentProvider:
         self._timeout = settings.analysis_service.llm.copilot.request_timeout_seconds
         self._client = None
         self._bound_loop_id: int | None = None
-        self._client_lock = asyncio.Lock()
+        self._client_lock: asyncio.Lock | None = None
+        self._lock_loop_id: int | None = None
         self._on_permission_request = None
 
     @property
@@ -64,6 +65,13 @@ class CopilotAgentProvider:
 
     async def _get_client(self):
         """Lazy-init the CopilotClient; rebuild when the event loop changes."""
+        current_loop_id = id(asyncio.get_running_loop())
+
+        # Recreate lock if bound to a stale event loop
+        if self._client_lock is None or self._lock_loop_id != current_loop_id:
+            self._client_lock = asyncio.Lock()
+            self._lock_loop_id = current_loop_id
+
         async with self._client_lock:
             current_loop_id = id(asyncio.get_running_loop())
 
