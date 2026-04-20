@@ -1,13 +1,13 @@
-"""Blueprint rule checker — deterministic validation against reference rules.
+"""Blueprint rule checker — deterministic validation against agent prompt hard constraints.
 
-Validates LLM-generated blueprints against hard constraints from reference
-documents (risk-management, option-chain-structure, etc.) without using LLM.
-Can complement the CriticAgent or run standalone for backtesting.
+Validates LLM-generated blueprints against hard constraints embedded in the
+specialist agent prompts (the single source of truth).  Can complement the
+CriticAgent or run standalone for backtesting.
 
 Usage::
 
     from services.analysis_service.app.evaluation.rule_checker import check_blueprint
-    issues = check_blueprint(blueprint_dict, signal_features_map)
+    issues = check_blueprint(blueprint_dict, signal_features_map, agent_outputs=ao)
 """
 from __future__ import annotations
 
@@ -46,10 +46,30 @@ class CheckResult:
 # ---------------------------------------------------------------------------
 
 
+def _agent_sym(
+    agent_outputs: dict[str, Any],
+    agent_name: str,
+    symbol: str,
+) -> dict[str, Any] | None:
+    """Find per-symbol data for *symbol* in *agent_name*'s output."""
+    agent = agent_outputs.get(agent_name)
+    if not isinstance(agent, dict):
+        return None
+    symbols_list = agent.get("symbols")
+    if not isinstance(symbols_list, list):
+        return None
+    sym_upper = symbol.upper()
+    return next(
+        (s for s in symbols_list if isinstance(s, dict) and s.get("symbol", "").upper() == sym_upper),
+        None,
+    )
+
+
 def check_blueprint(
     blueprint: dict[str, Any],
     signal_features: dict[str, dict[str, Any]] | None = None,
     *,
+    agent_outputs: dict[str, dict[str, Any]] | None = None,
     account_size: float = 100_000.0,
     context: dict[str, Any] | None = None,
 ) -> CheckResult:
@@ -62,6 +82,12 @@ def check_blueprint(
     signal_features:
         Optional mapping of symbol → serialized signal data for
         context-aware checks (e.g. ADX-based counter-trend detection).
+    agent_outputs:
+        Optional dict of specialist agent outputs (as returned by
+        ``AgentOrchestrator._run_specialists``).  Enables additional
+        checks that validate blueprint plans against agent hard
+        constraints (chain hard-block, master override, cascading
+        modifiers, etc.).
     account_size:
         Account size in dollars used to compute daily-loss caps.
         Default 100_000 preserves legacy $2000/$3000 behaviour.
@@ -75,6 +101,7 @@ def check_blueprint(
     """
     result = CheckResult()
     signal_features = signal_features or {}
+    agent_outputs = agent_outputs or {}
     context = context or {}
 
     soft_limit = account_size * 0.02
@@ -90,13 +117,20 @@ def check_blueprint(
         _check_greeks_direction(plan, result)
         _check_dte_bounds(plan, result)
         _check_expiry_consistency(plan, result)
+        sym = plan.get("underlying", "").upper()
         if signal_features:
-            sym = plan.get("underlying", "").upper()
             sig = signal_features.get(sym, {})
             _check_counter_trend(plan, sig, result)
             _check_liquidity(plan, sig, result)
             _check_confidence_quality_gate(plan, sig, result)
             _check_cross_asset_quality_guards(plan, sig, result)
+        if agent_outputs:
+            _check_chain_hard_block(plan, agent_outputs, result)
+            _check_cascading_modifiers(plan, agent_outputs, result)
+            _check_master_override(plan, agent_outputs, result)
+            _check_spread_effective_rr(plan, agent_outputs, result)
+            _check_event_risk_consensus(plan, agent_outputs, result)
+            _check_confirming_indicators(plan, agent_outputs, result)
 
     result.passed = result.error_count == 0
     return result
@@ -826,18 +860,21 @@ def _check_cross_asset_quality_guards(
 
 
 def _check_cascading_modifiers(
-    plan: dict, signal: dict, result: CheckResult,
+    plan: dict, agent_outputs: dict[str, Any], result: CheckResult,
 ) -> None:
-    """Warn/error if stacked position-size modifiers reduce position (A7: nuanced severity)."""
-    sym = plan.get("underlying", "UNKNOWN")
-    strategy = plan.get("strategy_type", "")
+    """Validate stacked position-size modifiers from Flow × CrossAsset agents.
 
-    flow_mod = signal.get("flow", {}).get("position_size_modifier") if isinstance(signal.get("flow"), dict) else None
-    cross_mod = (
-        signal.get("cross_asset", {}).get("position_size_modifier")
-        if isinstance(signal.get("cross_asset"), dict)
-        else None
-    )
+    Agent prompt source:
+    - CrossAsset SM1: floor 0.3×; if combined < 0.3× → set to 0.0 (skip trade)
+    - Synthesizer HE2: (flow.position_size_modifier × cross_asset.effective_size_modifier) < 0.3 → SKIP
+    """
+    sym = plan.get("underlying", "UNKNOWN")
+
+    flow_data = _agent_sym(agent_outputs, "flow", sym)
+    cross_data = _agent_sym(agent_outputs, "cross_asset", sym)
+
+    flow_mod = flow_data.get("position_size_modifier") if flow_data else None
+    cross_mod = cross_data.get("effective_size_modifier") if cross_data else None
 
     if flow_mod is None or cross_mod is None:
         return
@@ -853,36 +890,265 @@ def _check_cascading_modifiers(
         return
 
     if product < 0.1:
-        # Position effectively zero — skip trade
         result.issues.append(RuleIssue(
             severity="error", category="risk_breach", symbol=sym,
             rule="cascading_size_modifiers",
             description=(
-                f"Stacked modifiers (flow={flow_val}, cross_asset={cross_val}, "
+                f"Stacked modifiers (flow={flow_val:.2f}, cross_asset={cross_val:.2f}, "
                 f"product={product:.2f}) reduce position to near-zero — skip trade"
             ),
         ))
     else:
-        # Product 0.1–0.3: determine intent
-        both_reducing = flow_val < 0.5 and cross_val < 0.5
-        conflict = (flow_val > 0.75 and cross_val < 0.5) or (cross_val > 0.75 and flow_val < 0.5)
-        is_hedge = "hedge" in strategy
-
-        if is_hedge:
-            severity = "info"
-        elif both_reducing:
-            severity = "info"
-        elif conflict:
-            severity = "warning"
-        else:
-            severity = "warning"
-
         result.issues.append(RuleIssue(
-            severity=severity, category="risk_breach", symbol=sym,
+            severity="error", category="risk_breach", symbol=sym,
             rule="cascading_size_modifiers",
             description=(
-                f"Stacked modifiers (flow={flow_val}, cross_asset={cross_val}, "
-                f"product={product:.2f}) reduce position to near-zero — "
-                f"{'intentional reduction' if severity == 'info' else 'unclear intent'}"
+                f"Stacked modifiers (flow={flow_val:.2f}, cross_asset={cross_val:.2f}, "
+                f"product={product:.2f}) below 0.30 floor — skip trade"
             ),
         ))
+
+
+# ---------------------------------------------------------------------------
+# Agent-output checks: Chain hard block (Chain H1, Synthesizer HE1)
+# ---------------------------------------------------------------------------
+
+
+def _check_chain_hard_block(
+    plan: dict, agent_outputs: dict[str, Any], result: CheckResult,
+) -> None:
+    """Block symbol if Chain agent flagged hard_block or liquidity_tier=L5.
+
+    Agent prompt source:
+    - Chain H1: bid-ask > 0.20 → hard_block=true, confidence ≤ 0.2, NO strikes
+    - Synthesizer HE1: Chain hard_block=true OR liquidity_tier="L5" → EXCLUDE symbol
+    """
+    sym = plan.get("underlying", "UNKNOWN")
+    chain_data = _agent_sym(agent_outputs, "chain", sym)
+    if chain_data is None:
+        return
+
+    hard_block = chain_data.get("hard_block", False)
+    liq_tier = chain_data.get("liquidity_tier", "")
+
+    if hard_block or liq_tier == "L5":
+        reason = "hard_block=true" if hard_block else f"liquidity_tier={liq_tier}"
+        result.issues.append(RuleIssue(
+            severity="error",
+            category="liquidity",
+            symbol=sym,
+            rule="chain_hard_block",
+            description=(
+                f"Chain agent flagged {reason} — symbol must be excluded from plans"
+            ),
+        ))
+
+
+# ---------------------------------------------------------------------------
+# Agent-output checks: Master override (CrossAsset SM2, Synthesizer CW3)
+# ---------------------------------------------------------------------------
+
+
+def _check_master_override(
+    plan: dict, agent_outputs: dict[str, Any], result: CheckResult,
+) -> None:
+    """Enforce CrossAsset master_override sizing constraint.
+
+    Agent prompt source:
+    - CrossAsset SM2: effective_size_modifier is MASTER OVERRIDE
+    - Synthesizer CW3: master_override=true → max_position_size ≤ effective_size_modifier
+    - Critic: master_override + effective_size_modifier < 0.3 → symbol should be skipped
+    """
+    sym = plan.get("underlying", "UNKNOWN")
+    cross_data = _agent_sym(agent_outputs, "cross_asset", sym)
+    if cross_data is None:
+        return
+
+    master = cross_data.get("master_override", False)
+    if not master:
+        return
+
+    eff_mod = cross_data.get("effective_size_modifier")
+    if eff_mod is None:
+        return
+
+    try:
+        eff_val = float(eff_mod)
+    except (TypeError, ValueError):
+        return
+
+    if eff_val < 0.3:
+        result.issues.append(RuleIssue(
+            severity="error",
+            category="risk_breach",
+            symbol=sym,
+            rule="master_override_skip",
+            description=(
+                f"CrossAsset master_override=true with effective_size_modifier="
+                f"{eff_val:.2f} < 0.30 — symbol should be skipped"
+            ),
+        ))
+        return
+
+    max_pos = plan.get("max_position_size")
+    if isinstance(max_pos, (int, float)) and max_pos > eff_val:
+        result.issues.append(RuleIssue(
+            severity="error",
+            category="risk_breach",
+            symbol=sym,
+            rule="master_override_exceeded",
+            description=(
+                f"CrossAsset master_override=true but max_position_size="
+                f"{max_pos:.2f} exceeds effective_size_modifier={eff_val:.2f}"
+            ),
+        ))
+
+
+# ---------------------------------------------------------------------------
+# Agent-output checks: Spread effective R:R (Spread H1/H2, Synthesizer HE3)
+# ---------------------------------------------------------------------------
+
+
+def _check_spread_effective_rr(
+    plan: dict, agent_outputs: dict[str, Any], result: CheckResult,
+) -> None:
+    """Validate cost-adjusted R:R from Spread agent.
+
+    Agent prompt source:
+    - Spread H1: effective_rr < 1.0 after costs → REJECT spread, confidence ≤ 0.2
+    - Spread H2: effective_rr cannot be estimated → cap confidence ≤ 0.5
+    - Synthesizer HE3: effective_rr < 1.0 → exclude that spread setup
+    """
+    sym = plan.get("underlying", "UNKNOWN")
+    spread_data = _agent_sym(agent_outputs, "spread", sym)
+    if spread_data is None:
+        return
+
+    strategy = plan.get("strategy_type", "")
+    # Only check for spread strategies
+    spread_strategies = {
+        "vertical_spread", "iron_condor", "iron_butterfly",
+        "butterfly", "calendar_spread", "diagonal_spread",
+    }
+    if strategy not in spread_strategies:
+        return
+
+    eff_rr = spread_data.get("effective_rr")
+    plan_conf = plan.get("confidence", 0)
+
+    if eff_rr is None:
+        if plan_conf > 0.5:
+            result.issues.append(RuleIssue(
+                severity="warning",
+                category="risk_breach",
+                symbol=sym,
+                rule="spread_effective_rr_unknown",
+                description=(
+                    f"Spread effective_rr unavailable but plan confidence="
+                    f"{plan_conf:.2f} > 0.50 cap"
+                ),
+            ))
+        return
+
+    try:
+        rr_val = float(eff_rr)
+    except (TypeError, ValueError):
+        return
+
+    if rr_val < 1.0:
+        result.issues.append(RuleIssue(
+            severity="error",
+            category="risk_breach",
+            symbol=sym,
+            rule="spread_effective_rr_reject",
+            description=(
+                f"Spread effective_rr={rr_val:.2f} < 1.0 after costs — "
+                f"spread setup must be rejected"
+            ),
+        ))
+
+
+# ---------------------------------------------------------------------------
+# Agent-output checks: Event risk consensus (Synthesizer ER1/ER2)
+# ---------------------------------------------------------------------------
+
+_EVENT_RISK_AGENTS = ("volatility", "flow", "chain", "spread", "cross_asset", "trend")
+
+
+def _check_event_risk_consensus(
+    plan: dict, agent_outputs: dict[str, Any], result: CheckResult,
+) -> None:
+    """Warn when multiple agents flag event risk but plan doesn't mitigate.
+
+    Agent prompt source:
+    - Synthesizer ER1: ≥3 agents flag event_risk_present → tighten stops, reduce size
+    - Synthesizer ER2: ≥2 agents + CrossAsset="event_driven" → cap confidence ≤ 0.5
+    """
+    sym = plan.get("underlying", "UNKNOWN")
+    event_count = 0
+    for agent_name in _EVENT_RISK_AGENTS:
+        sym_data = _agent_sym(agent_outputs, agent_name, sym)
+        if sym_data and sym_data.get("event_risk_present"):
+            event_count += 1
+
+    if event_count < 3:
+        return
+
+    plan_conf = plan.get("confidence", 0)
+    if plan_conf > 0.5:
+        result.issues.append(RuleIssue(
+            severity="warning",
+            category="risk_breach",
+            symbol=sym,
+            rule="event_risk_consensus",
+            description=(
+                f"{event_count} agents flagged event_risk_present but plan "
+                f"confidence={plan_conf:.2f} > 0.50 — should tighten stops or "
+                f"reduce max_position_size"
+            ),
+        ))
+
+
+# ---------------------------------------------------------------------------
+# Agent-output checks: Confirming indicators (Synthesizer CI1)
+# ---------------------------------------------------------------------------
+
+
+def _check_confirming_indicators(
+    plan: dict, agent_outputs: dict[str, Any], result: CheckResult,
+) -> None:
+    """Warn if both Flow and Chain have low confirming indicators but high confidence.
+
+    Agent prompt source:
+    - Synthesizer CI1: both Flow + Chain confirming_indicators_count ≤ 1
+      + confidence > 0.6 → cap directional confidence ≤ 0.5
+    """
+    sym = plan.get("underlying", "UNKNOWN")
+    direction = plan.get("direction", "neutral")
+    if direction == "neutral":
+        return
+
+    flow_data = _agent_sym(agent_outputs, "flow", sym)
+    chain_data = _agent_sym(agent_outputs, "chain", sym)
+    if flow_data is None or chain_data is None:
+        return
+
+    flow_ci = flow_data.get("confirming_indicators_count")
+    chain_ci = chain_data.get("confirming_indicators_count")
+    if not isinstance(flow_ci, int) or not isinstance(chain_ci, int):
+        return
+
+    if flow_ci <= 1 and chain_ci <= 1:
+        plan_conf = plan.get("confidence", 0)
+        if plan_conf > 0.6:
+            result.issues.append(RuleIssue(
+                severity="warning",
+                category="risk_breach",
+                symbol=sym,
+                rule="low_confirming_indicators",
+                description=(
+                    f"Flow confirming_indicators={flow_ci}, Chain confirming_indicators="
+                    f"{chain_ci} (both ≤1) but plan confidence={plan_conf:.2f} > 0.60 — "
+                    f"single-indicator risk"
+                ),
+            ))

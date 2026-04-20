@@ -759,16 +759,15 @@ class AgentOrchestrator:
         self,
         agent_outputs: dict[str, Any],
     ) -> str:
-        """Classify current market condition from cross-asset agent output.
+        """Classify current market condition from cross-asset and trend agent outputs.
 
         Returns one of: trending_calm, trending_volatile, range_calm,
-        range_volatile, crisis, recovery.
+        range_volatile, crisis.
         """
         cross = agent_outputs.get("cross_asset", {})
         if not isinstance(cross, dict):
             return "unknown"
 
-        vix_summary = cross.get("vix_summary", "")
         market_regime = cross.get("market_regime", "neutral")
 
         # Extract VIX environment from symbols (use SPY or first available)
@@ -780,10 +779,9 @@ class AgentOrchestrator:
 
         # Extract trend info from trend agent
         trend = agent_outputs.get("trend", {})
-        trend_summary = trend.get("market_trend_summary", "")
 
         # Simple classification logic
-        is_crisis = vix_env in ("panic",)
+        is_crisis = vix_env in ("panic",) or market_regime == "event_driven"
         is_elevated_vol = vix_env in ("elevated", "panic")
         is_calm = vix_env in ("normal", "complacent")
 

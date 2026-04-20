@@ -147,43 +147,51 @@ async def _run_blueprint_pipeline(
         sf.symbol.upper(): sf.model_dump(mode="json")
         for sf in signal_features
     }
-    check = check_blueprint(blueprint.model_dump(mode="json"), signal_map)
+    ao = (blueprint.reasoning_context or {}).get("agent_outputs")
+    check = check_blueprint(
+        blueprint.model_dump(mode="json"),
+        signal_map,
+        agent_outputs=ao,
+    )
     errors = [i for i in check.issues if i.severity == "error"]
     warnings = [i for i in check.issues if i.severity == "warning"]
+    all_issues = [
+        {
+            "severity": i.severity,
+            "rule": i.rule,
+            "symbol": i.symbol,
+            "category": i.category,
+            "description": i.description,
+        }
+        for i in check.issues
+    ]
     summary = {
         "passed": check.passed,
         "error_count": len(errors),
         "warning_count": len(warnings),
-        "errors": [
-            {
-                "rule": i.rule,
-                "symbol": i.symbol,
-                "category": i.category,
-                "description": i.description,
-            }
-            for i in errors[:10]
-        ],
-        "warnings": [
-            {
-                "rule": i.rule,
-                "symbol": i.symbol,
-                "category": i.category,
-                "description": i.description,
-            }
-            for i in warnings[:10]
-        ],
+        "issues": all_issues,
     }
     ctx = dict(blueprint.reasoning_context or {})
     ctx["deterministic_validation"] = summary
     blueprint = blueprint.model_copy(update={"reasoning_context": ctx})
 
-    logger.info(
-        "blueprint.pipeline_deterministic_validation",
-        trading_date=str(td),
-        passed=check.passed,
-        error_count=len(errors),
-        warning_count=len(warnings),
-    )
+    if errors or warnings:
+        logger.warning(
+            "blueprint.pipeline_deterministic_validation",
+            trading_date=str(td),
+            passed=check.passed,
+            error_count=len(errors),
+            warning_count=len(warnings),
+            issues=all_issues,
+        )
+    else:
+        logger.info(
+            "blueprint.pipeline_deterministic_validation",
+            trading_date=str(td),
+            passed=check.passed,
+            error_count=0,
+            warning_count=0,
+        )
     return blueprint
 
 
