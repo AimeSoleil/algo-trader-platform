@@ -177,6 +177,13 @@ class CopilotAgentProvider:
             timeout=self._timeout,
         )
 
+        logger.debug(
+            "copilot_agent.response_received",
+            model=effective_model,
+            typeof_raw_response=type(result).__name__,
+            raw_response=str(result)
+        )
+
         response_text = (
             result.content if hasattr(result, "content") else str(result)
         )
