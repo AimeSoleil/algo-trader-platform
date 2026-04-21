@@ -14,6 +14,7 @@ from __future__ import annotations
 import asyncio
 import shutil
 from pathlib import Path
+from typing import Any
 
 from shared.config import get_settings
 from shared.utils import get_logger
@@ -32,6 +33,29 @@ _REASONING_EFFORT_SUPPORTED_PREFIXES: tuple[str, ...] = (
     "o3",
     "o4",
 )
+
+
+def _first_non_empty_text(*values: Any) -> str:
+    """Return the first non-empty string from candidate values."""
+    for value in values:
+        if isinstance(value, str) and value:
+            return value
+    return ""
+
+
+def _extract_text_from_event(event: Any) -> str:
+    """Best-effort text extraction from Copilot SDK event/result objects."""
+    data = getattr(event, "data", None)
+    return _first_non_empty_text(
+        getattr(event, "content", None),
+        getattr(data, "content", None),
+        getattr(data, "delta_content", None),
+        getattr(data, "transformed_content", None),
+        getattr(data, "partial_output", None),
+        getattr(data, "output", None),
+        getattr(data, "result", None),
+        getattr(data, "message", None),
+    )
 
 def _resolve_cli_path(configured_cli: str) -> str:
     """Resolve configured Copilot CLI to an executable path when possible."""
@@ -162,8 +186,9 @@ class CopilotAgentProvider:
         from copilot.generated.session_events import SessionEventType
 
         usage_data: dict = {"input_tokens": 0, "output_tokens": 0, "model": effective_model}
+        delta_chunks: list[str] = []
 
-        def _on_usage(event) -> None:
+        def _on_event(event) -> None:
             if event.type == SessionEventType.ASSISTANT_USAGE:
                 d = event.data
                 usage_data["input_tokens"] = int(d.input_tokens or 0)
@@ -171,7 +196,13 @@ class CopilotAgentProvider:
                 if d.model:
                     usage_data["model"] = d.model
 
-        session.on(_on_usage)
+            if event.type == SessionEventType.ASSISTANT_MESSAGE:
+                data = getattr(event, "data", None)
+                delta_text = getattr(data, "delta_content", None)
+                if isinstance(delta_text, str) and delta_text:
+                    delta_chunks.append(delta_text)
+
+        session.on(_on_event)
 
         result = await session.send_and_wait(
             {"prompt": full_prompt},
@@ -186,9 +217,11 @@ class CopilotAgentProvider:
             raw_response=str(result)
         )
 
-        response_text = (
-            result.content if hasattr(result, "content") else str(result)
-        )
+        response_text = _extract_text_from_event(result)
+        if not response_text and delta_chunks:
+            response_text = "".join(delta_chunks)
+        if not response_text:
+            response_text = str(result)
 
         input_tok = usage_data["input_tokens"]
         output_tok = usage_data["output_tokens"]
