@@ -264,8 +264,11 @@ class AnalysisAgent(ABC):
         backoff_base = settings.analysis_service.llm.backoff_base_seconds
         backoff_max = settings.analysis_service.llm.backoff_max_seconds
 
+        # max_retries=0 means "one attempt, no retries"; ≥1 means up to N+1 total attempts.
+        max_attempts = max_retries + 1
+
         last_exc: Exception | None = None
-        for attempt in range(max_retries):
+        for attempt in range(max_attempts):
             t0 = perf_counter()
             status = "error"
             try:
@@ -368,7 +371,7 @@ class AnalysisAgent(ABC):
                     attempt=attempt + 1,
                     error=str(e),
                 )
-                if attempt < max_retries - 1:
+                if attempt < max_attempts - 1:
                     delay = min(
                         backoff_base * (2 ** attempt) + random.uniform(0, 1),
                         backoff_max,
@@ -385,7 +388,7 @@ class AnalysisAgent(ABC):
                     "APIConnectionError", "InternalServerError",
                 ) or (hasattr(e, "status_code") and getattr(e, "status_code", 0) >= 500)
 
-                if retryable and attempt < max_retries - 1:
+                if retryable and attempt < max_attempts - 1:
                     delay = min(
                         backoff_base * (2 ** attempt) + random.uniform(0, 1),
                         backoff_max,
@@ -418,7 +421,7 @@ class AnalysisAgent(ABC):
                     provider=provider.name, agent=self.name, status=status,
                 ).observe(elapsed)
 
-        raise last_exc or RuntimeError(f"Agent {self.name} failed after {max_retries} retries")
+        raise last_exc or RuntimeError(f"Agent {self.name} failed after {max_attempts} attempt(s)")
 
 
     def _default_provider(self) -> AgentLLMProvider:

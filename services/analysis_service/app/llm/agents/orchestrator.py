@@ -988,10 +988,13 @@ class AgentOrchestrator:
                 )
                 return name, result.model_dump(mode="json")
             except Exception as e:
+                import traceback as _tb
                 logger.warning(
                     f"orchestrator.agent_failed",
                     agent=name,
+                    error_type=type(e).__name__,
                     error=str(e),
+                    traceback=_tb.format_exc(limit=5),
                 )
                 return name, None
 
