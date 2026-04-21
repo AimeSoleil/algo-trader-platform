@@ -295,6 +295,12 @@ class AnalysisAgent(ABC):
                         attempt=attempt + 1,
                         raw_tail=result.content[-200:] if result.content else "",
                     )
+                    logger.debug(
+                        f"agent.{self.name}.output_truncated_raw",
+                        provider=provider.name,
+                        attempt=attempt + 1,
+                        raw_content=result.content,
+                    )
                     raise ValueError(
                         f"agent.{self.name} output likely truncated: "
                         f"output_tokens={result.output_tokens} >= "
