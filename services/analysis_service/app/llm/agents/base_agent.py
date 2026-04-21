@@ -269,13 +269,35 @@ class AnalysisAgent(ABC):
             t0 = perf_counter()
             status = "error"
             try:
+                _max_tokens = 16384
                 result = await provider.generate(
                     instructions=self.system_prompt,
                     user_prompt=user_prompt,
                     temperature=settings.analysis_service.llm.openai.temperature,
-                    max_tokens=16384,
+                    max_tokens=_max_tokens,
                     model=model,
                 )
+
+                # Detect output truncation: if the model hit the token ceiling,
+                # the JSON is almost certainly incomplete.  Raise immediately so
+                # we retry rather than trying to parse garbage.
+                if result.output_tokens >= _max_tokens * 0.97:
+                    logger.error(
+                        f"agent.{self.name}.output_truncated",
+                        provider=provider.name,
+                        model=result.model,
+                        output_tokens=result.output_tokens,
+                        max_tokens=_max_tokens,
+                        input_symbols=len(filtered),
+                        attempt=attempt + 1,
+                        raw_tail=result.content[-200:] if result.content else "",
+                    )
+                    raise ValueError(
+                        f"agent.{self.name} output likely truncated: "
+                        f"output_tokens={result.output_tokens} >= "
+                        f"{_max_tokens * 0.97:.0f} (97% of max_tokens={_max_tokens}). "
+                        f"input_symbols={len(filtered)}"
+                    )
 
                 data = parse_llm_json(result.content)
                 # LLM sometimes returns a bare list instead of
@@ -284,6 +306,25 @@ class AnalysisAgent(ABC):
                 if isinstance(data, list):
                     data = {"symbols": data}
                 parsed = self.output_model.model_validate(data)
+
+                # Guard against silent empty-symbols: if the model returned
+                # no symbols despite receiving input, the parse was probably
+                # corrupted.  Raise so the caller marks this agent as failed.
+                output_symbols = getattr(parsed, "symbols", None)
+                if isinstance(output_symbols, list) and len(output_symbols) == 0 and len(filtered) > 0:
+                    logger.error(
+                        f"agent.{self.name}.empty_symbols",
+                        provider=provider.name,
+                        model=result.model,
+                        output_tokens=result.output_tokens,
+                        input_symbols=len(filtered),
+                        attempt=attempt + 1,
+                        raw_tail=result.content[-200:] if result.content else "",
+                    )
+                    raise ValueError(
+                        f"agent.{self.name} returned 0 symbols for "
+                        f"{len(filtered)} input signals — likely a truncation artifact"
+                    )
 
                 status = "ok"
                 elapsed = perf_counter() - t0

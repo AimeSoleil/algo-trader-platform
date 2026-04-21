@@ -385,17 +385,22 @@ class AgentOrchestrator:
         for agent_name in expected_agents:
             out = agent_outputs.get(agent_name)
             if not isinstance(out, dict):
-                availability[agent_name] = {"has_data": False, "symbols": 0}
+                # agent raised an exception — see orchestrator.agent_failed warnings above
+                availability[agent_name] = {"has_data": False, "symbols": 0, "failed": True}
                 continue
             symbols_list = out.get("symbols", [])
             symbol_count = len(symbols_list) if isinstance(symbols_list, list) else 0
             availability[agent_name] = {
                 "has_data": symbol_count > 0,
                 "symbols": symbol_count,
+                "failed": False,
             }
+        agents_failed = sum(1 for v in availability.values() if v["failed"])
         logger.info(
             "orchestrator.specialist_data_availability",
             is_chunk=is_chunk,
+            input_signals=len(serialized),
+            agents_failed=agents_failed,
             availability=availability,
         )
 
