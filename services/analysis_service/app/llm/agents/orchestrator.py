@@ -378,6 +378,26 @@ class AgentOrchestrator:
             agents_succeeded=len(agent_outputs),
             elapsed_s=round(perf_counter() - specialists_t0, 1),
         )
+        logger.debug("orchestrator.agent_outputs", outputs=agent_outputs)
+
+        expected_agents = ("trend", "volatility", "flow", "chain", "spread", "cross_asset")
+        availability = {}
+        for agent_name in expected_agents:
+            out = agent_outputs.get(agent_name)
+            if not isinstance(out, dict):
+                availability[agent_name] = {"has_data": False, "symbols": 0}
+                continue
+            symbols_list = out.get("symbols", [])
+            symbol_count = len(symbols_list) if isinstance(symbols_list, list) else 0
+            availability[agent_name] = {
+                "has_data": symbol_count > 0,
+                "symbols": symbol_count,
+            }
+        logger.info(
+            "orchestrator.specialist_data_availability",
+            is_chunk=is_chunk,
+            availability=availability,
+        )
 
         # Compact copy for synthesizer/critic prompts (strip reasoning, trim benchmarks)
         trade_sym_set = set(s.upper() for s in trade_symbols) if trade_symbols else set()
@@ -392,7 +412,14 @@ class AgentOrchestrator:
             symbols=len(consensus),
             market_condition=market_condition,
             consensus_snapshot={
-                sym: {"dir": c["consensus_direction"], "agree": c["agreement_count"]}
+                sym: {
+                    "dir": c["consensus_direction"],
+                    "agree": c["agreement_count"],
+                    "event_risk_count": c.get("event_risk_agent_count", 0),
+                    "event_risk_capped": c.get("event_risk_capped", False),
+                    "eff_conf_raw": c.get("effective_confidence_raw", 0.0),
+                    "eff_conf": c.get("effective_confidence", 0.0),
+                }
                 for sym, c in list(consensus.items())[:5]  # log first 5
             },
         )
@@ -568,16 +595,22 @@ class AgentOrchestrator:
         "event_risk_present", "liquidity_status",
         # flow
         "flow_signal", "volume_anomaly", "vwap_bias",
+        "position_size_modifier", "false_breakout_risk",
         "event_risk_present", "liquidity_status",
         "confirming_indicators_count",
         # chain
         "pcr_signal", "gamma_pin_active", "institutional_flow",
+        "hard_block", "liquidity_ok", "front_expiry_dte",
         "liquidity_tier", "event_risk_present", "net_delta_exposure",
         "confirming_indicators_count",
-        # spread — not useful for benchmark context
+        # spread
+        "best_spread_type", "effective_rr", "liquidity_status",
+        "event_risk_present",
         # cross_asset
         "correlation_regime", "risk_off_signal", "vix_environment",
-        "gex_regime", "master_override",
+        "gex_regime", "master_override", "regime_transition",
+        "regime_days", "position_size_modifier", "effective_size_modifier",
+        "hedging_needed",
     })
 
     def _compact_for_synthesis(
@@ -647,8 +680,11 @@ class AgentOrchestrator:
         Returns a dict mapping symbol → {direction_counts, consensus_direction,
         consensus_strength, agreement_count} for injection into the synthesizer.
         """
-        # Collect directional signals per symbol from each agent
-        symbol_directions: dict[str, list[tuple[str, str, float]]] = {}  # sym → [(agent, direction, confidence)]
+        # Collect directional signals per symbol from each agent.
+        # Confidence is adjusted by risk priority rules from prompt logic.
+        symbol_directions: dict[str, list[tuple[str, str, float, float]]] = {}  # sym → [(agent, direction, raw_conf, adjusted_conf)]
+        symbol_event_risk_count: dict[str, int] = {}
+        symbol_cross_regime: dict[str, str] = {}
 
         direction_field_map = {
             "trend": ("trend_direction", "confidence"),
@@ -664,9 +700,11 @@ class AgentOrchestrator:
         }
         pcr_direction_map = {
             "contrarian_bullish": "bullish", "contrarian_bearish": "bearish", "neutral": "neutral",
+            "directional_bullish": "bullish", "directional_bearish": "bearish",
         }
         cross_direction_map = {
-            "fear": "bearish", "bullish_vol": "bullish", "decoupled": "neutral", "normal": "neutral",
+            "fear": "bearish", "bullish_vol": "bullish", "decoupled": "neutral",
+            "normal": "neutral", "event_driven": "neutral",
         }
 
         for agent_name, output in agent_outputs.items():
@@ -690,6 +728,30 @@ class AgentOrchestrator:
 
                 raw_dir = sym_data.get(dir_field, "neutral")
                 conf = sym_data.get(conf_field, 0.5)
+                try:
+                    raw_conf = float(conf)
+                except (TypeError, ValueError):
+                    raw_conf = 0.5
+                adjusted_conf = raw_conf
+
+                if agent_name == "cross_asset":
+                    symbol_cross_regime[sym] = str(raw_dir)
+
+                # Event risk penalty: de-prioritize directional conviction.
+                if bool(sym_data.get("event_risk_present", False)):
+                    symbol_event_risk_count[sym] = symbol_event_risk_count.get(sym, 0) + 1
+                    adjusted_conf *= 0.8
+
+                # Confirming-indicators weighting (Flow/Chain only).
+                if agent_name in {"flow", "chain"}:
+                    ci = sym_data.get("confirming_indicators_count")
+                    if isinstance(ci, int):
+                        if ci <= 1:
+                            adjusted_conf *= 0.8
+                        elif ci >= 3:
+                            adjusted_conf *= 1.1
+
+                adjusted_conf = max(0.0, min(1.0, adjusted_conf))
 
                 # Normalize direction to bullish/bearish/neutral
                 if agent_name == "flow":
@@ -701,16 +763,18 @@ class AgentOrchestrator:
                 else:
                     direction = raw_dir if raw_dir in ("bullish", "bearish", "neutral") else "neutral"
 
-                symbol_directions.setdefault(sym, []).append((agent_name, direction, conf))
+                symbol_directions.setdefault(sym, []).append((agent_name, direction, raw_conf, adjusted_conf))
 
         # Compute confidence-weighted consensus
         consensus: dict[str, dict[str, Any]] = {}
         for sym, directions in symbol_directions.items():
             counts = {"bullish": 0, "bearish": 0, "neutral": 0}
+            raw_weights = {"bullish": 0.0, "bearish": 0.0, "neutral": 0.0}
             weights = {"bullish": 0.0, "bearish": 0.0, "neutral": 0.0}
-            for _, d, c in directions:
+            for _, d, raw_c, adj_c in directions:
                 counts[d] = counts.get(d, 0) + 1
-                weights[d] = weights.get(d, 0.0) + c
+                raw_weights[d] = raw_weights.get(d, 0.0) + raw_c
+                weights[d] = weights.get(d, 0.0) + adj_c
 
             bullish_weight = weights["bullish"]
             bearish_weight = weights["bearish"]
@@ -724,7 +788,7 @@ class AgentOrchestrator:
                 consensus_dir = "neutral"
 
             # Effective confidence = 25th percentile of agreeing agents' confidence
-            agreeing_confs = [c for _, d, c in directions if d == consensus_dir]
+            agreeing_confs = [adj_c for _, d, _, adj_c in directions if d == consensus_dir]
             if agreeing_confs:
                 effective_confidence = round(
                     statistics.quantiles(agreeing_confs, n=4)[0]
@@ -734,6 +798,27 @@ class AgentOrchestrator:
                 )
             else:
                 effective_confidence = 0.0
+
+            agreeing_raw_confs = [raw_c for _, d, raw_c, _ in directions if d == consensus_dir]
+            if agreeing_raw_confs:
+                effective_confidence_raw = round(
+                    statistics.quantiles(agreeing_raw_confs, n=4)[0]
+                    if len(agreeing_raw_confs) >= 2
+                    else agreeing_raw_confs[0],
+                    3,
+                )
+            else:
+                effective_confidence_raw = 0.0
+
+            # Event-risk confidence cap from prompt logic:
+            # - >=3 agents event-risk -> directional confidence cap
+            # - >=2 event-risk + cross-asset event-driven -> same cap
+            event_count = symbol_event_risk_count.get(sym, 0)
+            cross_regime = symbol_cross_regime.get(sym, "normal")
+            event_risk_capped = False
+            if event_count >= 3 or (event_count >= 2 and cross_regime == "event_driven"):
+                effective_confidence = min(effective_confidence, 0.5)
+                event_risk_capped = True
 
             max_dir = max(counts, key=counts.get)
             agreement = counts[max_dir]
@@ -745,11 +830,19 @@ class AgentOrchestrator:
                 "agreement_count": agreement,
                 "total_agents": total,
                 "consensus_strength": round(agreement / max(total, 1), 2),
+                "event_risk_agent_count": event_count,
+                "event_risk_capped": event_risk_capped,
                 "confidence_weight": {
                     "bullish": round(bullish_weight, 3),
                     "bearish": round(bearish_weight, 3),
                     "neutral": round(weights["neutral"], 3),
                 },
+                "confidence_weight_raw": {
+                    "bullish": round(raw_weights["bullish"], 3),
+                    "bearish": round(raw_weights["bearish"], 3),
+                    "neutral": round(raw_weights["neutral"], 3),
+                },
+                "effective_confidence_raw": effective_confidence_raw,
                 "effective_confidence": effective_confidence,
             }
 
@@ -770,12 +863,20 @@ class AgentOrchestrator:
 
         market_regime = cross.get("market_regime", "neutral")
 
-        # Extract VIX environment from symbols (use SPY or first available)
-        vix_env = "normal"
+        # Extract VIX environment from symbols (majority vote, fallback="normal")
+        vix_counts = {
+            "panic": 0,
+            "elevated": 0,
+            "normal": 0,
+            "complacent": 0,
+        }
         for sym_data in cross.get("symbols", []):
             if isinstance(sym_data, dict):
-                vix_env = sym_data.get("vix_environment", "normal")
-                break
+                env = sym_data.get("vix_environment", "normal")
+                if env in vix_counts:
+                    vix_counts[env] += 1
+
+        vix_env = max(vix_counts, key=vix_counts.get) if any(vix_counts.values()) else "normal"
 
         # Extract trend info from trend agent
         trend = agent_outputs.get("trend", {})
@@ -800,6 +901,12 @@ class AgentOrchestrator:
 
         if is_crisis:
             return "crisis"
+        elif market_regime == "transitioning":
+            return "range_volatile" if is_elevated_vol else "range_calm"
+        elif market_regime == "risk_off":
+            return "range_volatile" if is_elevated_vol else "range_calm"
+        elif market_regime == "risk_on" and is_trending and is_calm:
+            return "trending_calm"
         elif is_elevated_vol and is_trending:
             return "trending_volatile"
         elif is_elevated_vol and not is_trending:
