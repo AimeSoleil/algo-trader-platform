@@ -10,6 +10,7 @@ from sqlalchemy import text
 
 from shared.async_bridge import run_async
 from shared.celery_app import celery_app
+from shared.config import get_settings
 from shared.db.session import get_postgres_session
 from shared.models.signal import SignalFeatures
 from shared.utils import get_logger, today_trading
@@ -58,13 +59,23 @@ def manual_analyze(
     try:
         return run_async(_manual_analyze_async(self, clean, trading_date))
     except Exception as exc:
+        configured_retries = get_settings().analysis_service.llm.max_retries
+        current_retry = getattr(self.request, "retries", 0)
+        if configured_retries <= 0:
+            logger.warning(
+                "manual_analyze.failed_no_retry",
+                symbols=clean,
+                error=str(exc),
+                retry=current_retry,
+            )
+            raise
         logger.warning(
             "manual_analyze.retrying",
             symbols=clean,
             error=str(exc),
-            retry=getattr(self.request, "retries", 0),
+            retry=current_retry,
         )
-        raise self.retry(exc=exc, countdown=30)
+        raise self.retry(exc=exc, countdown=30, max_retries=configured_retries)
 
 
 async def _manual_analyze_async(

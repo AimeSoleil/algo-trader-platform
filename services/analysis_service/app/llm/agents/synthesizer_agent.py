@@ -80,9 +80,10 @@ class SynthesizerAgent:
         max_retries = settings.analysis_service.llm.max_retries
         backoff_base = settings.analysis_service.llm.backoff_base_seconds
         backoff_max = settings.analysis_service.llm.backoff_max_seconds
+        max_attempts = max_retries + 1
 
         last_exc: Exception | None = None
-        for attempt in range(max_retries):
+        for attempt in range(max_attempts):
             t0 = perf_counter()
             status = "error"
             try:
@@ -146,7 +147,7 @@ class SynthesizerAgent:
                 last_exc = e
                 llm_retries_total.labels(provider=provider.name, error_type="parse").inc()
                 logger.warning("synthesizer.parse_error", provider=provider.name, attempt=attempt + 1, error=str(e))
-                if attempt < max_retries - 1:
+                if attempt < max_attempts - 1:
                     delay = min(backoff_base * (2 ** attempt) + random.uniform(0, 1), backoff_max)
                     await asyncio.sleep(delay)
                     continue
@@ -160,7 +161,7 @@ class SynthesizerAgent:
                     "APIConnectionError", "InternalServerError",
                 ) or (hasattr(e, "status_code") and getattr(e, "status_code", 0) >= 500)
 
-                if retryable and attempt < max_retries - 1:
+                if retryable and attempt < max_attempts - 1:
                     delay = min(backoff_base * (2 ** attempt) + random.uniform(0, 1), backoff_max)
                     llm_retries_total.labels(provider=provider.name, error_type=error_type).inc()
                     logger.warning("synthesizer.retryable_error", provider=provider.name, attempt=attempt + 1, error=str(e), delay=round(delay, 2))
@@ -174,7 +175,7 @@ class SynthesizerAgent:
                 elapsed = perf_counter() - t0
                 llm_request_duration.labels(provider=provider.name, agent="synthesizer", status=status).observe(elapsed)
 
-        raise last_exc or RuntimeError("Synthesizer failed after retries")
+        raise last_exc or RuntimeError(f"Synthesizer failed after {max_attempts} attempt(s)")
 
     def _build_prompt(
         self,
