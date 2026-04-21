@@ -74,6 +74,7 @@ class OpenAIAgentProvider:
         usage = response.usage
         return LLMResult(
             content=response.output_text,
+            raw_content=response.output_text,
             input_tokens=usage.input_tokens if usage else 0,
             output_tokens=usage.output_tokens if usage else 0,
             total_tokens=usage.total_tokens if usage else 0,

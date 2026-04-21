@@ -186,6 +186,7 @@ class CopilotAgentProvider:
 
         return LLMResult(
             content=extract_json_str(response_text),
+            raw_content=response_text,
             input_tokens=input_tok,
             output_tokens=output_tok,
             total_tokens=input_tok + output_tok,

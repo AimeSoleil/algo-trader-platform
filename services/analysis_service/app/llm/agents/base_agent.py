@@ -62,6 +62,7 @@ class LLMResult:
     """Standardised result envelope from any provider."""
 
     content: str
+    raw_content: str = ""
     input_tokens: int = 0
     output_tokens: int = 0
     total_tokens: int = 0
@@ -285,6 +286,7 @@ class AnalysisAgent(ABC):
                 # the JSON is almost certainly incomplete.  Raise immediately so
                 # we retry rather than trying to parse garbage.
                 if result.output_tokens >= _max_tokens * 0.97:
+                    raw_output = result.raw_content or result.content
                     logger.error(
                         f"agent.{self.name}.output_truncated",
                         provider=provider.name,
@@ -293,13 +295,13 @@ class AnalysisAgent(ABC):
                         max_tokens=_max_tokens,
                         input_symbols=len(filtered),
                         attempt=attempt + 1,
-                        raw_tail=result.content[-200:] if result.content else "",
+                        raw_tail=raw_output[-200:] if raw_output else "",
                     )
                     logger.debug(
                         f"agent.{self.name}.output_truncated_raw",
                         provider=provider.name,
                         attempt=attempt + 1,
-                        raw_content=result.content,
+                        raw_content=raw_output,
                     )
                     raise ValueError(
                         f"agent.{self.name} output likely truncated: "
@@ -321,6 +323,7 @@ class AnalysisAgent(ABC):
                 # corrupted.  Raise so the caller marks this agent as failed.
                 output_symbols = getattr(parsed, "symbols", None)
                 if isinstance(output_symbols, list) and len(output_symbols) == 0 and len(filtered) > 0:
+                    raw_output = result.raw_content or result.content
                     logger.error(
                         f"agent.{self.name}.empty_symbols",
                         provider=provider.name,
@@ -328,7 +331,7 @@ class AnalysisAgent(ABC):
                         output_tokens=result.output_tokens,
                         input_symbols=len(filtered),
                         attempt=attempt + 1,
-                        raw_tail=result.content[-200:] if result.content else "",
+                        raw_tail=raw_output[-200:] if raw_output else "",
                     )
                     raise ValueError(
                         f"agent.{self.name} returned 0 symbols for "
