@@ -189,10 +189,12 @@ def setup_celery_logging(**kwargs) -> None:
     root = logging.getLogger()
     root.setLevel(effective_lib_level)
 
-    # Re-format existing handlers (console) with TZ-aware formatter
+    # Re-format existing handlers (console) with TZ-aware formatter.
+    # Keep handler level NOTSET so filtering is controlled by logger levels
+    # (project logger DEBUG vs lib logger INFO), not by handler thresholds.
     for h in root.handlers:
         h.setFormatter(formatter)
-        h.setLevel(effective_lib_level)
+        h.setLevel(logging.NOTSET)
 
     # Project loggers → project-level (more verbose than libs)
     for prefix in ("shared", "services"):
@@ -202,7 +204,7 @@ def setup_celery_logging(**kwargs) -> None:
     file_handler = _build_file_handler(settings)
     if file_handler:
         file_handler.setFormatter(formatter)
-        file_handler.setLevel(effective_lib_level)
+        file_handler.setLevel(logging.NOTSET)
         root.addHandler(file_handler)
 
     # Also setup structlog for task code that uses get_logger()
