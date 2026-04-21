@@ -93,6 +93,7 @@ class SynthesizerAgent:
                     temperature=settings.analysis_service.llm.openai.temperature,
                     max_tokens=settings.analysis_service.llm.openai.max_tokens,
                     model=model,
+                    agent_name="synthesizer",
                 )
 
                 data = parse_llm_json(result.content)

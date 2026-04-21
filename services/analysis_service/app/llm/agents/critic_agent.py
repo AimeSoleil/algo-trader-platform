@@ -76,6 +76,7 @@ class CriticAgent:
                     temperature=0.0,  # deterministic for review
                     max_tokens=16384,
                     model=model,
+                    agent_name="critic",
                 )
 
                 data = parse_llm_json(result.content)

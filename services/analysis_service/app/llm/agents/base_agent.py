@@ -171,6 +171,7 @@ class AgentLLMProvider(Protocol):
         temperature: float | None = None,
         max_tokens: int | None = None,
         model: str | None = None,
+        agent_name: str | None = None,
     ) -> LLMResult:
         """Send prompt to LLM and return text + token counts."""
         ...
@@ -280,6 +281,7 @@ class AnalysisAgent(ABC):
                     temperature=settings.analysis_service.llm.openai.temperature,
                     max_tokens=_max_tokens,
                     model=model,
+                    agent_name=self.name,
                 )
 
                 # Detect output truncation: if the model hit the token ceiling,

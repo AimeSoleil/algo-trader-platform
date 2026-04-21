@@ -57,6 +57,7 @@ class OpenAIAgentProvider:
         temperature: float | None = None,
         max_tokens: int | None = None,
         model: str | None = None,
+        agent_name: str | None = None,
     ) -> LLMResult:
         settings = get_settings()
         client = self._get_client()

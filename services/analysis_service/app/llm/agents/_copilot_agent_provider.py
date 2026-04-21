@@ -112,6 +112,7 @@ class CopilotAgentProvider:
         temperature: float | None = None,
         max_tokens: int | None = None,
         model: str | None = None,
+        agent_name: str | None = None,
     ) -> LLMResult:
         client = await self._get_client()
 
@@ -179,6 +180,7 @@ class CopilotAgentProvider:
 
         logger.debug(
             "copilot_agent.response_received",
+            agent=agent_name,
             model=effective_model,
             typeof_raw_response=type(result).__name__,
             raw_response=str(result)
