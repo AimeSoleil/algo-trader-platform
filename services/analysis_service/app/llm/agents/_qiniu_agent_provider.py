@@ -16,7 +16,7 @@ from anthropic import AsyncAnthropic
 from openai import AsyncOpenAI
 
 from shared.config import get_settings
-from shared.utils import get_logger
+from shared.utils import estimate_prompt_tokens, get_logger
 
 from services.analysis_service.app.llm.agents.base_agent import LLMResult
 from services.analysis_service.app.llm.json_utils import extract_json_str
@@ -208,16 +208,19 @@ class QiniuAgentProvider:
     ) -> tuple[str, int, int, int]:
         """Call Qiniu via the Anthropic SDK (claude-* models -> /v1/messages)."""
         client = self._get_anthropic_client()
+        user_content = f"{user_prompt}\n\n{json_instruction}"
+        input_prompt_tokens = estimate_prompt_tokens(instructions, user_content)
         logger.info(
             "qiniu_agent.request_started",
             agent=agent_name,
             client_type="anthropic",
             model=effective_model,
+            input_prompt_tokens=input_prompt_tokens,
         )
         response = await client.messages.create(
             model=effective_model,
             system=instructions,
-            messages=[{"role": "user", "content": f"{user_prompt}\n\n{json_instruction}"}],
+            messages=[{"role": "user", "content": user_content}],
             temperature=effective_temp,
             max_tokens=effective_max_tokens,
         )
@@ -240,17 +243,20 @@ class QiniuAgentProvider:
     ) -> tuple[str, int, int, int]:
         """Call Qiniu via the OpenAI SDK (non-claude models -> /v1/chat/completions)."""
         client = self._get_openai_client()
+        user_content = f"{user_prompt}\n\n{json_instruction}"
+        input_prompt_tokens = estimate_prompt_tokens(instructions, user_content)
         logger.info(
             "qiniu_agent.request_started",
             agent=agent_name,
             client_type="openai",
             model=effective_model,
+            input_prompt_tokens=input_prompt_tokens,
         )
         call_kwargs: dict = {
             "model": effective_model,
             "messages": [
                 {"role": "system", "content": instructions},
-                {"role": "user", "content": f"{user_prompt}\n\n{json_instruction}"},
+                {"role": "user", "content": user_content},
             ],
             "reasoning_effort": self._reasoning_effort,
             "temperature": effective_temp,

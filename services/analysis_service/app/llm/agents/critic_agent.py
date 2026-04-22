@@ -24,6 +24,19 @@ from services.analysis_service.app.llm.agents.models import CriticVerdict
 logger = get_logger("critic_agent")
 
 
+def _is_http_500_error(exc: Exception) -> bool:
+    status_code = getattr(exc, "status_code", None)
+    if status_code == 500:
+        return True
+
+    message = str(exc).lower()
+    return (
+        "error code: 500" in message
+        or "status code: 500" in message
+        or "internal server error" in message and "500" in message
+    )
+
+
 class CriticAgent:
     """Review a blueprint for rule violations, risk breaches, and logic errors.
 
@@ -64,9 +77,10 @@ class CriticAgent:
         backoff_base = settings.analysis_service.llm.backoff_base_seconds
         backoff_max = settings.analysis_service.llm.backoff_max_seconds
         max_attempts = max_retries + 1
+        forced_500_retry_used = False
 
         last_exc: Exception | None = None
-        for attempt in range(max_attempts):
+        for attempt in range(max_attempts + 1):
             t0 = perf_counter()
             status = "error"
             try:
@@ -127,12 +141,18 @@ class CriticAgent:
             except Exception as e:
                 last_exc = e
                 error_type = type(e).__name__
+                is_http_500 = _is_http_500_error(e)
                 retryable = error_type in (
                     "RateLimitError", "APITimeoutError",
                     "APIConnectionError", "InternalServerError",
                 ) or (hasattr(e, "status_code") and getattr(e, "status_code", 0) >= 500)
 
-                if retryable and attempt < max_attempts - 1:
+                should_force_500_retry = is_http_500 and not forced_500_retry_used
+                should_normal_retry = retryable and attempt < max_attempts - 1
+
+                if should_force_500_retry or should_normal_retry:
+                    if should_force_500_retry:
+                        forced_500_retry_used = True
                     delay = min(backoff_base * (2 ** attempt) + random.uniform(0, 1), backoff_max)
                     llm_retries_total.labels(provider=provider.name, error_type=error_type).inc()
                     logger.warning("critic.retryable_error", provider=provider.name, attempt=attempt + 1, error=str(e), delay=round(delay, 2))

@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Any
 
 from shared.config import get_settings
-from shared.utils import get_logger
+from shared.utils import estimate_prompt_tokens, get_logger
 
 from services.analysis_service.app.llm.agents.base_agent import LLMResult
 from services.analysis_service.app.llm.json_utils import extract_json_str
@@ -180,6 +180,12 @@ class CopilotAgentProvider:
             "double-quoted keys and string values (RFC 8259). "
             "No single quotes, no trailing commas, no markdown fences, "
             "no extra text.\n</user>"
+        )
+        logger.info(
+            "copilot_agent.request_started",
+            agent=agent_name,
+            model=effective_model,
+            input_prompt_tokens=estimate_prompt_tokens(full_prompt),
         )
 
         # Capture token usage from the ASSISTANT_USAGE event.

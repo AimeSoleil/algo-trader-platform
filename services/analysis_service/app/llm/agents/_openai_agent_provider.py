@@ -12,7 +12,7 @@ import asyncio
 from openai import AsyncOpenAI
 
 from shared.config import get_settings
-from shared.utils import get_logger
+from shared.utils import estimate_prompt_tokens, get_logger
 
 logger = get_logger("openai_agent_provider")
 
@@ -63,6 +63,13 @@ class OpenAIAgentProvider:
         settings = get_settings()
         client = self._get_client()
         effective_model = model or self._model
+        input_prompt_tokens = estimate_prompt_tokens(instructions, user_prompt)
+        logger.info(
+            "openai_agent.request_started",
+            agent=agent_name,
+            model=effective_model,
+            input_prompt_tokens=input_prompt_tokens,
+        )
         response = await client.responses.create(
             model=effective_model,
             instructions=instructions,

@@ -14,6 +14,7 @@ from shared.utils.time import (
     resolve_trading_date_arg,
     today_trading,
 )
+from shared.utils.token import estimate_prompt_tokens
 
 __all__ = [
     "setup_logging",
@@ -31,4 +32,5 @@ __all__ = [
     "previous_trading_day",
     "resolve_trading_date_arg",
     "today_trading",
+    "estimate_prompt_tokens",
 ]
