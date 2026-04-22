@@ -59,6 +59,12 @@ def _create_agent_provider(provider_name: str | None = None) -> AgentLLMProvider
         )
         return CopilotAgentProvider()
 
+    if provider_name == "qiniu":
+        from services.analysis_service.app.llm.agents._qiniu_agent_provider import (
+            QiniuAgentProvider,
+        )
+        return QiniuAgentProvider()
+
     # Default / "openai"
     from services.analysis_service.app.llm.agents._openai_agent_provider import (
         OpenAIAgentProvider,
@@ -860,13 +866,17 @@ class AgentOrchestrator:
         """Classify current market condition from cross-asset and trend agent outputs.
 
         Returns one of: trending_calm, trending_volatile, range_calm,
-        range_volatile, crisis.
+        range_volatile, crisis, recovery.
         """
         cross = agent_outputs.get("cross_asset", {})
         if not isinstance(cross, dict):
             return "unknown"
 
         market_regime = cross.get("market_regime", "neutral")
+
+        # Early return for recovery state
+        if market_regime == "recovery":
+            return "recovery"
 
         # Extract VIX environment from symbols (majority vote, fallback="normal")
         vix_counts = {

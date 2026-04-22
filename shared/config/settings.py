@@ -351,6 +351,14 @@ class CopilotLLMSettings(BaseSettings):
     reasoning_effort: str = "high"
     request_timeout_seconds: int = 600
 
+class QiuuLLMSettings(BaseSettings):
+    api_key: str = ""
+    base_url: str = "https://api.qnaigc.com/v1"
+    model: str = "gemini-2.5-flash"
+    temperature: float = 0.1
+    max_tokens: int = 32768
+    request_timeout_seconds: int = 600
+
 class AgentModelsSettings(BaseSettings):
     """Per-agent model overrides. ``null`` / empty → use provider default."""
     trend: str = ""
@@ -367,6 +375,7 @@ class LLMSettings(BaseSettings):
 
     openai: OpenAILLMSettings = Field(default_factory=OpenAILLMSettings)
     copilot: CopilotLLMSettings = Field(default_factory=CopilotLLMSettings)
+    qiniu: QiuuLLMSettings = Field(default_factory=QiuuLLMSettings)
 
     # ── Per-agent model overrides ──
     agent_models_override: AgentModelsSettings = Field(default_factory=AgentModelsSettings)

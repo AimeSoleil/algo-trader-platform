@@ -42,6 +42,12 @@ def _default_provider() -> "AgentLLMProvider":
         )
         return CopilotAgentProvider()
 
+    if provider_name == "qiniu":
+        from services.analysis_service.app.llm.agents._qiniu_agent_provider import (
+            QiniuAgentProvider,
+        )
+        return QiniuAgentProvider()
+
     from services.analysis_service.app.llm.agents._openai_agent_provider import (
         OpenAIAgentProvider,
     )

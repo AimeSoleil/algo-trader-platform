@@ -239,7 +239,7 @@ signal_service:
 
 analysis_service:
   llm:
-    provider: "copilot"                 # openai / copilot
+    provider: "copilot"                 # openai / copilot / qiniu
     openai:
       api_key: ""                       # or env: ANALYSIS_SERVICE__LLM__OPENAI__API_KEY
       model: "claude-opus-4.6"
@@ -251,6 +251,13 @@ analysis_service:
       github_token: ""                 # or env: ANALYSIS_SERVICE__LLM__COPILOT__GITHUB_TOKEN
       model: "claude-opus-4.6"          # default model for all agents
       reasoning_effort: "high"        # low / medium / high
+      request_timeout_seconds: 600
+    qiniu:
+      api_key: ""                       # or env: ANALYSIS_SERVICE__LLM__QINIU__API_KEY
+      base_url: "https://api.qnaigc.com/v1"
+      model: "gemini-2.5-flash"         # see https://www.qiniu.com/ai/models
+      temperature: 0.1
+      max_tokens: 32768                 # Gemini 2.5 Flash supports up to 65536 output tokens
       request_timeout_seconds: 600
     agent_models_override:                        # per-agent model overrides (empty = use provider default)
       trend: ""
