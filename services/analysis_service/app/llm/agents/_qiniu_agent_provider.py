@@ -301,7 +301,11 @@ class QiniuAgentProvider:
                 return
             # 获取可用模型列表
             models = await client.models.list()
-            for model in models.data:
-                logger.debug("qiniu_agent.anthropic_supported_model", model_id=model.id)
+            model_ids = [model.id for model in models.data]
+            logger.debug(
+                "qiniu_agent.anthropic_supported_models",
+                model_ids=model_ids,
+                model_count=len(model_ids),
+            )
         except Exception as exc:
             logger.warning("qiniu_agent.anthropic_supported_models_failed", error=str(exc))
