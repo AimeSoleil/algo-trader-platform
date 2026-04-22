@@ -340,6 +340,7 @@ class SignalServiceSettings(BaseSettings):
 class OpenAILLMSettings(BaseSettings):
     api_key: str = ""
     model: str = "claude-opus-4.6"
+    reasoning_effort: str = "high"
     temperature: float = 0.1
     max_tokens: int = 16384
     request_timeout_seconds: int = 600
@@ -355,6 +356,7 @@ class QiuuLLMSettings(BaseSettings):
     api_key: str = ""
     base_url: str = "https://api.qnaigc.com/v1"
     model: str = "gemini-2.5-flash"
+    reasoning_effort: str = "high"
     temperature: float = 0.1
     max_tokens: int = 32768
     request_timeout_seconds: int = 600
@@ -390,7 +392,7 @@ class LLMSettings(BaseSettings):
     orchestrator_max_parallel: int = 3
 
     # ── Specialist flow parallel gate (pipeline-level) ──
-    specialist_parallel_limit: int = 2
+    specialist_parallel_limit: int = 1
     specialist_parallel_agents: list[str] = Field(
         default_factory=lambda: ["trend", "volatility", "flow", "chain", "spread", "cross_asset"]
     )

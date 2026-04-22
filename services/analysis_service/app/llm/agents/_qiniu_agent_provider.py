@@ -85,6 +85,7 @@ class QiniuAgentProvider:
         self._openai_base_url = _normalize_to_v1(cfg.base_url)
         self._anthropic_base_url = _normalize_for_anthropic(cfg.base_url)
         self._model = cfg.model
+        self._reasoning_effort = cfg.reasoning_effort
         self._temperature = cfg.temperature
         self._timeout = cfg.request_timeout_seconds
         self._openai_client: AsyncOpenAI | None = None
@@ -128,6 +129,7 @@ class QiniuAgentProvider:
             self._anthropic_client = AsyncAnthropic(
                 api_key=self._api_key,
                 base_url=self._anthropic_base_url,
+                timeout=self._timeout,
                 max_retries=0,
             )
             self._anthropic_loop_id = current_loop_id
@@ -250,6 +252,7 @@ class QiniuAgentProvider:
                 {"role": "system", "content": instructions},
                 {"role": "user", "content": f"{user_prompt}\n\n{json_instruction}"},
             ],
+            "reasoning_effort": self._reasoning_effort,
             "temperature": effective_temp,
             "max_tokens": effective_max_tokens,
             "response_format": {"type": "json_object"},

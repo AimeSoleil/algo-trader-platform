@@ -28,6 +28,7 @@ class OpenAIAgentProvider:
         self._client: AsyncOpenAI | None = None
         self._bound_loop_id: int | None = None
         self._model = settings.analysis_service.llm.openai.model
+        self._reasoning_effort = settings.analysis_service.llm.openai.reasoning_effort
         self._timeout = settings.analysis_service.llm.openai.request_timeout_seconds
 
     def _get_client(self) -> AsyncOpenAI:
@@ -67,6 +68,7 @@ class OpenAIAgentProvider:
             instructions=instructions,
             input=user_prompt,
             text={"format": {"type": "json_object"}},
+            reasoning={"effort": self._reasoning_effort},
             temperature=temperature if temperature is not None else settings.analysis_service.llm.openai.temperature,
             max_output_tokens=max_tokens or 16384,
             timeout=self._timeout,
