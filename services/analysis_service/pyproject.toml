@@ -8,6 +8,7 @@ dependencies = [
     "fastapi",
     "uvicorn[standard]",
     "openai>=1.66.0",
+    "anthropic>=0.49.0",
     "celery[redis]",
     "github-copilot-sdk>=0.1.32",
 ]

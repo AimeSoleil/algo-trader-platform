@@ -1,17 +1,17 @@
 """Qiniu AI provider for the agent pipeline.
 
-Thin wrapper around Qiniu's OpenAI-compatible Chat Completions API that
-satisfies the ``AgentLLMProvider`` protocol.  Used by the Orchestrator when
-``settings.analysis_service.llm.provider == "qiniu"``.
+Routes requests to the appropriate SDK based on model family:
+- claude-*  -> Anthropic SDK  -> /v1/messages
+- all others -> OpenAI SDK   -> /v1/chat/completions
 
 API docs: https://developer.qiniu.com/aitokenapi/13390/chat-completions
-Endpoint: https://api.qnaigc.com/v1/chat/completions  (OpenAI-compatible)
 Auth:     Authorization: Bearer <api_key>
 """
 from __future__ import annotations
 
 import asyncio
 
+from anthropic import AsyncAnthropic
 from openai import AsyncOpenAI
 
 from shared.config import get_settings
@@ -22,33 +22,27 @@ from services.analysis_service.app.llm.json_utils import extract_json_str
 
 logger = get_logger("qiniu_agent_provider")
 
+_PATH_SUFFIXES = (
+    "/v1/chat/completions",
+    "/chat/completions",
+    "/v1/messages",
+    "/messages",
+)
 
-def _normalize_qiniu_base_url(base_url: str) -> str:
-    """Normalize Qiniu base URL for OpenAI-compatible chat completions.
 
-    Accepts common user inputs like:
-    - https://api.qnaigc.com
-    - https://api.qnaigc.com/v1
-    - https://api.qnaigc.com/v1/chat/completions
-    and normalizes to:
-    - https://api.qnaigc.com/v1
-    """
+def _strip_path_suffix(url: str) -> str:
+    normalized = url.rstrip("/")
+    for suffix in _PATH_SUFFIXES:
+        if normalized.endswith(suffix):
+            return normalized[: -len(suffix)]
+    return normalized
+
+
+def _normalize_to_v1(base_url: str, default: str = "https://api.qnaigc.com/v1") -> str:
     raw = (base_url or "").strip()
     if not raw:
-        return "https://api.qnaigc.com/v1"
-
-    normalized = raw.rstrip("/")
-    for suffix in (
-        "/v1/chat/completions",
-        "/chat/completions",
-        "/v1/messages",
-        "/messages",
-    ):
-        if normalized.endswith(suffix):
-            normalized = normalized[: -len(suffix)]
-            break
-
-    normalized = normalized.rstrip("/")
+        return default
+    normalized = _strip_path_suffix(raw).rstrip("/")
     if not normalized.endswith("/v1"):
         normalized = f"{normalized}/v1"
     return normalized
@@ -60,48 +54,58 @@ def _is_route_not_found_error(exc: Exception) -> bool:
 
 
 class QiniuAgentProvider:
-    """``AgentLLMProvider`` backed by Qiniu's OpenAI-compatible Chat API."""
+    """AgentLLMProvider backed by Qiniu's AI gateway.
+
+    Uses the Anthropic SDK for claude-* models (/v1/messages) and the
+    OpenAI SDK for everything else (/v1/chat/completions).
+    """
 
     def __init__(self) -> None:
         settings = get_settings()
         cfg = settings.analysis_service.llm.qiniu
         self._api_key = cfg.api_key
         self._raw_base_url = cfg.base_url
-        self._base_url = _normalize_qiniu_base_url(cfg.base_url)
+        self._openai_base_url = _normalize_to_v1(cfg.base_url)
+        self._anthropic_base_url = _normalize_to_v1(cfg.base_url)
         self._model = cfg.model
         self._temperature = cfg.temperature
         self._timeout = cfg.request_timeout_seconds
-        self._client: AsyncOpenAI | None = None
-        self._bound_loop_id: int | None = None
+        self._openai_client: AsyncOpenAI | None = None
+        self._anthropic_client: AsyncAnthropic | None = None
+        self._openai_loop_id: int | None = None
+        self._anthropic_loop_id: int | None = None
 
-        if self._raw_base_url and self._raw_base_url.rstrip("/") != self._base_url.rstrip("/"):
+        if self._raw_base_url and self._raw_base_url.rstrip("/") != self._openai_base_url.rstrip("/"):
             logger.info(
                 "qiniu_agent.base_url_normalized",
                 configured_base_url=self._raw_base_url,
-                normalized_base_url=self._base_url,
+                openai_base_url=self._openai_base_url,
+                anthropic_base_url=self._anthropic_base_url,
             )
-
-    def _get_client(self) -> AsyncOpenAI:
-        """Return the AsyncOpenAI client pointed at Qiniu; rebuild on loop change."""
-        current_loop_id = id(asyncio.get_running_loop())
-
-        if self._client is not None and self._bound_loop_id != current_loop_id:
-            logger.info("qiniu_agent.loop_changed, rebuilding client")
-            self._client = None
-
-        if self._client is None:
-            self._client = AsyncOpenAI(
-                api_key=self._api_key,
-                base_url=self._base_url,
-            )
-            self._bound_loop_id = current_loop_id
-            logger.info("qiniu_agent.client_created", base_url=self._base_url, model=self._model)
-
-        return self._client
 
     @property
-    def name(self) -> str:  # noqa: D401
+    def name(self) -> str:
         return "qiniu"
+
+    def _get_openai_client(self) -> AsyncOpenAI:
+        current_loop_id = id(asyncio.get_running_loop())
+        if self._openai_client is not None and self._openai_loop_id != current_loop_id:
+            self._openai_client = None
+        if self._openai_client is None:
+            self._openai_client = AsyncOpenAI(api_key=self._api_key, base_url=self._openai_base_url)
+            self._openai_loop_id = current_loop_id
+            logger.info("qiniu_agent.openai_client_created", base_url=self._openai_base_url, model=self._model)
+        return self._openai_client
+
+    def _get_anthropic_client(self) -> AsyncAnthropic:
+        current_loop_id = id(asyncio.get_running_loop())
+        if self._anthropic_client is not None and self._anthropic_loop_id != current_loop_id:
+            self._anthropic_client = None
+        if self._anthropic_client is None:
+            self._anthropic_client = AsyncAnthropic(api_key=self._api_key, base_url=self._anthropic_base_url)
+            self._anthropic_loop_id = current_loop_id
+            logger.info("qiniu_agent.anthropic_client_created", base_url=self._anthropic_base_url, model=self._model)
+        return self._anthropic_client
 
     async def generate(
         self,
@@ -114,69 +118,34 @@ class QiniuAgentProvider:
         agent_name: str | None = None,
     ) -> LLMResult:
         settings = get_settings()
-        client = self._get_client()
         effective_model = model or self._model
         effective_temp = temperature if temperature is not None else self._temperature
+        effective_max_tokens = max_tokens if max_tokens is not None else settings.analysis_service.llm.qiniu.max_tokens
+        json_instruction = (
+            "Final output: return ONLY one valid JSON object using "
+            "double-quoted keys and string values (RFC 8259). "
+            "No single quotes, no trailing commas, no markdown fences, "
+            "no extra text."
+        )
 
-        # Qiniu Chat Completions uses the standard messages format
-        call_kwargs: dict = {
-            "model": effective_model,
-            "messages": [
-                {"role": "system", "content": instructions},
-                {
-                    "role": "user",
-                    "content": (
-                        f"{user_prompt}\n\n"
-                        "Final output: return ONLY one valid JSON object using "
-                        "double-quoted keys and string values (RFC 8259). "
-                        "No single quotes, no trailing commas, no markdown fences, "
-                        "no extra text."
-                    ),
-                },
-            ],
-            "temperature": effective_temp,
-            "max_tokens": max_tokens if max_tokens is not None else settings.analysis_service.llm.qiniu.max_tokens,
-            "timeout": self._timeout,
-        }
-
-        # Anthropic models (claude-*) do not support response_format — rely on
-        # the prompt instruction above.  All other models (gemini-*, gpt-*, etc.)
-        # use json_object mode for more reliable structured output.
-        if not effective_model.startswith("claude-"):
-            call_kwargs["response_format"] = {"type": "json_object"}
-
-        try:
-            response = await client.chat.completions.create(**call_kwargs)
-        except Exception as exc:
-            if not _is_route_not_found_error(exc):
-                raise
-
-            # Compatibility fallback: some environments configure Qiniu endpoint
-            # as domain root. Retry once with root URL if /v1 route is unavailable.
-            fallback_base_url = self._base_url[: -len("/v1")] if self._base_url.endswith("/v1") else self._base_url
-            if fallback_base_url == self._base_url:
-                raise
-
-            logger.warning(
-                "qiniu_agent.route_not_found_retry",
-                model=effective_model,
-                base_url=self._base_url,
-                fallback_base_url=fallback_base_url,
-                error=str(exc),
+        if effective_model.startswith("claude-"):
+            content, input_tokens, output_tokens, total_tokens = await self._generate_anthropic(
+                effective_model=effective_model,
+                instructions=instructions,
+                user_prompt=user_prompt,
+                json_instruction=json_instruction,
+                effective_temp=effective_temp,
+                effective_max_tokens=effective_max_tokens,
             )
-            fallback_client = AsyncOpenAI(
-                api_key=self._api_key,
-                base_url=fallback_base_url,
+        else:
+            content, input_tokens, output_tokens, total_tokens = await self._generate_openai(
+                effective_model=effective_model,
+                instructions=instructions,
+                user_prompt=user_prompt,
+                json_instruction=json_instruction,
+                effective_temp=effective_temp,
+                effective_max_tokens=effective_max_tokens,
             )
-            response = await fallback_client.chat.completions.create(**call_kwargs)
-
-            # Persist fallback endpoint after successful retry.
-            self._base_url = fallback_base_url
-            self._client = fallback_client
-            self._bound_loop_id = id(asyncio.get_running_loop())
-
-        content = response.choices[0].message.content or ""
-        usage = response.usage
 
         logger.debug(
             "qiniu_agent.response_received",
@@ -188,8 +157,93 @@ class QiniuAgentProvider:
         return LLMResult(
             content=extract_json_str(content),
             raw_content=content,
-            input_tokens=usage.prompt_tokens if usage else 0,
-            output_tokens=usage.completion_tokens if usage else 0,
-            total_tokens=usage.total_tokens if usage else 0,
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            total_tokens=total_tokens,
             model=effective_model,
+        )
+
+    async def _generate_anthropic(
+        self,
+        *,
+        effective_model: str,
+        instructions: str,
+        user_prompt: str,
+        json_instruction: str,
+        effective_temp: float,
+        effective_max_tokens: int,
+    ) -> tuple[str, int, int, int]:
+        """Call Qiniu via the Anthropic SDK (claude-* models -> /v1/messages)."""
+        client = self._get_anthropic_client()
+        response = await client.messages.create(
+            model=effective_model,
+            system=instructions,
+            messages=[{"role": "user", "content": f"{user_prompt}\n\n{json_instruction}"}],
+            temperature=effective_temp,
+            max_tokens=effective_max_tokens,
+        )
+        content = response.content[0].text if response.content else ""
+        usage = response.usage
+        input_tokens = usage.input_tokens if usage else 0
+        output_tokens = usage.output_tokens if usage else 0
+        return content, input_tokens, output_tokens, input_tokens + output_tokens
+
+    async def _generate_openai(
+        self,
+        *,
+        effective_model: str,
+        instructions: str,
+        user_prompt: str,
+        json_instruction: str,
+        effective_temp: float,
+        effective_max_tokens: int,
+    ) -> tuple[str, int, int, int]:
+        """Call Qiniu via the OpenAI SDK (non-claude models -> /v1/chat/completions)."""
+        client = self._get_openai_client()
+        call_kwargs: dict = {
+            "model": effective_model,
+            "messages": [
+                {"role": "system", "content": instructions},
+                {"role": "user", "content": f"{user_prompt}\n\n{json_instruction}"},
+            ],
+            "temperature": effective_temp,
+            "max_tokens": effective_max_tokens,
+            "response_format": {"type": "json_object"},
+            "timeout": self._timeout,
+        }
+
+        try:
+            response = await client.chat.completions.create(**call_kwargs)
+        except Exception as exc:
+            if not _is_route_not_found_error(exc):
+                raise
+
+            fallback_base_url = (
+                self._openai_base_url[: -len("/v1")]
+                if self._openai_base_url.endswith("/v1")
+                else self._openai_base_url
+            )
+            if fallback_base_url == self._openai_base_url:
+                raise
+
+            logger.warning(
+                "qiniu_agent.route_not_found_retry",
+                model=effective_model,
+                base_url=self._openai_base_url,
+                fallback_base_url=fallback_base_url,
+                error=str(exc),
+            )
+            fallback_client = AsyncOpenAI(api_key=self._api_key, base_url=fallback_base_url)
+            response = await fallback_client.chat.completions.create(**call_kwargs)
+            self._openai_base_url = fallback_base_url
+            self._openai_client = fallback_client
+            self._openai_loop_id = id(asyncio.get_running_loop())
+
+        content = response.choices[0].message.content or ""
+        usage = response.usage
+        return (
+            content,
+            usage.prompt_tokens if usage else 0,
+            usage.completion_tokens if usage else 0,
+            usage.total_tokens if usage else 0,
         )
