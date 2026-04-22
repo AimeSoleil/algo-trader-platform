@@ -23,6 +23,7 @@ from shared.config import get_settings
 from shared.data_quality import should_circuit_break_analysis
 from shared.metrics import llm_request_duration
 from shared.models.blueprint import LLMTradingBlueprint
+from shared.redis_pool import get_redis
 from shared.models.signal import SignalFeatures
 from shared.utils import get_logger
 
@@ -972,9 +973,13 @@ class AgentOrchestrator:
     ) -> dict[str, Any]:
         """Run all 6 specialist agents in parallel, collecting results.
 
-        Failed agents are logged but do NOT fail the pipeline — the
-        synthesizer will work with whatever analyses are available.
+        Any failed specialist triggers a pipeline circuit-break.
         """
+        redis = get_redis()
+        current_task = asyncio.current_task()
+        run_id = f"{int(perf_counter() * 1000)}-{id(current_task)}"
+        failure_key = f"analysis:orchestrator:specialists_failed:{run_id}"
+
         agents = {
             "trend": self._trend,
             "volatility": self._volatility,
@@ -989,6 +994,9 @@ class AgentOrchestrator:
 
         async def _run_one(name: str, agent):
             start_ts = perf_counter()
+            if await redis.exists(failure_key):
+                raise RuntimeError("specialist circuit-break already active")
+
             try:
                 model_override = getattr(agent_models_cfg, name, "") or None
                 logger.info(
@@ -1024,7 +1032,8 @@ class AgentOrchestrator:
                     error=str(e),
                     traceback=_tb.format_exc(limit=5),
                 )
-                return name, None
+                await redis.set(failure_key, name, ex=120)
+                raise RuntimeError(f"specialist_failed:{name}") from e
 
         llm_cfg = get_settings().analysis_service.llm
         gate_limit = max(1, int(llm_cfg.specialist_parallel_limit))
@@ -1039,17 +1048,45 @@ class AgentOrchestrator:
         )
 
         async def _run_one_gated(name: str, agent):
+            if await redis.exists(failure_key):
+                raise RuntimeError("specialist circuit-break already active")
             if name in gate_targets:
                 async with sem:
                     return await _run_one(name, agent)
             return await _run_one(name, agent)
 
-        tasks = [_run_one_gated(name, agent) for name, agent in agents.items()]
-        results = await asyncio.gather(*tasks)
+        await redis.delete(failure_key)
+        tasks = [
+            asyncio.create_task(_run_one_gated(name, agent), name=name)
+            for name, agent in agents.items()
+        ]
+        outputs: dict[str, Any] = {}
 
-        outputs = {}
-        for name, result in results:
-            if result is not None:
+        try:
+            for done in asyncio.as_completed(tasks):
+                name, result = await done
                 outputs[name] = result
+            return outputs
+        except Exception as exc:
+            for task in tasks:
+                if not task.done():
+                    task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
 
-        return outputs
+            failed_agent = await redis.get(failure_key)
+            failed_agents = [failed_agent] if failed_agent else []
+            if not failed_agents:
+                failed_agents = [t.get_name() for t in tasks if t.done() and not t.cancelled() and t.exception()]
+
+            logger.error(
+                "orchestrator.pipeline_circuit_break",
+                phase="specialists",
+                failed_agents=failed_agents,
+                failed_count=len(failed_agents),
+                error=str(exc),
+            )
+            raise RuntimeError(
+                "specialist agent failed: " + ", ".join(sorted(failed_agents))
+            ) from exc
+        finally:
+            await redis.delete(failure_key)
