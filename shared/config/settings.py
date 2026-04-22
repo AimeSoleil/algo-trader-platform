@@ -241,7 +241,7 @@ class IntradayRetentionSettings(BaseSettings):
 
 class ResilienceSettings(BaseSettings):
     """Provider-agnostic retry / rate-limit / concurrency settings."""
-    max_retries: int = 3
+    max_retries: int = 0
     backoff_base_seconds: float = 1.0
     rate_limit_per_call_seconds: float = 0.5
     rate_limit_per_symbol_seconds: float = 1.5
@@ -399,7 +399,7 @@ class LLMSettings(BaseSettings):
     max_critic_revisions: int = 1
 
     # ── Retry / Resilience ──
-    max_retries: int = 3
+    max_retries: int = 0
     backoff_base_seconds: float = 2.0
     backoff_max_seconds: float = 60.0
 
