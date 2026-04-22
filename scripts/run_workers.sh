@@ -631,6 +631,27 @@ health_watchdog() {
     local ping_output
     ping_output="$(${CELERY_CMD} inspect ping -t "$HEALTH_CHECK_TIMEOUT" -d "$destinations" 2>&1)" || true
 
+    # Distinguish control-plane timeout from worker failure.
+    # If inspect has no replies but all worker processes are still alive,
+    # treat this as transient broker/inspect jitter and do not count failures.
+    local replied_count=0
+    local all_workers_running=1
+    for w in "${ACTIVE_WORKERS[@]}"; do
+      if echo "$ping_output" | grep -q "${w}@"; then
+        replied_count=$(( replied_count + 1 ))
+      fi
+
+      local pid_probe="${CHILD_PIDS[$w]:-}"
+      if [[ -z "$pid_probe" ]] || ! kill -0 "$pid_probe" 2>/dev/null; then
+        all_workers_running=0
+      fi
+    done
+
+    if (( replied_count == 0 )) && (( all_workers_running == 1 )); then
+      log_both watchdog "inspect 无回复 (0/${#ACTIVE_WORKERS[@]}) 但 worker 进程均存活；判定为 control-plane 超时，本轮跳过失败计数"
+      continue
+    fi
+
     for w in "${ACTIVE_WORKERS[@]}"; do
       local worker_id="${w}@"
       if echo "$ping_output" | grep -q "${worker_id}"; then
