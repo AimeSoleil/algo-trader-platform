@@ -16,7 +16,7 @@
 #   ENV_FILE                Env file for local dev       (default: .env.local -> .env)
 #   RESTART_MAX_BACKOFF     Max backoff seconds          (default: 60)
 #   HEALTH_CHECK_INTERVAL   Seconds between pings        (default: 60)
-#   HEALTH_CHECK_TIMEOUT    Inspect ping timeout seconds (default: 15)
+#   HEALTH_CHECK_TIMEOUT    Inspect ping timeout seconds (default: 25)
 #   HEALTH_CHECK_FAILURES   Consecutive fails before kill (default: 3)
 #   SHUTDOWN_GRACE          Seconds before SIGKILL        (default: 30)
 #   WORKERS                 Comma-separated worker list  (default: all)
@@ -53,13 +53,14 @@ DAEMON_MODE="${DAEMON_MODE:-1}"
 ENV_FILE="${ENV_FILE:-}"
 RESTART_MAX_BACKOFF="${RESTART_MAX_BACKOFF:-60}"
 HEALTH_CHECK_INTERVAL="${HEALTH_CHECK_INTERVAL:-60}"
-HEALTH_CHECK_TIMEOUT="${HEALTH_CHECK_TIMEOUT:-15}"
+HEALTH_CHECK_TIMEOUT="${HEALTH_CHECK_TIMEOUT:-25}"
 HEALTH_CHECK_FAILURES="${HEALTH_CHECK_FAILURES:-3}"
 SHUTDOWN_GRACE="${SHUTDOWN_GRACE:-30}"
 WORKERS="${WORKERS:-all}"
 ENABLE_FLOWER="${ENABLE_FLOWER:-0}"
 FLOWER_PORT="${FLOWER_PORT:-5555}"
 LOG_LEVEL="${LOG_LEVEL:-INFO}"
+WORKER_HOST="${WORKER_HOST:-$(hostname -s 2>/dev/null || hostname)}"
 
 FOREGROUND=0
 
@@ -505,9 +506,6 @@ run_with_restart() {
 declare -A HEALTH_FAIL_COUNT=()
 
 health_watchdog() {
-  local host_short
-  host_short="$(hostname -s 2>/dev/null || hostname)"
-
   # Initialise failure counters
   for w in "${ACTIVE_WORKERS[@]}"; do
     HEALTH_FAIL_COUNT[$w]=0
@@ -526,7 +524,7 @@ health_watchdog() {
       if [[ -n "$destinations" ]]; then
         destinations+=","
       fi
-      destinations+="${w}@${host_short}"
+      destinations+="${w}@${WORKER_HOST}"
     done
 
     local ping_output
@@ -645,6 +643,7 @@ log main "HEALTH_CHECK_TIMEOUT=${HEALTH_CHECK_TIMEOUT}s"
 log main "HEALTH_CHECK_FAILURES=${HEALTH_CHECK_FAILURES}"
 log main "SHUTDOWN_GRACE=${SHUTDOWN_GRACE}s"
 log main "WORKERS=${ACTIVE_WORKERS[*]}"
+log main "WORKER_HOST=${WORKER_HOST}"
 log main "LOG_LEVEL=${LOG_LEVEL}"
 [[ -n "$ENV_FILE" ]] && log main "ENV_FILE=${ENV_FILE}"
 log main "ENABLE_FLOWER=${ENABLE_FLOWER}"
@@ -666,7 +665,7 @@ for queue in "${ACTIVE_WORKERS[@]}"; do
   [[ "$queue" == "analysis" ]] && extra_args="--prefetch-multiplier=1"
 
   run_with_restart "$queue" \
-    $CELERY_CMD worker -Q "$queue" -n "${queue}@%h" $extra_args \
+    $CELERY_CMD worker -Q "$queue" -n "${queue}@${WORKER_HOST}" $extra_args \
     --loglevel="$LOG_LEVEL" --logfile="$LOG_DIR/celery-${queue}.log" &
   WRAPPER_PIDS[$queue]=$!
 done
