@@ -988,27 +988,63 @@ class AgentOrchestrator:
         agent_models_cfg = get_settings().analysis_service.llm.agent_models_override
 
         async def _run_one(name: str, agent):
+            start_ts = perf_counter()
             try:
                 model_override = getattr(agent_models_cfg, name, "") or None
+                logger.info(
+                    "orchestrator.agent_started",
+                    agent=name,
+                    provider=provider.name,
+                    model_override=model_override,
+                )
                 result = await agent.analyze(
                     serialized_signals,
                     provider=provider,
                     usage_tracker=usage_tracker,
                     model=model_override,
                 )
+                elapsed_ms = int((perf_counter() - start_ts) * 1000)
+                logger.info(
+                    "orchestrator.agent_finished",
+                    agent=name,
+                    provider=provider.name,
+                    elapsed_ms=elapsed_ms,
+                    success=True,
+                )
                 return name, result.model_dump(mode="json")
             except Exception as e:
                 import traceback as _tb
+                elapsed_ms = int((perf_counter() - start_ts) * 1000)
                 logger.warning(
                     f"orchestrator.agent_failed",
                     agent=name,
+                    provider=provider.name,
+                    elapsed_ms=elapsed_ms,
                     error_type=type(e).__name__,
                     error=str(e),
                     traceback=_tb.format_exc(limit=5),
                 )
                 return name, None
 
-        tasks = [_run_one(name, agent) for name, agent in agents.items()]
+        llm_cfg = get_settings().analysis_service.llm
+        gate_limit = max(1, int(llm_cfg.specialist_parallel_limit))
+        gate_agents = {a.strip() for a in llm_cfg.specialist_parallel_agents if a and a.strip()}
+        gate_targets = gate_agents.intersection(agents.keys())
+        sem = asyncio.Semaphore(gate_limit)
+
+        logger.info(
+            "orchestrator.specialist_parallel_gate",
+            gate_limit=gate_limit,
+            gate_agents=sorted(gate_targets),
+        )
+
+        async def _run_one_gated(name: str, agent):
+            if name in gate_targets:
+                async with sem:
+                    return await _run_one(name, agent)
+            return await _run_one(name, agent)
+
+        tasks = [_run_one_gated(name, agent) for name, agent in agents.items()]
         results = await asyncio.gather(*tasks)
 
         outputs = {}

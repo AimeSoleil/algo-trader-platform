@@ -389,6 +389,12 @@ class LLMSettings(BaseSettings):
     orchestrator_chunk_size: int = 9
     orchestrator_max_parallel: int = 3
 
+    # ── Specialist flow parallel gate (pipeline-level) ──
+    specialist_parallel_limit: int = 2
+    specialist_parallel_agents: list[str] = Field(
+        default_factory=lambda: ["trend", "volatility", "flow", "chain", "spread", "cross_asset"]
+    )
+
     # ── Critic revision ──
     max_critic_revisions: int = 1
 

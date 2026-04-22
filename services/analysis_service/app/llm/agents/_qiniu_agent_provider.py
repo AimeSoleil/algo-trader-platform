@@ -110,7 +110,11 @@ class QiniuAgentProvider:
         if self._openai_client is not None and self._openai_loop_id != current_loop_id:
             self._openai_client = None
         if self._openai_client is None:
-            self._openai_client = AsyncOpenAI(api_key=self._api_key, base_url=self._openai_base_url)
+            self._openai_client = AsyncOpenAI(
+                api_key=self._api_key,
+                base_url=self._openai_base_url,
+                max_retries=0,
+            )
             self._openai_loop_id = current_loop_id
             logger.info("qiniu_agent.openai_client_created", base_url=self._openai_base_url, model=self._model)
             self._log_supported_models_once()
@@ -121,7 +125,11 @@ class QiniuAgentProvider:
         if self._anthropic_client is not None and self._anthropic_loop_id != current_loop_id:
             self._anthropic_client = None
         if self._anthropic_client is None:
-            self._anthropic_client = AsyncAnthropic(api_key=self._api_key, base_url=self._anthropic_base_url)
+            self._anthropic_client = AsyncAnthropic(
+                api_key=self._api_key,
+                base_url=self._anthropic_base_url,
+                max_retries=0,
+            )
             self._anthropic_loop_id = current_loop_id
             logger.info("qiniu_agent.anthropic_client_created", base_url=self._anthropic_base_url, model=self._model)
             self._log_anthropic_supported_models_once()
