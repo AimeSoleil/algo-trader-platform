@@ -15,7 +15,8 @@
 #   DAEMON_MODE             Start manager in background  (default: 1)
 #   ENV_FILE                Env file for local dev       (default: .env.local -> .env)
 #   RESTART_MAX_BACKOFF     Max backoff seconds          (default: 60)
-#   HEALTH_CHECK_INTERVAL   Seconds between pings        (default: 30)
+#   HEALTH_CHECK_INTERVAL   Seconds between pings        (default: 60)
+#   HEALTH_CHECK_TIMEOUT    Inspect ping timeout seconds (default: 15)
 #   HEALTH_CHECK_FAILURES   Consecutive fails before kill (default: 3)
 #   SHUTDOWN_GRACE          Seconds before SIGKILL        (default: 30)
 #   WORKERS                 Comma-separated worker list  (default: all)
@@ -51,7 +52,8 @@ LOG_DIR="${LOG_DIR:-logs}"
 DAEMON_MODE="${DAEMON_MODE:-1}"
 ENV_FILE="${ENV_FILE:-}"
 RESTART_MAX_BACKOFF="${RESTART_MAX_BACKOFF:-60}"
-HEALTH_CHECK_INTERVAL="${HEALTH_CHECK_INTERVAL:-30}"
+HEALTH_CHECK_INTERVAL="${HEALTH_CHECK_INTERVAL:-60}"
+HEALTH_CHECK_TIMEOUT="${HEALTH_CHECK_TIMEOUT:-15}"
 HEALTH_CHECK_FAILURES="${HEALTH_CHECK_FAILURES:-3}"
 SHUTDOWN_GRACE="${SHUTDOWN_GRACE:-30}"
 WORKERS="${WORKERS:-all}"
@@ -270,6 +272,11 @@ if (( FOREGROUND == 1 )); then
   DAEMON_MODE=0
 fi
 
+# Flower also polls inspect APIs frequently; avoid watchdog over-polling.
+if [[ "$ENABLE_FLOWER" == "1" ]] && (( HEALTH_CHECK_INTERVAL < 60 )); then
+  HEALTH_CHECK_INTERVAL=60
+fi
+
 # Normalise and validate LOG_LEVEL
 LOG_LEVEL="$(echo "$LOG_LEVEL" | tr '[:lower:]' '[:upper:]')"
 case "$LOG_LEVEL" in
@@ -321,6 +328,7 @@ if [[ "$DAEMON_MODE" == "1" ]]; then
   ENV_FILE="$ENV_FILE" \
   RESTART_MAX_BACKOFF="$RESTART_MAX_BACKOFF" \
   HEALTH_CHECK_INTERVAL="$HEALTH_CHECK_INTERVAL" \
+  HEALTH_CHECK_TIMEOUT="$HEALTH_CHECK_TIMEOUT" \
   HEALTH_CHECK_FAILURES="$HEALTH_CHECK_FAILURES" \
   SHUTDOWN_GRACE="$SHUTDOWN_GRACE" \
   WORKERS="$WORKERS" \
@@ -497,6 +505,9 @@ run_with_restart() {
 declare -A HEALTH_FAIL_COUNT=()
 
 health_watchdog() {
+  local host_short
+  host_short="$(hostname -s 2>/dev/null || hostname)"
+
   # Initialise failure counters
   for w in "${ACTIVE_WORKERS[@]}"; do
     HEALTH_FAIL_COUNT[$w]=0
@@ -510,8 +521,16 @@ health_watchdog() {
 
     log watchdog "执行健康检查..."
 
+    local destinations=""
+    for w in "${ACTIVE_WORKERS[@]}"; do
+      if [[ -n "$destinations" ]]; then
+        destinations+=","
+      fi
+      destinations+="${w}@${host_short}"
+    done
+
     local ping_output
-    ping_output="$(${CELERY_CMD} inspect ping 2>&1)" || true
+    ping_output="$(${CELERY_CMD} inspect ping -t "$HEALTH_CHECK_TIMEOUT" -d "$destinations" 2>&1)" || true
 
     for w in "${ACTIVE_WORKERS[@]}"; do
       local worker_id="${w}@"
@@ -622,6 +641,7 @@ log main "═══════════════════════�
 log main "LOG_DIR=${LOG_DIR}"
 log main "RESTART_MAX_BACKOFF=${RESTART_MAX_BACKOFF}s"
 log main "HEALTH_CHECK_INTERVAL=${HEALTH_CHECK_INTERVAL}s"
+log main "HEALTH_CHECK_TIMEOUT=${HEALTH_CHECK_TIMEOUT}s"
 log main "HEALTH_CHECK_FAILURES=${HEALTH_CHECK_FAILURES}"
 log main "SHUTDOWN_GRACE=${SHUTDOWN_GRACE}s"
 log main "WORKERS=${ACTIVE_WORKERS[*]}"
