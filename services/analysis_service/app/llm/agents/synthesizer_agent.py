@@ -8,7 +8,8 @@ from __future__ import annotations
 import asyncio
 import json
 import random
-from datetime import date
+import re
+from datetime import date, timedelta
 from time import perf_counter
 from typing import Any
 
@@ -23,6 +24,168 @@ from services.analysis_service.app.llm.agents.base_agent import AgentLLMProvider
 from services.analysis_service.app.llm.json_utils import parse_llm_json
 
 logger = get_logger("synthesizer_agent")
+
+_NUMBER_RE = re.compile(r"[+-]?\d+(?:\.\d+)?")
+_DTE_RE = re.compile(r"(?P<start>\d+)(?:\s*-\s*(?P<end>\d+))?\s*dte", re.I)
+
+
+def _extract_float(value: Any) -> float | None:
+    if isinstance(value, (int, float)):
+        return float(value)
+    if not isinstance(value, str):
+        return None
+    match = _NUMBER_RE.search(value)
+    if not match:
+        return None
+    return float(match.group())
+
+
+def _normalize_expiry(value: Any, signal_date: date | None) -> Any:
+    if not isinstance(value, str):
+        return value
+
+    raw = value.strip()
+    try:
+        return date.fromisoformat(raw).isoformat()
+    except ValueError:
+        pass
+
+    match = _DTE_RE.search(raw)
+    if not match:
+        return value
+
+    start_days = int(match.group("start"))
+    end_days = int(match.group("end") or start_days)
+    target_days = round((start_days + end_days) / 2)
+    base_date = signal_date or now_utc().date()
+    return next_trading_day(from_date=base_date + timedelta(days=target_days)).isoformat()
+
+
+def _normalize_numeric_value(value: Any) -> float | list[float] | None:
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, list):
+        normalized = []
+        for item in value:
+            parsed = _extract_float(item)
+            if parsed is None:
+                return None
+            normalized.append(parsed)
+        return normalized
+    if isinstance(value, str):
+        parsed = _extract_float(value)
+        return parsed
+    return None
+
+
+def _normalize_trigger_conditions(items: Any) -> tuple[list[dict[str, Any]], int]:
+    if not isinstance(items, list):
+        return [], 0
+
+    normalized_items: list[dict[str, Any]] = []
+    dropped = 0
+    for item in items:
+        if not isinstance(item, dict):
+            dropped += 1
+            continue
+        normalized = dict(item)
+        normalized_value = _normalize_numeric_value(normalized.get("value"))
+        if normalized_value is None:
+            dropped += 1
+            continue
+        normalized["value"] = normalized_value
+        normalized_items.append(normalized)
+    return normalized_items, dropped
+
+
+def _normalize_adjustment_rules(items: Any) -> tuple[list[dict[str, Any]], int]:
+    if not isinstance(items, list):
+        return [], 0
+
+    normalized_items: list[dict[str, Any]] = []
+    dropped = 0
+    for item in items:
+        if not isinstance(item, dict):
+            dropped += 1
+            continue
+        normalized = dict(item)
+        trigger = normalized.get("trigger")
+        if not isinstance(trigger, dict):
+            dropped += 1
+            continue
+        normalized_trigger = dict(trigger)
+        normalized_value = _normalize_numeric_value(normalized_trigger.get("value"))
+        if normalized_value is None:
+            dropped += 1
+            continue
+        normalized_trigger["value"] = normalized_value
+        normalized["trigger"] = normalized_trigger
+        normalized_items.append(normalized)
+    return normalized_items, dropped
+
+
+def _normalize_blueprint_payload(data: dict[str, Any], signal_date: date | None) -> tuple[dict[str, Any], dict[str, int]]:
+    normalized_data = dict(data)
+    stats = {
+        "legs_expiry_normalized": 0,
+        "legs_strike_normalized": 0,
+        "entry_conditions_dropped": 0,
+        "exit_conditions_dropped": 0,
+        "adjustment_rules_dropped": 0,
+    }
+
+    symbol_plans = normalized_data.get("symbol_plans")
+    if not isinstance(symbol_plans, list):
+        return normalized_data, stats
+
+    normalized_plans: list[dict[str, Any]] = []
+    for plan in symbol_plans:
+        if not isinstance(plan, dict):
+            continue
+        normalized_plan = dict(plan)
+
+        legs = normalized_plan.get("legs")
+        if isinstance(legs, list):
+            normalized_legs = []
+            for leg in legs:
+                if not isinstance(leg, dict):
+                    continue
+                normalized_leg = dict(leg)
+
+                original_expiry = normalized_leg.get("expiry")
+                updated_expiry = _normalize_expiry(original_expiry, signal_date)
+                if updated_expiry != original_expiry:
+                    stats["legs_expiry_normalized"] += 1
+                normalized_leg["expiry"] = updated_expiry
+
+                original_strike = normalized_leg.get("strike")
+                updated_strike = _normalize_numeric_value(original_strike)
+                if updated_strike is not None and updated_strike != original_strike:
+                    stats["legs_strike_normalized"] += 1
+                    normalized_leg["strike"] = updated_strike
+
+                normalized_legs.append(normalized_leg)
+            normalized_plan["legs"] = normalized_legs
+
+        normalized_plan["entry_conditions"], dropped = _normalize_trigger_conditions(
+            normalized_plan.get("entry_conditions")
+        )
+        stats["entry_conditions_dropped"] += dropped
+
+        normalized_plan["exit_conditions"], dropped = _normalize_trigger_conditions(
+            normalized_plan.get("exit_conditions")
+        )
+        stats["exit_conditions_dropped"] += dropped
+
+        normalized_plan["adjustment_rules"], dropped = _normalize_adjustment_rules(
+            normalized_plan.get("adjustment_rules")
+        )
+        stats["adjustment_rules_dropped"] += dropped
+
+        normalized_plans.append(normalized_plan)
+
+    normalized_data["symbol_plans"] = normalized_plans
+    return normalized_data, stats
 
 
 class SynthesizerAgent:
@@ -104,6 +267,14 @@ class SynthesizerAgent:
                 sp = data.get("symbol_plans")
                 if isinstance(sp, dict):
                     data["symbol_plans"] = list(sp.values())
+
+                data, normalize_stats = _normalize_blueprint_payload(data, signal_date)
+                if any(normalize_stats.values()):
+                    logger.warning(
+                        "synthesizer.output_normalized",
+                        provider=provider.name,
+                        **normalize_stats,
+                    )
 
                 # Inject metadata
                 data["trading_date"] = next_trading_day(from_date=signal_date).isoformat()
@@ -400,6 +571,12 @@ Example: {"field":"time","operator":"between","value":[10.0,11.0],"description":
 - Calendar/diagonal: front 14-21, back 45-60 DTE
 - Collar: match holding horizon/catalyst
 - earnings_proximity ≤ 45 → prefer expiry INCLUDING earnings date
+
+## STRICT OUTPUT TYPING
+- `legs[].expiry` MUST be a concrete ISO date string (`YYYY-MM-DD`), never `30-45 DTE` text.
+- `legs[].strike` MUST be a numeric strike price, never symbolic text like `0.30_delta`.
+- `entry_conditions[].value`, `exit_conditions[].value`, and `adjustment_rules[].trigger.value` MUST be numeric or `[low, high]` numeric lists only.
+- NEVER output symbolic references like `vwap`, `short_strike`, `long_strike`, `atm`, or field names inside any `value` field.
 
 Output ONLY valid JSON. No markdown fences.
 """

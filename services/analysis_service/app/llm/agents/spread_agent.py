@@ -179,5 +179,9 @@ OUTPUT SCHEMA
 ────────────────────────────────────────────────────────
 {"symbols":[{"symbol":"AAPL","best_spread_type":"vertical|calendar|butterfly|box_arb","risk_reward_ratio":0.0,"effective_rr":null,"theta_capture":0.0,"mispricing_detected":false,"arb_opportunity":false,"optimal_dte":null,"liquidity_status":"adequate|wide|illiquid","event_risk_present":false,"constraints":[],"reasoning":"","confidence":0.0}]}
 
+STRICT TYPING
+- `optimal_dte` MUST be a single integer day count, never a range string like `30-45`.
+- If your reasoning implies a range, output the midpoint as one integer, e.g. `30-45` -> `38`.
+
 Output ONLY valid JSON. No markdown fences. Analyze ALL symbols.
 """

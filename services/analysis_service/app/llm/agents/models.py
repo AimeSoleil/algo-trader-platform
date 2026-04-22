@@ -6,9 +6,30 @@ consumes to build the final LLMTradingBlueprint.
 from __future__ import annotations
 
 from enum import Enum
+import re
 from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
+
+_NUMBER_RE = re.compile(r"[+-]?\d+(?:\.\d+)?")
+
+
+def _coerce_int_like(value: Any) -> Any:
+    if value is None or isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        return int(round(value))
+    if not isinstance(value, str):
+        return value
+
+    matches = _NUMBER_RE.findall(value)
+    if not matches:
+        return value
+
+    numbers = [float(match) for match in matches]
+    if len(numbers) == 1:
+        return int(round(numbers[0]))
+    return int(round(sum(numbers) / len(numbers)))
 
 
 # ---------------------------------------------------------------------------
@@ -160,6 +181,11 @@ class SpreadSymbolAnalysis(SymbolAnalysis):
     liquidity_status: str = Field("adequate", description="adequate, wide, illiquid")
     event_risk_present: bool = False
     constraints: list[str] = Field(default_factory=list)
+
+    @field_validator("optimal_dte", mode="before")
+    @classmethod
+    def _coerce_optimal_dte(cls, v: Any) -> Any:
+        return _coerce_int_like(v)
 
 
 class SpreadAnalysis(BaseModel):

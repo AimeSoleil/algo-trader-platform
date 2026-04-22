@@ -1,12 +1,103 @@
 """LLM 交易蓝图数据模型 — 盘后生成、盘中机械执行"""
 from __future__ import annotations
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from enum import Enum
 from typing import Any, Literal
 from pydantic import BaseModel, Field, field_validator, model_validator
+import re
 import uuid
 
 from shared.models.signal import DataQuality
+
+_NUMBER_RE = re.compile(r"[+-]?\d+(?:\.\d+)?")
+_DTE_RE = re.compile(r"(?P<start>\d+)(?:\s*-\s*(?P<end>\d+))?\s*dte", re.I)
+
+
+def _extract_float(value: Any) -> float | None:
+    if isinstance(value, (int, float)):
+        return float(value)
+    if not isinstance(value, str):
+        return None
+    match = _NUMBER_RE.search(value)
+    if not match:
+        return None
+    return float(match.group())
+
+
+def _normalize_numeric_value(value: Any) -> float | list[float] | None:
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, list):
+        normalized: list[float] = []
+        for item in value:
+            parsed = _extract_float(item)
+            if parsed is None:
+                return None
+            normalized.append(parsed)
+        return normalized
+    if isinstance(value, str):
+        return _extract_float(value)
+    return None
+
+
+def _normalize_expiry_value(value: Any) -> Any:
+    if not isinstance(value, str):
+        return value
+
+    raw = value.strip()
+    try:
+        return date.fromisoformat(raw)
+    except ValueError:
+        pass
+
+    match = _DTE_RE.search(raw)
+    if not match:
+        return value
+
+    start_days = int(match.group("start"))
+    end_days = int(match.group("end") or start_days)
+    target_days = round((start_days + end_days) / 2)
+    return date.today() + timedelta(days=target_days)
+
+
+def _sanitize_trigger_condition_items(items: Any) -> Any:
+    if not isinstance(items, list):
+        return items
+
+    sanitized: list[Any] = []
+    for item in items:
+        if not isinstance(item, dict):
+            sanitized.append(item)
+            continue
+        normalized = dict(item)
+        normalized_value = _normalize_numeric_value(normalized.get("value"))
+        if normalized_value is None:
+            continue
+        normalized["value"] = normalized_value
+        sanitized.append(normalized)
+    return sanitized
+
+
+def _sanitize_adjustment_rules(items: Any) -> Any:
+    if not isinstance(items, list):
+        return items
+
+    sanitized: list[Any] = []
+    for item in items:
+        if not isinstance(item, dict):
+            sanitized.append(item)
+            continue
+        normalized = dict(item)
+        trigger = normalized.get("trigger")
+        if isinstance(trigger, dict):
+            normalized_trigger = dict(trigger)
+            normalized_value = _normalize_numeric_value(normalized_trigger.get("value"))
+            if normalized_value is None:
+                continue
+            normalized_trigger["value"] = normalized_value
+            normalized["trigger"] = normalized_trigger
+        sanitized.append(normalized)
+    return sanitized
 
 
 class BlueprintStatus(str, Enum):
@@ -290,6 +381,17 @@ class OptionLeg(BaseModel):
     target_entry_price: float | None = None  # 目标入场价（限价）
     price_tolerance: float = 0.05  # 价格容忍度（滑点范围）
 
+    @field_validator("expiry", mode="before")
+    @classmethod
+    def _coerce_expiry(cls, v: Any) -> Any:
+        return _normalize_expiry_value(v)
+
+    @field_validator("strike", mode="before")
+    @classmethod
+    def _coerce_strike(cls, v: Any) -> Any:
+        normalized = _normalize_numeric_value(v)
+        return normalized if normalized is not None else v
+
     @property
     def is_long(self) -> bool:
         return self.side == "buy"
@@ -327,6 +429,21 @@ class SymbolPlan(BaseModel):
         if isinstance(v, float):
             v = max(1, round(v)) if v >= 1 else 1
         return int(v)
+
+    @field_validator("entry_conditions", mode="before")
+    @classmethod
+    def _coerce_entry_conditions(cls, v: Any) -> Any:
+        return _sanitize_trigger_condition_items(v)
+
+    @field_validator("exit_conditions", mode="before")
+    @classmethod
+    def _coerce_exit_conditions(cls, v: Any) -> Any:
+        return _sanitize_trigger_condition_items(v)
+
+    @field_validator("adjustment_rules", mode="before")
+    @classmethod
+    def _coerce_adjustment_rules(cls, v: Any) -> Any:
+        return _sanitize_adjustment_rules(v)
     
     # LLM推理
     reasoning: str = ""  # LLM 推理过程
