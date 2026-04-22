@@ -315,7 +315,7 @@ while (( $# > 0 )); do
       ;;
     *)
       echo "[run_workers] 未知参数: $1" >&2
-      echo "  用法: ./scripts/run_workers.sh [--workers=data,signal] [--env-file=.env.local] [--loglevel=DEBUG] [--with-flower] [--foreground] [--stop] [--status]" >&2
+      echo "  用法: ./scripts/run_workers.sh [--workers=data,signal] [--env-file=.env.local] [--loglevel=DEBUG] [--with-flower] [--foreground] [--stop] [--status] [--diag]" >&2
       exit 1
       ;;
   esac
@@ -366,12 +366,12 @@ else
   done
 fi
 
+CELERY_CMD="uv run celery -A shared.celery_app.celery_app"
+
 if [[ "${DIAG_ONLY:-0}" == "1" ]]; then
   run_diag
   exit 0
 fi
-
-CELERY_CMD="uv run celery -A shared.celery_app.celery_app"
 
 mkdir -p "$LOG_DIR"
 MANAGER_PID_FILE="$LOG_DIR/run_workers-manager.pid"
