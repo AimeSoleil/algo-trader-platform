@@ -48,6 +48,22 @@ def _normalize_to_v1(base_url: str, default: str = "https://api.qnaigc.com/v1") 
     return normalized
 
 
+def _normalize_for_anthropic(base_url: str, default: str = "https://api.qnaigc.com") -> str:
+    """Normalize base URL for Anthropic SDK.
+
+    Anthropic SDK appends `/v1/messages` internally, so base_url must not end
+    with `/v1`.
+    """
+    raw = (base_url or "").strip()
+    if not raw:
+        return default
+
+    normalized = _strip_path_suffix(raw).rstrip("/")
+    if normalized.endswith("/v1"):
+        normalized = normalized[: -len("/v1")]
+    return normalized.rstrip("/")
+
+
 def _is_route_not_found_error(exc: Exception) -> bool:
     message = str(exc).lower()
     return "404" in message and ("route not found" in message or "not found" in message)
@@ -66,7 +82,7 @@ class QiniuAgentProvider:
         self._api_key = cfg.api_key
         self._raw_base_url = cfg.base_url
         self._openai_base_url = _normalize_to_v1(cfg.base_url)
-        self._anthropic_base_url = _normalize_to_v1(cfg.base_url)
+        self._anthropic_base_url = _normalize_for_anthropic(cfg.base_url)
         self._model = cfg.model
         self._temperature = cfg.temperature
         self._timeout = cfg.request_timeout_seconds
