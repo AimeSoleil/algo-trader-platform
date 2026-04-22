@@ -47,13 +47,19 @@ class RegimeType(str, Enum):
 
 
 class VolRegime(str, Enum):
-    HIGH_VOL = "high_vol"
-    LOW_VOL = "low_vol"
-    NORMAL = "normal"
-    NORMAL_VOL = "normal_vol"
-    SQUEEZE = "squeeze"
-    BACKWARDATION = "backwardation"
-    EVENT_RISK = "event_risk"
+    # ── Single-factor regimes ──────────────────────────────────────────────
+    HIGH_VOL = "high_vol"           # IV Rank > 70; sell-premium bias
+    LOW_VOL = "low_vol"             # IV Rank < 30; buy-premium bias
+    NORMAL = "normal"               # IV Rank 30-70; no strong vol edge
+    NORMAL_VOL = "normal_vol"       # alias kept for backward compat
+    SQUEEZE = "squeeze"             # BB squeeze + IV Rank < 30; breakout imminent
+    BACKWARDATION = "backwardation" # Front > back IV; elevated near-term fear
+    EVENT_RISK = "event_risk"       # Earnings/catalyst ≤ 5d; confidence caps apply
+    # ── Compound regimes (two simultaneous conditions) ─────────────────────
+    HIGH_VOL_BACKWARDATION = "high_vol_backwardation"   # Panic spike + inverted term; Iron Butterfly only DTE>14
+    HIGH_VOL_EVENT_RISK = "high_vol_event_risk"         # Elevated IV + imminent catalyst; sell confidence ≤ 0.2
+    LOW_VOL_SQUEEZE = "low_vol_squeeze"                 # IV compressed + BB squeeze; buy straddle/calendar before breakout
+    BACKWARDATION_EVENT_RISK = "backwardation_event_risk"  # Inverted term + event; no short vol, defined-risk only
 
 
 class FlowSignal(str, Enum):
@@ -114,6 +120,14 @@ class VolatilitySymbolAnalysis(SymbolAnalysis):
     """Per-symbol output from VolatilityAgent."""
     vol_regime: VolRegime = VolRegime.NORMAL
     iv_rank_zone: str = "neutral"  # "high", "low", "neutral"
+
+    @field_validator("vol_regime", mode="before")
+    @classmethod
+    def _coerce_vol_regime(cls, v: Any) -> Any:
+        if isinstance(v, str) and "," in v:
+            v = v.split(",")[0].strip()
+        return v
+
     iv_percentile_divergence: bool = False
     hv_iv_assessment: str = "neutral"  # "implied_rich", "realized_exceeds", "neutral"
     garch_divergence: bool = False

@@ -110,7 +110,16 @@ R6. High IV + Backwardation: Iron Butterfly ONLY, DTE>14d
 - Surface arb requires >2x bid-ask error (or fit_error/ATM_IV>0.03 if no spread data) + ≥3 liquid anomalous strikes
 
 ## Output Schema
-{"symbols":[{"symbol":"AAPL","vol_regime":"high_vol|low_vol|normal_vol|squeeze|backwardation|event_risk","iv_rank_zone":"high|low|neutral","iv_percentile_divergence":false,"hv_iv_assessment":"implied_rich|realized_exceeds|neutral","garch_divergence":false,"garch_divergence_direction":"vol_rise|vol_fall|null","surface_mispricing":false,"event_risk_present":false,"liquidity_status":"high|low","strategies":[{"strategy_type":"","direction":"long_vol|short_vol|neutral","entry_conditions":"","exit_conditions":"","mandatory_constraints":[],"reasoning":"","confidence":0.0-1.0}],"reasoning":"","confidence":0.0-1.0}],"market_vol_summary":""}
+{"symbols":[{"symbol":"AAPL","vol_regime":"high_vol|low_vol|normal_vol|squeeze|backwardation|event_risk|high_vol_backwardation|high_vol_event_risk|low_vol_squeeze|backwardation_event_risk","iv_rank_zone":"high|low|neutral","iv_percentile_divergence":false,"hv_iv_assessment":"implied_rich|realized_exceeds|neutral","garch_divergence":false,"garch_divergence_direction":"vol_rise|vol_fall|null","surface_mispricing":false,"event_risk_present":false,"liquidity_status":"high|low","strategies":[{"strategy_type":"","direction":"long_vol|short_vol|neutral","entry_conditions":"","exit_conditions":"","mandatory_constraints":[],"reasoning":"","confidence":0.0-1.0}],"reasoning":"","confidence":0.0-1.0}],"market_vol_summary":""}
+
+## Compound Regime Selection
+Use a compound regime (e.g. high_vol_backwardation) when TWO conditions are simultaneously confirmed.
+- high_vol_backwardation: IV Rank>70 AND term structure inverted → Iron Butterfly ONLY, DTE>14d; no other short-vol structures
+- high_vol_event_risk: IV Rank>70 AND earnings_proximity_days≤5 → sell confidence hard-capped at 0.2
+- low_vol_squeeze: IV Rank<30 AND BB squeeze active → buy straddle/calendar before breakout; stop if IV drops >15%
+- backwardation_event_risk: term structure inverted AND earnings_proximity_days≤5 → no short vol; defined-risk long only
+
+Important: vol_regime must be a SINGLE string value from the list above. Never combine two values with a comma.
 
 Output ONLY valid JSON. No markdown fences. Analyze ALL symbols.
 """
