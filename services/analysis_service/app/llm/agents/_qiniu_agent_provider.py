@@ -90,6 +90,8 @@ class QiniuAgentProvider:
         self._anthropic_client: AsyncAnthropic | None = None
         self._openai_loop_id: int | None = None
         self._anthropic_loop_id: int | None = None
+        self._openai_models_logged = False
+        self._anthropic_models_logged = False
 
         if self._raw_base_url and self._raw_base_url.rstrip("/") != self._openai_base_url.rstrip("/"):
             logger.info(
@@ -111,6 +113,7 @@ class QiniuAgentProvider:
             self._openai_client = AsyncOpenAI(api_key=self._api_key, base_url=self._openai_base_url)
             self._openai_loop_id = current_loop_id
             logger.info("qiniu_agent.openai_client_created", base_url=self._openai_base_url, model=self._model)
+            self._log_supported_models_once()
         return self._openai_client
 
     def _get_anthropic_client(self) -> AsyncAnthropic:
@@ -121,6 +124,7 @@ class QiniuAgentProvider:
             self._anthropic_client = AsyncAnthropic(api_key=self._api_key, base_url=self._anthropic_base_url)
             self._anthropic_loop_id = current_loop_id
             logger.info("qiniu_agent.anthropic_client_created", base_url=self._anthropic_base_url, model=self._model)
+            self._log_anthropic_supported_models_once()
         return self._anthropic_client
 
     async def generate(
@@ -263,3 +267,41 @@ class QiniuAgentProvider:
             usage.completion_tokens if usage else 0,
             usage.total_tokens if usage else 0,
         )
+
+    def _log_supported_models_once(self) -> None:
+        if self._openai_models_logged:
+            return
+
+        self._openai_models_logged = True
+        asyncio.create_task(self._log_openai_supported_models_worker())
+
+    async def _log_openai_supported_models_worker(self) -> None:
+        try:
+            client = self._openai_client
+            if client is None:
+                return
+            # 获取可用模型列表
+            models = await client.models.list()
+            for model in models.data:
+                logger.debug("qiniu_agent.openai_supported_model", model_id=model.id)
+        except Exception as exc:
+            logger.warning("qiniu_agent.openai_supported_models_failed", error=str(exc))
+
+    def _log_anthropic_supported_models_once(self) -> None:
+        if self._anthropic_models_logged:
+            return
+
+        self._anthropic_models_logged = True
+        asyncio.create_task(self._log_anthropic_supported_models_worker())
+
+    async def _log_anthropic_supported_models_worker(self) -> None:
+        try:
+            client = self._anthropic_client
+            if client is None:
+                return
+            # 获取可用模型列表
+            models = await client.models.list()
+            for model in models.data:
+                logger.debug("qiniu_agent.anthropic_supported_model", model_id=model.id)
+        except Exception as exc:
+            logger.warning("qiniu_agent.anthropic_supported_models_failed", error=str(exc))
