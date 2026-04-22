@@ -23,6 +23,7 @@
 #                           Choices: data,signal,analysis
 #   ENABLE_FLOWER           Set to 1 to start Flower     (default: 0)
 #   FLOWER_PORT             Flower listen port           (default: 5555)
+#   FLOWER_INSPECT_TIMEOUT  Flower inspect timeout ms    (default: 60000)
 #   LOG_LEVEL               Celery worker log level      (default: INFO)
 #                           Choices: DEBUG,INFO,WARNING,ERROR,CRITICAL
 #
@@ -59,6 +60,7 @@ SHUTDOWN_GRACE="${SHUTDOWN_GRACE:-30}"
 WORKERS="${WORKERS:-all}"
 ENABLE_FLOWER="${ENABLE_FLOWER:-0}"
 FLOWER_PORT="${FLOWER_PORT:-5555}"
+FLOWER_INSPECT_TIMEOUT="${FLOWER_INSPECT_TIMEOUT:-60000}"
 LOG_LEVEL="${LOG_LEVEL:-INFO}"
 WORKER_HOST="${WORKER_HOST:-$(hostname -s 2>/dev/null || hostname)}"
 
@@ -174,6 +176,58 @@ show_status() {
   printf "    %-10s → %s\n" "beat" "${LOG_DIR}/celery-beat.log"
 }
 
+run_diag() {
+  mkdir -p "$LOG_DIR"
+
+  echo "[run_workers] Diag"
+  echo "  LOG_DIR=${LOG_DIR}"
+  echo "  WORKERS=${ACTIVE_WORKERS[*]}"
+  echo "  WORKER_HOST=${WORKER_HOST}"
+  echo "  HEALTH_CHECK_INTERVAL=${HEALTH_CHECK_INTERVAL}s"
+  echo "  HEALTH_CHECK_TIMEOUT=${HEALTH_CHECK_TIMEOUT}s"
+  echo "  HEALTH_CHECK_FAILURES=${HEALTH_CHECK_FAILURES}"
+  echo ""
+
+  echo "  worker nodes:"
+  local destinations=""
+  for w in "${ACTIVE_WORKERS[@]}"; do
+    local node_name="${w}@${WORKER_HOST}"
+    local pidfile="$LOG_DIR/${w}.pid"
+    local pid=""
+    local state="STOPPED"
+    if [[ -f "$pidfile" ]]; then
+      pid="$(cat "$pidfile" 2>/dev/null || true)"
+      if [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null; then
+        state="RUNNING"
+      else
+        state="STALE_PID_FILE"
+      fi
+    fi
+    printf "    %-24s %s" "$node_name" "$state"
+    if [[ -n "$pid" ]]; then
+      printf " (pid=%s)" "$pid"
+    fi
+    printf "\n"
+    if [[ -n "$destinations" ]]; then
+      destinations+="," 
+    fi
+    destinations+="$node_name"
+  done
+  echo ""
+
+  echo "  inspect ping:"
+  ${CELERY_CMD} inspect ping -t "$HEALTH_CHECK_TIMEOUT" -d "$destinations" 2>&1 || true
+  echo ""
+
+  echo "  watchdog log tail:"
+  local watchdog_log="$LOG_DIR/celery-watchdog.log"
+  if [[ -f "$watchdog_log" ]]; then
+    tail -n 20 "$watchdog_log"
+  else
+    echo "    (no watchdog log yet)"
+  fi
+}
+
 # Accept CLI flags (supports both --param=value and --param value)
 while (( $# > 0 )); do
   case "$1" in
@@ -250,6 +304,11 @@ while (( $# > 0 )); do
       show_status
       exit 0
       ;;
+    --diag)
+      # lightweight runtime diagnostics for worker node names / inspect / watchdog
+      DIAG_ONLY=1
+      shift
+      ;;
     --list|--help|-h)
       show_workers
       exit 0
@@ -307,6 +366,11 @@ else
   done
 fi
 
+if [[ "${DIAG_ONLY:-0}" == "1" ]]; then
+  run_diag
+  exit 0
+fi
+
 CELERY_CMD="uv run celery -A shared.celery_app.celery_app"
 
 mkdir -p "$LOG_DIR"
@@ -335,7 +399,9 @@ if [[ "$DAEMON_MODE" == "1" ]]; then
   WORKERS="$WORKERS" \
   ENABLE_FLOWER="$ENABLE_FLOWER" \
   FLOWER_PORT="$FLOWER_PORT" \
+  FLOWER_INSPECT_TIMEOUT="$FLOWER_INSPECT_TIMEOUT" \
   LOG_LEVEL="$LOG_LEVEL" \
+  WORKER_HOST="$WORKER_HOST" \
   DAEMON_MODE=0 \
   nohup "$script_path" --foreground >> "$LOG_DIR/run_workers-manager.out" 2>&1 &
 
@@ -504,11 +570,46 @@ run_with_restart() {
 
 # ── Health-check watchdog ──────────────────────────────────
 declare -A HEALTH_FAIL_COUNT=()
+declare -A HEALTH_LAST_SIGNATURE=()
+declare -A HEALTH_STUCK_COUNT=()
+
+worker_progress_signature() {
+  local name="$1"
+  local pid="${CHILD_PIDS[$name]:-}"
+
+  if [[ -z "$pid" ]] || ! kill -0 "$pid" 2>/dev/null; then
+    printf 'dead\n'
+    return
+  fi
+
+  local cpu_time=""
+  cpu_time="$(ps -p "$pid" -o cputime= 2>/dev/null | tr -d '[:space:]' || true)"
+
+  local log_path="$LOG_DIR/celery-${name}.log"
+  local log_size="0"
+  local log_mtime="0"
+  if [[ -f "$log_path" ]]; then
+    log_size="$(wc -c < "$log_path" 2>/dev/null | tr -d '[:space:]' || printf '0')"
+    log_mtime="$(python - <<'PY' "$log_path"
+from pathlib import Path
+import sys
+try:
+    print(int(Path(sys.argv[1]).stat().st_mtime))
+except FileNotFoundError:
+    print(0)
+PY
+    )"
+  fi
+
+  printf '%s|%s|%s|%s\n' "$pid" "$cpu_time" "$log_size" "$log_mtime"
+}
 
 health_watchdog() {
   # Initialise failure counters
   for w in "${ACTIVE_WORKERS[@]}"; do
     HEALTH_FAIL_COUNT[$w]=0
+    HEALTH_LAST_SIGNATURE[$w]=""
+    HEALTH_STUCK_COUNT[$w]=0
   done
 
   while true; do
@@ -538,18 +639,35 @@ health_watchdog() {
           log_both watchdog "${w} worker 恢复响应"
         fi
         HEALTH_FAIL_COUNT[$w]=0
+        HEALTH_LAST_SIGNATURE[$w]=""
+        HEALTH_STUCK_COUNT[$w]=0
       else
         HEALTH_FAIL_COUNT[$w]=$(( HEALTH_FAIL_COUNT[$w] + 1 ))
         local fails=${HEALTH_FAIL_COUNT[$w]}
-        log_both watchdog "${w} worker 未响应 (连续失败 ${fails}/${HEALTH_CHECK_FAILURES})"
+        local signature
+        signature="$(worker_progress_signature "$w")"
+        if [[ "$signature" == "${HEALTH_LAST_SIGNATURE[$w]}" ]]; then
+          HEALTH_STUCK_COUNT[$w]=$(( HEALTH_STUCK_COUNT[$w] + 1 ))
+        else
+          HEALTH_LAST_SIGNATURE[$w]="$signature"
+          HEALTH_STUCK_COUNT[$w]=1
+        fi
+        local stuck=${HEALTH_STUCK_COUNT[$w]}
+        log_both watchdog "${w} worker 未响应 (连续失败 ${fails}/${HEALTH_CHECK_FAILURES}, 无进展 ${stuck}/${HEALTH_CHECK_FAILURES})"
 
         if (( fails >= HEALTH_CHECK_FAILURES )); then
           local pid="${CHILD_PIDS[$w]:-}"
           if [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null; then
-            log_both watchdog "${w} worker 连续 ${HEALTH_CHECK_FAILURES} 次未响应，强制终止 pid=${pid}"
-            kill -9 "$pid" 2>/dev/null || true
+            if (( stuck >= HEALTH_CHECK_FAILURES )); then
+              log_both watchdog "${w} worker 连续 ${HEALTH_CHECK_FAILURES} 次未响应且 CPU/日志无变化，强制终止 pid=${pid}"
+              kill -9 "$pid" 2>/dev/null || true
+            else
+              log_both watchdog "${w} worker 连续 ${HEALTH_CHECK_FAILURES} 次未响应，但进程仍有 CPU/日志进展，跳过强杀"
+            fi
           fi
           HEALTH_FAIL_COUNT[$w]=0
+          HEALTH_STUCK_COUNT[$w]=0
+          HEALTH_LAST_SIGNATURE[$w]=""
         fi
       fi
     done
@@ -649,6 +767,7 @@ log main "LOG_LEVEL=${LOG_LEVEL}"
 log main "ENABLE_FLOWER=${ENABLE_FLOWER}"
 log main "DAEMON_MODE=${DAEMON_MODE}"
 [[ "$ENABLE_FLOWER" == "1" ]] && log main "FLOWER_PORT=${FLOWER_PORT}"
+[[ "$ENABLE_FLOWER" == "1" ]] && log main "FLOWER_INSPECT_TIMEOUT=${FLOWER_INSPECT_TIMEOUT}ms"
 log main "────────────────────────────────────────"
 
 # Clean up stale PID files from previous runs
@@ -682,7 +801,7 @@ if [[ "$ENABLE_FLOWER" == "1" ]]; then
   sleep 5
   run_with_restart flower \
     env FLOWER_UNAUTHENTICATED_API=true $CELERY_CMD flower --port="$FLOWER_PORT" \
-    --inspect_timeout=10000 &
+    --inspect_timeout="$FLOWER_INSPECT_TIMEOUT" &
   WRAPPER_PIDS[flower]=$!
   log main "Flower 已启动: http://localhost:${FLOWER_PORT}"
 fi

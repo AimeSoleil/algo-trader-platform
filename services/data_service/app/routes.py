@@ -14,6 +14,7 @@ from shared.config import get_settings
 from shared.db.session import get_timescale_session
 from shared.utils import (
     before_market_open,
+    get_logger,
     is_market_open,
     now_market,
     previous_trading_day,
@@ -21,6 +22,7 @@ from shared.utils import (
 )
 
 router = APIRouter(tags=["data"])
+logger = get_logger("data_service_routes")
 
 
 # ── Pydantic response models ──────────────────────────────
@@ -462,6 +464,16 @@ async def trigger_collection(req: CollectRequest):
         "data_service.tasks.manual_collect",
         args=[symbols, req.start_date.isoformat(), req.end_date.isoformat(), req.data_types],
         queue="data",
+    )
+
+    logger.info(
+        "manual_collect.queued",
+        task_id=task.id,
+        queue="data",
+        symbols=len(symbols),
+        start_date=req.start_date.isoformat(),
+        end_date=req.end_date.isoformat(),
+        data_types=req.data_types,
     )
 
     message = (

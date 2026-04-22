@@ -100,10 +100,13 @@ services:
       nofile:
         soft: 65536
         hard: 65536
+    # Plain docker compose honors mem_limit; keep RabbitMQ lightweight on the
+    # 2.4 GiB host, but give it headroom above the flow-control watermark.
+    mem_limit: 384m
     deploy:
       resources:
         limits:
-          memory: 256M
+          memory: 384M
     volumes:
       - rabbitmq_data:/var/lib/rabbitmq
       - ./config/rabbitmq.conf:/etc/rabbitmq/rabbitmq.conf:ro

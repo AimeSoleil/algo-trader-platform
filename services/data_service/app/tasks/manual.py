@@ -29,6 +29,15 @@ def manual_collect(
     data_types: subset of ["bars_1m", "bars_daily"]
     Fires as a Celery task — caller gets task_id to poll progress.
     """
+    logger.info(
+        "manual_collect.started",
+        task_id=getattr(self.request, "id", None),
+        symbols=len(symbols),
+        start_date=start_date,
+        end_date=end_date,
+        data_types=data_types,
+        retry=getattr(self.request, "retries", 0),
+    )
     logger.debug(
         "manual_collect.start",
         log_event="task_start",
