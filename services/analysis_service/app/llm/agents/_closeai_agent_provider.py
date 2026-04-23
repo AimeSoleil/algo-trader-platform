@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 from importlib import import_module
+from time import perf_counter
 from typing import Any
 
 from anthropic import AsyncAnthropic
@@ -222,6 +223,7 @@ class CloseAIAgentProvider:
         max_tokens: int | None = None,
         model: str | None = None,
         agent_name: str | None = None,
+        analysis_chunk_id: str | None = None,
     ) -> LLMResult:
         settings = get_settings()
         effective_model = model or self._model
@@ -237,7 +239,7 @@ class CloseAIAgentProvider:
         provider_type = _provider_type_for_model(effective_model)
 
         if provider_type == "anthropic":
-            content, input_tokens, output_tokens, total_tokens = await self._generate_anthropic(
+            content, input_tokens, output_tokens, total_tokens, api_latency_ms = await self._generate_anthropic(
                 effective_model=effective_model,
                 instructions=instructions,
                 user_prompt=user_prompt,
@@ -245,9 +247,10 @@ class CloseAIAgentProvider:
                 effective_temp=effective_temp,
                 effective_max_tokens=effective_max_tokens,
                 agent_name=agent_name,
+                analysis_chunk_id=analysis_chunk_id,
             )
         elif provider_type == "google":
-            content, input_tokens, output_tokens, total_tokens = await self._generate_google(
+            content, input_tokens, output_tokens, total_tokens, api_latency_ms = await self._generate_google(
                 effective_model=effective_model,
                 instructions=instructions,
                 user_prompt=user_prompt,
@@ -255,9 +258,10 @@ class CloseAIAgentProvider:
                 effective_temp=effective_temp,
                 effective_max_tokens=effective_max_tokens,
                 agent_name=agent_name,
+                analysis_chunk_id=analysis_chunk_id,
             )
         else:
-            content, input_tokens, output_tokens, total_tokens = await self._generate_openai(
+            content, input_tokens, output_tokens, total_tokens, api_latency_ms = await self._generate_openai(
                 effective_model=effective_model,
                 instructions=instructions,
                 user_prompt=user_prompt,
@@ -265,13 +269,16 @@ class CloseAIAgentProvider:
                 effective_temp=effective_temp,
                 effective_max_tokens=effective_max_tokens,
                 agent_name=agent_name,
+                analysis_chunk_id=analysis_chunk_id,
             )
 
         logger.debug(
             "closeai_agent.response_received",
+            analysis_chunk_id=analysis_chunk_id,
             agent=agent_name,
             model=effective_model,
             content_len=len(content),
+            api_latency_ms=api_latency_ms,
         )
 
         return LLMResult(
@@ -293,17 +300,20 @@ class CloseAIAgentProvider:
         effective_temp: float,
         effective_max_tokens: int,
         agent_name: str | None,
-    ) -> tuple[str, int, int, int]:
+        analysis_chunk_id: str | None,
+    ) -> tuple[str, int, int, int, float]:
         client = self._get_anthropic_client()
         user_content = f"{user_prompt}\n\n{json_instruction}"
         input_prompt_tokens = estimate_prompt_tokens(instructions, user_content)
         logger.info(
             "closeai_agent.request_started",
+            analysis_chunk_id=analysis_chunk_id,
             agent=agent_name,
             client_type="anthropic",
             model=effective_model,
             input_prompt_tokens=input_prompt_tokens,
         )
+        started = perf_counter()
         response = await client.messages.create(
             model=effective_model,
             system=instructions,
@@ -311,11 +321,12 @@ class CloseAIAgentProvider:
             temperature=effective_temp,
             max_tokens=effective_max_tokens,
         )
+        api_latency_ms = round((perf_counter() - started) * 1000, 2)
         content = response.content[0].text if response.content else ""
         usage = response.usage
         input_tokens = usage.input_tokens if usage else 0
         output_tokens = usage.output_tokens if usage else 0
-        return content, input_tokens, output_tokens, input_tokens + output_tokens
+        return content, input_tokens, output_tokens, input_tokens + output_tokens, api_latency_ms
 
     async def _generate_google(
         self,
@@ -327,7 +338,8 @@ class CloseAIAgentProvider:
         effective_temp: float,
         effective_max_tokens: int,
         agent_name: str | None,
-    ) -> tuple[str, int, int, int]:
+        analysis_chunk_id: str | None,
+    ) -> tuple[str, int, int, int, float]:
         types = import_module("google.genai.types")
 
         client = self._get_google_client()
@@ -335,11 +347,13 @@ class CloseAIAgentProvider:
         input_prompt_tokens = estimate_prompt_tokens(instructions, user_content)
         logger.info(
             "closeai_agent.request_started",
+            analysis_chunk_id=analysis_chunk_id,
             agent=agent_name,
             client_type="google",
             model=effective_model,
             input_prompt_tokens=input_prompt_tokens,
         )
+        started = perf_counter()
         response = await client.models.generate_content(
             model=effective_model,
             contents=user_content,
@@ -350,6 +364,7 @@ class CloseAIAgentProvider:
                 response_mime_type="application/json",
             ),
         )
+        api_latency_ms = round((perf_counter() - started) * 1000, 2)
         content = response.text or ""
         usage = response.usage_metadata
         input_tokens = getattr(usage, "prompt_token_count", 0) if usage else 0
@@ -362,7 +377,7 @@ class CloseAIAgentProvider:
         total_tokens = getattr(usage, "total_token_count", 0) if usage else 0
         if not total_tokens:
             total_tokens = input_tokens + output_tokens
-        return content, input_tokens, output_tokens, total_tokens
+        return content, input_tokens, output_tokens, total_tokens, api_latency_ms
 
     async def _generate_openai(
         self,
@@ -374,17 +389,20 @@ class CloseAIAgentProvider:
         effective_temp: float,
         effective_max_tokens: int,
         agent_name: str | None,
-    ) -> tuple[str, int, int, int]:
+        analysis_chunk_id: str | None,
+    ) -> tuple[str, int, int, int, float]:
         client = self._get_openai_client()
         user_content = f"{user_prompt}\n\n{json_instruction}"
         input_prompt_tokens = estimate_prompt_tokens(instructions, user_content)
         logger.info(
             "closeai_agent.request_started",
+            analysis_chunk_id=analysis_chunk_id,
             agent=agent_name,
             client_type="openai",
             model=effective_model,
             input_prompt_tokens=input_prompt_tokens,
         )
+        started = perf_counter()
         response = await client.chat.completions.create(
             model=effective_model,
             messages=[
@@ -397,6 +415,7 @@ class CloseAIAgentProvider:
             response_format={"type": "json_object"},
             timeout=self._timeout,
         )
+        api_latency_ms = round((perf_counter() - started) * 1000, 2)
         content = response.choices[0].message.content or ""
         usage = response.usage
         return (
@@ -404,4 +423,5 @@ class CloseAIAgentProvider:
             usage.prompt_tokens if usage else 0,
             usage.completion_tokens if usage else 0,
             usage.total_tokens if usage else 0,
+            api_latency_ms,
         )

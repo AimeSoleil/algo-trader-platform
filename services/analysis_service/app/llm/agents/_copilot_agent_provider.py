@@ -14,6 +14,7 @@ from __future__ import annotations
 import asyncio
 import shutil
 from pathlib import Path
+from time import perf_counter
 from typing import Any
 
 from shared.config import get_settings
@@ -137,6 +138,7 @@ class CopilotAgentProvider:
         max_tokens: int | None = None,
         model: str | None = None,
         agent_name: str | None = None,
+        analysis_chunk_id: str | None = None,
     ) -> LLMResult:
         client = await self._get_client()
 
@@ -183,6 +185,7 @@ class CopilotAgentProvider:
         )
         logger.info(
             "copilot_agent.request_started",
+            analysis_chunk_id=analysis_chunk_id,
             agent=agent_name,
             model=effective_model,
             input_prompt_tokens=estimate_prompt_tokens(full_prompt),
@@ -210,15 +213,19 @@ class CopilotAgentProvider:
 
         session.on(_on_event)
 
+        started = perf_counter()
         result = await session.send_and_wait(
             {"prompt": full_prompt},
             timeout=self._timeout,
         )
+        api_latency_ms = round((perf_counter() - started) * 1000, 2)
 
         logger.debug(
             "copilot_agent.response_received",
+            analysis_chunk_id=analysis_chunk_id,
             agent=agent_name,
             model=effective_model,
+            api_latency_ms=api_latency_ms,
             typeof_raw_response=type(result).__name__,
             raw_response=str(result)
         )

@@ -8,6 +8,7 @@ for standalone agent testing.
 from __future__ import annotations
 
 import asyncio
+from time import perf_counter
 
 from openai import AsyncOpenAI
 
@@ -59,6 +60,7 @@ class OpenAIAgentProvider:
         max_tokens: int | None = None,
         model: str | None = None,
         agent_name: str | None = None,
+        analysis_chunk_id: str | None = None,
     ) -> LLMResult:
         settings = get_settings()
         client = self._get_client()
@@ -66,10 +68,12 @@ class OpenAIAgentProvider:
         input_prompt_tokens = estimate_prompt_tokens(instructions, user_prompt)
         logger.info(
             "openai_agent.request_started",
+            analysis_chunk_id=analysis_chunk_id,
             agent=agent_name,
             model=effective_model,
             input_prompt_tokens=input_prompt_tokens,
         )
+        started = perf_counter()
         response = await client.responses.create(
             model=effective_model,
             instructions=instructions,
@@ -79,6 +83,16 @@ class OpenAIAgentProvider:
             temperature=temperature if temperature is not None else settings.analysis_service.llm.openai.temperature,
             max_output_tokens=max_tokens or 16384,
             timeout=self._timeout,
+        )
+        api_latency_ms = round((perf_counter() - started) * 1000, 2)
+
+        logger.debug(
+            "openai_agent.response_received",
+            analysis_chunk_id=analysis_chunk_id,
+            agent=agent_name,
+            model=effective_model,
+            content_len=len(response.output_text or ""),
+            api_latency_ms=api_latency_ms,
         )
 
         usage = response.usage

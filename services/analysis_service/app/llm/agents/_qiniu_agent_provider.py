@@ -10,6 +10,7 @@ Auth:     Authorization: Bearer <api_key>
 from __future__ import annotations
 
 import asyncio
+from time import perf_counter
 from typing import Any
 
 from anthropic import AsyncAnthropic
@@ -146,6 +147,7 @@ class QiniuAgentProvider:
         max_tokens: int | None = None,
         model: str | None = None,
         agent_name: str | None = None,
+        analysis_chunk_id: str | None = None,
     ) -> LLMResult:
         settings = get_settings()
         effective_model = model or self._model
@@ -159,7 +161,7 @@ class QiniuAgentProvider:
         )
 
         if effective_model.startswith("claude-"):
-            content, input_tokens, output_tokens, total_tokens = await self._generate_anthropic(
+            content, input_tokens, output_tokens, total_tokens, api_latency_ms = await self._generate_anthropic(
                 effective_model=effective_model,
                 instructions=instructions,
                 user_prompt=user_prompt,
@@ -167,9 +169,10 @@ class QiniuAgentProvider:
                 effective_temp=effective_temp,
                 effective_max_tokens=effective_max_tokens,
                 agent_name=agent_name,
+                analysis_chunk_id=analysis_chunk_id,
             )
         else:
-            content, input_tokens, output_tokens, total_tokens = await self._generate_openai(
+            content, input_tokens, output_tokens, total_tokens, api_latency_ms = await self._generate_openai(
                 effective_model=effective_model,
                 instructions=instructions,
                 user_prompt=user_prompt,
@@ -177,13 +180,16 @@ class QiniuAgentProvider:
                 effective_temp=effective_temp,
                 effective_max_tokens=effective_max_tokens,
                 agent_name=agent_name,
+                analysis_chunk_id=analysis_chunk_id,
             )
 
         logger.debug(
             "qiniu_agent.response_received",
+            analysis_chunk_id=analysis_chunk_id,
             agent=agent_name,
             model=effective_model,
             content_len=len(content),
+            api_latency_ms=api_latency_ms,
         )
 
         return LLMResult(
@@ -205,18 +211,21 @@ class QiniuAgentProvider:
         effective_temp: float,
         effective_max_tokens: int,
         agent_name: str | None,
-    ) -> tuple[str, int, int, int]:
+        analysis_chunk_id: str | None,
+    ) -> tuple[str, int, int, int, float]:
         """Call Qiniu via the Anthropic SDK (claude-* models -> /v1/messages)."""
         client = self._get_anthropic_client()
         user_content = f"{user_prompt}\n\n{json_instruction}"
         input_prompt_tokens = estimate_prompt_tokens(instructions, user_content)
         logger.info(
             "qiniu_agent.request_started",
+            analysis_chunk_id=analysis_chunk_id,
             agent=agent_name,
             client_type="anthropic",
             model=effective_model,
             input_prompt_tokens=input_prompt_tokens,
         )
+        started = perf_counter()
         response = await client.messages.create(
             model=effective_model,
             system=instructions,
@@ -224,11 +233,12 @@ class QiniuAgentProvider:
             temperature=effective_temp,
             max_tokens=effective_max_tokens,
         )
+        api_latency_ms = round((perf_counter() - started) * 1000, 2)
         content = response.content[0].text if response.content else ""
         usage = response.usage
         input_tokens = usage.input_tokens if usage else 0
         output_tokens = usage.output_tokens if usage else 0
-        return content, input_tokens, output_tokens, input_tokens + output_tokens
+        return content, input_tokens, output_tokens, input_tokens + output_tokens, api_latency_ms
 
     async def _generate_openai(
         self,
@@ -240,18 +250,21 @@ class QiniuAgentProvider:
         effective_temp: float,
         effective_max_tokens: int,
         agent_name: str | None,
-    ) -> tuple[str, int, int, int]:
+        analysis_chunk_id: str | None,
+    ) -> tuple[str, int, int, int, float]:
         """Call Qiniu via the OpenAI SDK (non-claude models -> /v1/chat/completions)."""
         client = self._get_openai_client()
         user_content = f"{user_prompt}\n\n{json_instruction}"
         input_prompt_tokens = estimate_prompt_tokens(instructions, user_content)
         logger.info(
             "qiniu_agent.request_started",
+            analysis_chunk_id=analysis_chunk_id,
             agent=agent_name,
             client_type="openai",
             model=effective_model,
             input_prompt_tokens=input_prompt_tokens,
         )
+        started = perf_counter()
         call_kwargs: dict = {
             "model": effective_model,
             "messages": [
@@ -292,6 +305,7 @@ class QiniuAgentProvider:
             self._openai_client = fallback_client
             self._openai_loop_id = id(asyncio.get_running_loop())
 
+        api_latency_ms = round((perf_counter() - started) * 1000, 2)
         content = response.choices[0].message.content or ""
         usage = response.usage
         return (
@@ -299,6 +313,7 @@ class QiniuAgentProvider:
             usage.prompt_tokens if usage else 0,
             usage.completion_tokens if usage else 0,
             usage.total_tokens if usage else 0,
+            api_latency_ms,
         )
 
     def _log_model_list_once(self, client_type: str, client: Any) -> None:

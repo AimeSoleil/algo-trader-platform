@@ -184,6 +184,7 @@ class AgentLLMProvider(Protocol):
         max_tokens: int | None = None,
         model: str | None = None,
         agent_name: str | None = None,
+        analysis_chunk_id: str | None = None,
     ) -> LLMResult:
         """Send prompt to LLM and return text + token counts."""
         ...
@@ -245,6 +246,7 @@ class AnalysisAgent(ABC):
         provider: AgentLLMProvider | None = None,
         usage_tracker: LLMUsageTracker | None = None,
         model: str | None = None,
+        analysis_chunk_id: str | None = None,
     ) -> T:
         """Run analysis on the provided signal data.
 
@@ -294,6 +296,7 @@ class AnalysisAgent(ABC):
                     max_tokens=_max_tokens,
                     model=model,
                     agent_name=self.name,
+                    analysis_chunk_id=analysis_chunk_id,
                 )
 
                 # Detect output truncation: if the model hit the token ceiling,
@@ -303,6 +306,7 @@ class AnalysisAgent(ABC):
                     raw_output = result.raw_content or result.content
                     logger.error(
                         f"agent.{self.name}.output_truncated",
+                        analysis_chunk_id=analysis_chunk_id,
                         provider=provider.name,
                         model=result.model,
                         output_tokens=result.output_tokens,
@@ -334,6 +338,7 @@ class AnalysisAgent(ABC):
                     raw_output = result.raw_content or result.content
                     logger.error(
                         f"agent.{self.name}.empty_symbols",
+                        analysis_chunk_id=analysis_chunk_id,
                         provider=provider.name,
                         model=result.model,
                         output_tokens=result.output_tokens,
@@ -368,6 +373,7 @@ class AnalysisAgent(ABC):
 
                 logger.info(
                     f"agent.{self.name}.completed",
+                    analysis_chunk_id=analysis_chunk_id,
                     provider=provider.name,
                     model=result.model,
                     symbols=len(filtered),
@@ -384,6 +390,7 @@ class AnalysisAgent(ABC):
                 ).inc()
                 logger.warning(
                     f"agent.{self.name}.parse_error",
+                    analysis_chunk_id=analysis_chunk_id,
                     provider=provider.name,
                     attempt=attempt + 1,
                     error=decode_escaped_unicode(e),
@@ -415,6 +422,7 @@ class AnalysisAgent(ABC):
                     ).inc()
                     logger.warning(
                         f"agent.{self.name}.retryable_error",
+                        analysis_chunk_id=analysis_chunk_id,
                         provider=provider.name,
                         attempt=attempt + 1,
                         error=decode_escaped_unicode(e),
@@ -425,6 +433,7 @@ class AnalysisAgent(ABC):
 
                 logger.warning(
                     f"agent.{self.name}.failed",
+                    analysis_chunk_id=analysis_chunk_id,
                     provider=provider.name,
                     attempt=attempt + 1,
                     error=decode_escaped_unicode(e),

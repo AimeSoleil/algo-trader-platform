@@ -15,6 +15,7 @@ import asyncio
 import copy
 import json
 import statistics
+import uuid
 from datetime import date
 from time import perf_counter
 from typing import Any
@@ -213,6 +214,7 @@ class AgentOrchestrator:
                 previous_execution=previous_execution,
                 provider=provider,
                 signal_date=signal_date,
+                analysis_chunk_id=f"single-{uuid.uuid4().hex[:8]}",
                 usage_tracker=usage_tracker,
                 trade_symbols=trade_symbol_names,
             )
@@ -251,6 +253,7 @@ class AgentOrchestrator:
             async def _run_chunk(idx: int, chunk_features: list[SignalFeatures]):
                 chunk_tracker = LLMUsageTracker()
                 chunk_trackers[idx] = chunk_tracker  # Safe: each coroutine writes unique key
+                analysis_chunk_id = f"chunk-{idx:03d}-{uuid.uuid4().hex[:8]}"
                 trade_syms_in_chunk = [
                     sf.symbol for sf in chunk_features
                     if sf.symbol.upper() in trade_syms
@@ -262,6 +265,7 @@ class AgentOrchestrator:
                 async with sem:
                     logger.info(
                         "orchestrator.chunk_started",
+                        analysis_chunk_id=analysis_chunk_id,
                         chunk=idx,
                         symbols=len(chunk_features),
                         trade_symbols=trade_syms_in_chunk,
@@ -274,6 +278,7 @@ class AgentOrchestrator:
                         provider=provider,
                         signal_date=signal_date,
                         is_chunk=True,
+                        analysis_chunk_id=analysis_chunk_id,
                         usage_tracker=chunk_tracker,
                         trade_symbols=trade_syms_in_chunk,
                     )
@@ -360,6 +365,7 @@ class AgentOrchestrator:
         *,
         signal_date: date | None = None,
         is_chunk: bool = False,
+        analysis_chunk_id: str,
         usage_tracker: LLMUsageTracker | None = None,
         trade_symbols: list[str] | None = None,
     ) -> LLMTradingBlueprint:
@@ -380,15 +386,22 @@ class AgentOrchestrator:
         logger.info(
             "orchestrator.phase_started",
             phase="specialists",
+            analysis_chunk_id=analysis_chunk_id,
             agents=6,
             symbols=len(signal_features),
             is_chunk=is_chunk,
         )
         specialists_t0 = perf_counter()
-        agent_outputs = await self._run_specialists(serialized, provider=provider, usage_tracker=usage_tracker)
+        agent_outputs = await self._run_specialists(
+            serialized,
+            provider=provider,
+            usage_tracker=usage_tracker,
+            analysis_chunk_id=analysis_chunk_id,
+        )
         logger.info(
             "orchestrator.phase_completed",
             phase="specialists",
+            analysis_chunk_id=analysis_chunk_id,
             agents_succeeded=len(agent_outputs),
             elapsed_s=round(perf_counter() - specialists_t0, 1),
         )
@@ -412,6 +425,7 @@ class AgentOrchestrator:
         agents_failed = sum(1 for v in availability.values() if v["failed"])
         logger.info(
             "orchestrator.specialist_data_availability",
+            analysis_chunk_id=analysis_chunk_id,
             is_chunk=is_chunk,
             input_signals=len(serialized),
             agents_failed=agents_failed,
@@ -428,6 +442,7 @@ class AgentOrchestrator:
 
         logger.info(
             "orchestrator.consensus_computed",
+            analysis_chunk_id=analysis_chunk_id,
             symbols=len(consensus),
             market_condition=market_condition,
             consensus_snapshot={
@@ -449,6 +464,7 @@ class AgentOrchestrator:
 
         logger.info(
             "orchestrator.specialists_done",
+            analysis_chunk_id=analysis_chunk_id,
             agents_succeeded=len(agent_outputs),
             is_chunk=is_chunk,
         )
@@ -977,6 +993,7 @@ class AgentOrchestrator:
         *,
         provider: AgentLLMProvider,
         usage_tracker: LLMUsageTracker | None = None,
+        analysis_chunk_id: str,
     ) -> dict[str, Any]:
         """Run all 6 specialist agents in parallel, collecting results.
 
@@ -1008,6 +1025,7 @@ class AgentOrchestrator:
                 model_override = getattr(agent_models_cfg, name, "") or None
                 logger.info(
                     "orchestrator.agent_started",
+                    analysis_chunk_id=analysis_chunk_id,
                     agent=name,
                     provider=provider.name,
                     model_override=model_override,
@@ -1017,10 +1035,12 @@ class AgentOrchestrator:
                     provider=provider,
                     usage_tracker=usage_tracker,
                     model=model_override,
+                    analysis_chunk_id=analysis_chunk_id,
                 )
                 elapsed_ms = int((perf_counter() - start_ts) * 1000)
                 logger.info(
                     "orchestrator.agent_finished",
+                    analysis_chunk_id=analysis_chunk_id,
                     agent=name,
                     provider=provider.name,
                     elapsed_ms=elapsed_ms,
@@ -1032,6 +1052,7 @@ class AgentOrchestrator:
                 elapsed_ms = int((perf_counter() - start_ts) * 1000)
                 logger.warning(
                     f"orchestrator.agent_failed",
+                    analysis_chunk_id=analysis_chunk_id,
                     agent=name,
                     provider=provider.name,
                     elapsed_ms=elapsed_ms,
@@ -1050,6 +1071,7 @@ class AgentOrchestrator:
 
         logger.info(
             "orchestrator.specialist_parallel_gate",
+            analysis_chunk_id=analysis_chunk_id,
             gate_limit=gate_limit,
             gate_agents=sorted(gate_targets),
         )
@@ -1087,6 +1109,7 @@ class AgentOrchestrator:
 
             logger.error(
                 "orchestrator.pipeline_circuit_break",
+                analysis_chunk_id=analysis_chunk_id,
                 phase="specialists",
                 failed_agents=failed_agents,
                 failed_count=len(failed_agents),
