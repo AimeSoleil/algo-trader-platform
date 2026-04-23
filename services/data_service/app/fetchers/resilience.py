@@ -48,11 +48,13 @@ def retry_sync(
     cfg = _get_resilience_settings()
     last_exc: Exception | None = None
 
+    import traceback
     for attempt in range(1, cfg.max_retries + 1):
         try:
             return fn()
         except Exception as exc:
             last_exc = exc
+            tb_str = traceback.format_exc()
             if attempt < cfg.max_retries:
                 backoff = cfg.backoff_base_seconds * (2 ** (attempt - 1))
                 logger.warning(
@@ -62,6 +64,7 @@ def retry_sync(
                     attempt=attempt,
                     backoff_s=backoff,
                     error=str(exc),
+                    traceback=tb_str,
                 )
                 time.sleep(backoff)
             else:
@@ -71,8 +74,31 @@ def retry_sync(
                     symbol=symbol,
                     attempts_exhausted=cfg.max_retries,
                     error=str(exc),
+                    traceback=tb_str,
                 )
-    raise last_exc  # type: ignore[misc]
+    # Defensive: ensure only BaseException is raised, and log details if not
+    import traceback
+    if last_exc is not None and isinstance(last_exc, BaseException):
+        logger.error(
+            "resilience.raise_final_exception",
+            label=label,
+            symbol=symbol,
+            last_exc_type=type(last_exc).__name__,
+            last_exc_repr=repr(last_exc),
+            traceback=traceback.format_exception(type(last_exc), last_exc, last_exc.__traceback__),
+            msg="retry_sync raising final exception"
+        )
+        raise last_exc
+    else:
+        logger.error(
+            "resilience.raise_non_exception",
+            label=label,
+            symbol=symbol,
+            last_exc_type=type(last_exc).__name__,
+            last_exc_repr=repr(last_exc),
+            msg="retry_sync exhausted but last_exc is not an exception object"
+        )
+        raise RuntimeError(f"retry_sync exhausted but last_exc is not an exception: {last_exc!r}")
 
 
 def rate_limit_sync() -> None:
