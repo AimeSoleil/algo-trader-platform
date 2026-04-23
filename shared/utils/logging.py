@@ -137,7 +137,7 @@ def _setup_structlog(settings, log_level: int, log_tz: ZoneInfo) -> None:
     """Configure structlog processors and filtering level."""
     # Choose structlog renderer
     if settings.common.logging.format == "json":
-        renderer = structlog.processors.JSONRenderer()
+        renderer = structlog.processors.JSONRenderer(ensure_ascii=False)
     else:
         renderer = structlog.dev.ConsoleRenderer()
 

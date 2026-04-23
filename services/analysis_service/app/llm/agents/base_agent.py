@@ -24,7 +24,7 @@ from pydantic import BaseModel, ValidationError
 
 from shared.config import get_settings
 from shared.metrics import llm_request_duration, llm_retries_total, llm_tokens_total
-from shared.utils import get_logger
+from shared.utils import decode_escaped_unicode, get_logger
 
 from services.analysis_service.app.llm.json_utils import parse_llm_json
 
@@ -386,7 +386,7 @@ class AnalysisAgent(ABC):
                     f"agent.{self.name}.parse_error",
                     provider=provider.name,
                     attempt=attempt + 1,
-                    error=str(e),
+                    error=decode_escaped_unicode(e),
                 )
                 if attempt < max_attempts - 1:
                     delay = min(
@@ -417,7 +417,7 @@ class AnalysisAgent(ABC):
                         f"agent.{self.name}.retryable_error",
                         provider=provider.name,
                         attempt=attempt + 1,
-                        error=str(e),
+                        error=decode_escaped_unicode(e),
                         retry_delay_s=round(delay, 2),
                     )
                     await asyncio.sleep(delay)
@@ -427,7 +427,7 @@ class AnalysisAgent(ABC):
                     f"agent.{self.name}.failed",
                     provider=provider.name,
                     attempt=attempt + 1,
-                    error=str(e),
+                    error=decode_escaped_unicode(e),
                     retryable=retryable,
                 )
                 raise

@@ -1,4 +1,5 @@
 """通用工具模块"""
+from shared.utils.error_text import decode_escaped_unicode
 from shared.utils.logging import setup_logging, setup_celery_logging, get_logger
 from shared.utils.time import (
     after_market_close,
@@ -17,6 +18,7 @@ from shared.utils.time import (
 from shared.utils.token import estimate_prompt_tokens
 
 __all__ = [
+    "decode_escaped_unicode",
     "setup_logging",
     "setup_celery_logging",
     "get_logger",

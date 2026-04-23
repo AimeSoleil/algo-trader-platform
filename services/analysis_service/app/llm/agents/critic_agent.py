@@ -15,7 +15,7 @@ from pydantic import ValidationError
 
 from shared.config import get_settings
 from shared.metrics import llm_request_duration, llm_retries_total, llm_tokens_total
-from shared.utils import get_logger
+from shared.utils import decode_escaped_unicode, get_logger
 
 from services.analysis_service.app.llm.agents.base_agent import AgentLLMProvider, LLMUsageTracker, _default_provider
 from services.analysis_service.app.llm.json_utils import parse_llm_json
@@ -131,7 +131,7 @@ class CriticAgent:
             except (json.JSONDecodeError, ValidationError, ValueError) as e:
                 last_exc = e
                 llm_retries_total.labels(provider=provider.name, error_type="parse").inc()
-                logger.warning("critic.parse_error", provider=provider.name, attempt=attempt + 1, error=str(e))
+                logger.warning("critic.parse_error", provider=provider.name, attempt=attempt + 1, error=decode_escaped_unicode(e))
                 if attempt < max_attempts - 1:
                     delay = min(backoff_base * (2 ** attempt) + random.uniform(0, 1), backoff_max)
                     await asyncio.sleep(delay)
@@ -155,11 +155,11 @@ class CriticAgent:
                         forced_500_retry_used = True
                     delay = min(backoff_base * (2 ** attempt) + random.uniform(0, 1), backoff_max)
                     llm_retries_total.labels(provider=provider.name, error_type=error_type).inc()
-                    logger.warning("critic.retryable_error", provider=provider.name, attempt=attempt + 1, error=str(e), delay=round(delay, 2))
+                    logger.warning("critic.retryable_error", provider=provider.name, attempt=attempt + 1, error=decode_escaped_unicode(e), delay=round(delay, 2))
                     await asyncio.sleep(delay)
                     continue
 
-                logger.warning("critic.failed", provider=provider.name, attempt=attempt + 1, error=str(e))
+                logger.warning("critic.failed", provider=provider.name, attempt=attempt + 1, error=decode_escaped_unicode(e))
                 raise
 
             finally:

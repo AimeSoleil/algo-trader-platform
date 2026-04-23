@@ -18,7 +18,7 @@ from pydantic import ValidationError
 from shared.config import get_settings
 from shared.metrics import llm_request_duration, llm_retries_total, llm_tokens_total
 from shared.models.blueprint import LLMTradingBlueprint
-from shared.utils import get_logger, now_utc, next_trading_day
+from shared.utils import decode_escaped_unicode, get_logger, now_utc, next_trading_day
 
 from services.analysis_service.app.llm.agents.base_agent import AgentLLMProvider, LLMUsageTracker, _default_provider
 from services.analysis_service.app.llm.json_utils import parse_llm_json
@@ -337,7 +337,7 @@ class SynthesizerAgent:
             except (json.JSONDecodeError, ValidationError, ValueError, TypeError) as e:
                 last_exc = e
                 llm_retries_total.labels(provider=provider.name, error_type="parse").inc()
-                logger.warning("synthesizer.parse_error", provider=provider.name, attempt=attempt + 1, error=str(e))
+                logger.warning("synthesizer.parse_error", provider=provider.name, attempt=attempt + 1, error=decode_escaped_unicode(e))
                 if attempt < max_attempts - 1:
                     delay = min(backoff_base * (2 ** attempt) + random.uniform(0, 1), backoff_max)
                     await asyncio.sleep(delay)
@@ -361,11 +361,11 @@ class SynthesizerAgent:
                         forced_500_retry_used = True
                     delay = min(backoff_base * (2 ** attempt) + random.uniform(0, 1), backoff_max)
                     llm_retries_total.labels(provider=provider.name, error_type=error_type).inc()
-                    logger.warning("synthesizer.retryable_error", provider=provider.name, attempt=attempt + 1, error=str(e), delay=round(delay, 2))
+                    logger.warning("synthesizer.retryable_error", provider=provider.name, attempt=attempt + 1, error=decode_escaped_unicode(e), delay=round(delay, 2))
                     await asyncio.sleep(delay)
                     continue
 
-                logger.warning("synthesizer.failed", provider=provider.name, attempt=attempt + 1, error=str(e))
+                logger.warning("synthesizer.failed", provider=provider.name, attempt=attempt + 1, error=decode_escaped_unicode(e))
                 raise
 
             finally:
