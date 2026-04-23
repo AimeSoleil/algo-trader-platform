@@ -114,65 +114,6 @@ load_env_file() {
   ENV_FILE="$env_path"
 }
 
-read_pid_file() {
-  local name="$1"
-  local pidfile="$LOG_DIR/${name}.pid"
-  [[ -f "$pidfile" ]] || return 1
-  cat "$pidfile" 2>/dev/null || true
-}
-
-read_wrapper_pid_file() {
-  local name="$1"
-  local pidfile="$LOG_DIR/${name}.wrapper.pid"
-  [[ -f "$pidfile" ]] || return 1
-  cat "$pidfile" 2>/dev/null || true
-}
-
-is_pid_running() {
-  local pid="$1"
-  [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null
-}
-
-collect_descendant_pids() {
-  local parent_pid="$1"
-  local child_pid
-
-  while IFS= read -r child_pid; do
-    [[ -n "$child_pid" ]] || continue
-    collect_descendant_pids "$child_pid"
-    printf '%s\n' "$child_pid"
-  done < <(pgrep -P "$parent_pid" 2>/dev/null || true)
-}
-
-worker_node_name() {
-  local worker="$1"
-  printf '%s@%s\n' "$worker" "$WORKER_HOST"
-}
-
-build_destinations() {
-  local names=("$@")
-  local destinations=""
-  local name
-
-  for name in "${names[@]}"; do
-    [[ -n "$destinations" ]] && destinations+="," 
-    destinations+="$(worker_node_name "$name")"
-  done
-
-  printf '%s\n' "$destinations"
-}
-
-run_inspect_ping() {
-  local destinations="$1"
-  "${CELERY_CMD[@]}" inspect ping -t "$HEALTH_CHECK_TIMEOUT" -d "$destinations" 2>&1 || true
-}
-
-ping_output_has_worker() {
-  local ping_output="$1"
-  local worker="$2"
-  echo "$ping_output" | grep -q "${worker}@"
-}
-
 show_workers() {
   echo "可用 workers:"
   echo ""
@@ -195,10 +136,11 @@ show_status() {
   echo ""
 
   # ── Process status ──
+  local _pad
   if [[ -f "$manager_pid_file" ]]; then
     local manager_pid
     manager_pid="$(cat "$manager_pid_file" 2>/dev/null || true)"
-    if is_pid_running "$manager_pid"; then
+    if [[ -n "$manager_pid" ]] && kill -0 "$manager_pid" 2>/dev/null; then
       echo "  manager   : RUNNING (pid=${manager_pid})"
     else
       echo "  manager   : STALE_PID_FILE"
@@ -208,33 +150,30 @@ show_status() {
   fi
 
   local names=("${ALL_QUEUES[@]}" beat flower watchdog)
-  local name pid state width pad
   for name in "${names[@]}"; do
-    pid="$(read_pid_file "$name" || true)"
-    state="STOPPED"
-    if [[ -n "$pid" ]]; then
-      if is_pid_running "$pid"; then
-        state="RUNNING"
+    local pidfile="$LOG_DIR/${name}.pid"
+    _pad="$(printf '%*s' $((10-${#name})) '')"
+    if [[ -f "$pidfile" ]]; then
+      local pid
+      pid="$(cat "$pidfile" 2>/dev/null || true)"
+      if [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null; then
+        echo "  ${name}${_pad}: RUNNING (pid=${pid})"
       else
-        state="STALE_PID_FILE"
+        echo "  ${name}${_pad}: STALE_PID_FILE"
       fi
+    else
+      echo "  ${name}${_pad}: STOPPED"
     fi
-    width=$((10 - ${#name}))
-    (( width < 1 )) && width=1
-    pad="$(printf '%*s' "$width" '')"
-    printf '  %s%s: %s' "$name" "$pad" "$state"
-    [[ -n "$pid" ]] && printf ' (pid=%s)' "$pid"
-    printf '\n'
   done
 
   # ── Log files ──
   echo ""
   echo "  日志文件:"
-  printf '    %-10s → %s\n' manager "${LOG_DIR}/run_workers-manager.out"
+  printf "    %-10s → %s\n" "manager" "${LOG_DIR}/run_workers-manager.out"
   for q in "${ALL_QUEUES[@]}"; do
-    printf '    %-10s → %s\n' "$q" "${LOG_DIR}/celery-${q}.log"
+    printf "    %-10s → %s\n" "$q" "${LOG_DIR}/celery-${q}.log"
   done
-  printf '    %-10s → %s\n' beat "${LOG_DIR}/celery-beat.log"
+  printf "    %-10s → %s\n" "beat" "${LOG_DIR}/celery-beat.log"
 }
 
 run_diag() {
@@ -250,27 +189,34 @@ run_diag() {
   echo ""
 
   echo "  worker nodes:"
-  local pid state
+  local destinations=""
   for w in "${ACTIVE_WORKERS[@]}"; do
-    pid="$(read_pid_file "$w" || true)"
-    state="STOPPED"
-    if [[ -n "$pid" ]]; then
-      if is_pid_running "$pid"; then
+    local node_name="${w}@${WORKER_HOST}"
+    local pidfile="$LOG_DIR/${w}.pid"
+    local pid=""
+    local state="STOPPED"
+    if [[ -f "$pidfile" ]]; then
+      pid="$(cat "$pidfile" 2>/dev/null || true)"
+      if [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null; then
         state="RUNNING"
       else
         state="STALE_PID_FILE"
       fi
     fi
-    printf '    %-24s %s' "$(worker_node_name "$w")" "$state"
-    [[ -n "$pid" ]] && printf ' (pid=%s)' "$pid"
-    printf '\n'
+    printf "    %-24s %s" "$node_name" "$state"
+    if [[ -n "$pid" ]]; then
+      printf " (pid=%s)" "$pid"
+    fi
+    printf "\n"
+    if [[ -n "$destinations" ]]; then
+      destinations+="," 
+    fi
+    destinations+="$node_name"
   done
   echo ""
 
   echo "  inspect ping:"
-  local destinations
-  destinations="$(build_destinations "${ACTIVE_WORKERS[@]}")"
-  run_inspect_ping "$destinations"
+  ${CELERY_CMD} inspect ping -t "$HEALTH_CHECK_TIMEOUT" -d "$destinations" 2>&1 || true
   echo ""
 
   echo "  watchdog log tail:"
@@ -315,13 +261,7 @@ while (( $# > 0 )); do
       # 0) Stop manager daemon first (if running)
       if [[ -f "$MANAGER_PID_FILE" ]]; then
         manager_pid="$(cat "$MANAGER_PID_FILE" 2>/dev/null || true)"
-        if is_pid_running "$manager_pid"; then
-          mapfile -t manager_descendants < <(collect_descendant_pids "$manager_pid")
-          if (( ${#manager_descendants[@]} > 0 )); then
-            echo "  SIGTERM → manager descendants (${#manager_descendants[@]} processes)"
-            kill "${manager_descendants[@]}" 2>/dev/null || true
-            stopped=$((stopped + ${#manager_descendants[@]}))
-          fi
+        if [[ -n "$manager_pid" ]] && kill -0 "$manager_pid" 2>/dev/null; then
           echo "  SIGTERM → manager (pid=${manager_pid})"
           kill "$manager_pid" 2>/dev/null || true
           stopped=$((stopped + 1))
@@ -330,23 +270,18 @@ while (( $# > 0 )); do
       fi
 
       # 1) Kill processes tracked by PID files
-      while IFS= read -r name; do
-        [[ -n "$name" ]] || continue
-        wrapper_pid="$(read_wrapper_pid_file "$name" || true)"
-        if is_pid_running "$wrapper_pid"; then
-          echo "  SIGTERM → ${name} wrapper (pid=${wrapper_pid})"
-          kill "$wrapper_pid" 2>/dev/null || true
-          stopped=$((stopped + 1))
-        fi
-        pid="$(read_pid_file "$name" || true)"
-        if is_pid_running "$pid"; then
+      for pidfile in "${LOG_DIR}"/*.pid; do
+        [[ -f "$pidfile" ]] || continue
+        [[ "$(basename "$pidfile")" == "run_workers-manager.pid" ]] && continue
+        pid="$(cat "$pidfile" 2>/dev/null)" || continue
+        name="$(basename "$pidfile" .pid)"
+        if kill -0 "$pid" 2>/dev/null; then
           echo "  SIGTERM → ${name} (pid=${pid})"
           kill "$pid" 2>/dev/null || true
           stopped=$((stopped + 1))
         fi
-        rm -f "$LOG_DIR/${name}.pid"
-        rm -f "$LOG_DIR/${name}.wrapper.pid"
-      done < <(printf '%s\n' "${ALL_QUEUES[@]}" beat flower watchdog)
+        rm -f "$pidfile"
+      done
 
       # 2) Also ask Celery to shut down any workers it knows about
       uv run celery -A shared.celery_app.celery_app control shutdown 2>/dev/null || true
@@ -356,13 +291,6 @@ while (( $# > 0 )); do
 
       # Brief grace period then force-kill survivors
       sleep 2
-      if [[ -n "${manager_pid:-}" ]] && is_pid_running "$manager_pid"; then
-        mapfile -t manager_descendants < <(collect_descendant_pids "$manager_pid")
-        if (( ${#manager_descendants[@]} > 0 )); then
-          kill -9 "${manager_descendants[@]}" 2>/dev/null || true
-        fi
-        kill -9 "$manager_pid" 2>/dev/null || true
-      fi
       pkill -9 -f "celery.*shared.celery_app" 2>/dev/null || true
 
       if (( stopped > 0 )); then
@@ -438,7 +366,7 @@ else
   done
 fi
 
-CELERY_CMD=(uv run celery -A shared.celery_app.celery_app)
+CELERY_CMD="uv run celery -A shared.celery_app.celery_app"
 
 if [[ "${DIAG_ONLY:-0}" == "1" ]]; then
   run_diag
@@ -485,13 +413,13 @@ if [[ "$DAEMON_MODE" == "1" ]]; then
   echo "  LogLevel: ${LOG_LEVEL}"
   echo ""
   echo "  日志文件:"
-  printf '    %-10s → %s\n' manager "${LOG_DIR}/run_workers-manager.out"
+  echo "    manager : ${LOG_DIR}/run_workers-manager.out"
   for _q in "${ACTIVE_WORKERS[@]}"; do
-    printf '    %-10s → %s\n' "$_q" "${LOG_DIR}/celery-${_q}.log"
+    printf "    %-10s: %s\n" "$_q" "${LOG_DIR}/celery-${_q}.log"
   done
-  printf '    %-10s → %s\n' beat "${LOG_DIR}/celery-beat.log"
+  printf "    %-10s: %s\n" "beat" "${LOG_DIR}/celery-beat.log"
   if [[ "$ENABLE_FLOWER" == "1" ]]; then
-    printf '    %-10s → %s\n' flower "http://localhost:${FLOWER_PORT}"
+    printf "    %-10s: %s\n" "flower" "http://localhost:${FLOWER_PORT}"
   fi
   echo ""
   echo "[run_workers] 使用 --stop 停止全部进程"
@@ -557,45 +485,9 @@ write_pid_file() {
   echo "$pid" > "$LOG_DIR/${name}.pid"
 }
 
-write_wrapper_pid_file() {
-  local name="$1" pid="$2"
-  echo "$pid" > "$LOG_DIR/${name}.wrapper.pid"
-}
-
 remove_pid_file() {
   local name="$1"
   rm -f "$LOG_DIR/${name}.pid"
-}
-
-remove_wrapper_pid_file() {
-  local name="$1"
-  rm -f "$LOG_DIR/${name}.wrapper.pid"
-}
-
-resolve_pid() {
-  local name="$1"
-  local pid="${CHILD_PIDS[$name]:-}"
-
-  if is_pid_running "$pid"; then
-    printf '%s\n' "$pid"
-    return
-  fi
-
-  pid="$(read_pid_file "$name" || true)"
-  if is_pid_running "$pid"; then
-    printf '%s\n' "$pid"
-    return
-  fi
-
-  printf '\n'
-}
-
-managed_process_names() {
-  local names=("${ACTIVE_WORKERS[@]}" beat)
-  if [[ "$ENABLE_FLOWER" == "1" ]]; then
-    names+=(flower)
-  fi
-  printf '%s\n' "${names[@]}"
 }
 
 cleanup_stale_pids() {
@@ -676,43 +568,6 @@ run_with_restart() {
   done
 }
 
-start_managed_process() {
-  local name="$1"
-  shift
-  run_with_restart "$name" "$@" &
-  WRAPPER_PIDS[$name]=$!
-  write_wrapper_pid_file "$name" "${WRAPPER_PIDS[$name]}"
-}
-
-start_worker_process() {
-  local queue="$1"
-  local extra_args=()
-
-  if [[ "$queue" == "analysis" ]]; then
-    extra_args=(--prefetch-multiplier=1)
-  fi
-
-  start_managed_process \
-    "$queue" \
-    "${CELERY_CMD[@]}" worker -Q "$queue" -n "$(worker_node_name "$queue")" \
-    "${extra_args[@]}" \
-    --loglevel="$LOG_LEVEL" --logfile="$LOG_DIR/celery-${queue}.log"
-}
-
-start_beat_process() {
-  start_managed_process \
-    beat \
-    "${CELERY_CMD[@]}" beat \
-    --loglevel="$LOG_LEVEL" --logfile="$LOG_DIR/celery-beat.log"
-}
-
-start_flower_process() {
-  start_managed_process \
-    flower \
-    env FLOWER_UNAUTHENTICATED_API=true "${CELERY_CMD[@]}" flower --port="$FLOWER_PORT" \
-    --inspect_timeout="$FLOWER_INSPECT_TIMEOUT"
-}
-
 # ── Health-check watchdog ──────────────────────────────────
 declare -A HEALTH_FAIL_COUNT=()
 declare -A HEALTH_LAST_SIGNATURE=()
@@ -720,8 +575,7 @@ declare -A HEALTH_STUCK_COUNT=()
 
 worker_progress_signature() {
   local name="$1"
-  local pid
-  pid="$(resolve_pid "$name")"
+  local pid="${CHILD_PIDS[$name]:-}"
 
   if [[ -z "$pid" ]] || ! kill -0 "$pid" 2>/dev/null; then
     printf 'dead\n'
@@ -766,11 +620,16 @@ health_watchdog() {
 
     log watchdog "执行健康检查..."
 
-    local destinations
-    destinations="$(build_destinations "${ACTIVE_WORKERS[@]}")"
+    local destinations=""
+    for w in "${ACTIVE_WORKERS[@]}"; do
+      if [[ -n "$destinations" ]]; then
+        destinations+=","
+      fi
+      destinations+="${w}@${WORKER_HOST}"
+    done
 
     local ping_output
-    ping_output="$(run_inspect_ping "$destinations")"
+    ping_output="$(${CELERY_CMD} inspect ping -t "$HEALTH_CHECK_TIMEOUT" -d "$destinations" 2>&1)" || true
 
     # Distinguish control-plane timeout from worker failure.
     # If inspect has no replies but all worker processes are still alive,
@@ -778,12 +637,11 @@ health_watchdog() {
     local replied_count=0
     local all_workers_running=1
     for w in "${ACTIVE_WORKERS[@]}"; do
-      if ping_output_has_worker "$ping_output" "$w"; then
+      if echo "$ping_output" | grep -q "${w}@"; then
         replied_count=$(( replied_count + 1 ))
       fi
 
-      local pid_probe
-      pid_probe="$(resolve_pid "$w")"
+      local pid_probe="${CHILD_PIDS[$w]:-}"
       if [[ -z "$pid_probe" ]] || ! kill -0 "$pid_probe" 2>/dev/null; then
         all_workers_running=0
       fi
@@ -795,7 +653,8 @@ health_watchdog() {
     fi
 
     for w in "${ACTIVE_WORKERS[@]}"; do
-      if ping_output_has_worker "$ping_output" "$w"; then
+      local worker_id="${w}@"
+      if echo "$ping_output" | grep -q "${worker_id}"; then
         # Worker responded
         if (( HEALTH_FAIL_COUNT[$w] > 0 )); then
           log_both watchdog "${w} worker 恢复响应"
@@ -818,8 +677,7 @@ health_watchdog() {
         log_both watchdog "${w} worker 未响应 (连续失败 ${fails}/${HEALTH_CHECK_FAILURES}, 无进展 ${stuck}/${HEALTH_CHECK_FAILURES})"
 
         if (( fails >= HEALTH_CHECK_FAILURES )); then
-          local pid
-          pid="$(resolve_pid "$w")"
+          local pid="${CHILD_PIDS[$w]:-}"
           if [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null; then
             if (( stuck >= HEALTH_CHECK_FAILURES )); then
               log_both watchdog "${w} worker 连续 ${HEALTH_CHECK_FAILURES} 次未响应且 CPU/日志无变化，强制终止 pid=${pid}"
@@ -850,16 +708,14 @@ cleanup() {
 
   # Phase 1: SIGTERM all child processes
   local all_pids=()
-  while IFS= read -r name; do
-    [[ -n "$name" ]] || continue
-    local pid
-    pid="$(resolve_pid "$name")"
+  for name in "${!CHILD_PIDS[@]}"; do
+    local pid="${CHILD_PIDS[$name]}"
     if [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null; then
       log main "发送 SIGTERM → ${name} (pid=${pid})"
       kill "$pid" 2>/dev/null || true
       all_pids+=("$pid")
     fi
-  done < <(managed_process_names)
+  done
 
   # Also terminate the watchdog
   if [[ -n "${WATCHDOG_PID:-}" ]] && kill -0 "$WATCHDOG_PID" 2>/dev/null; then
@@ -904,11 +760,9 @@ cleanup() {
   done
 
   # Clean up PID files
-  while IFS= read -r name; do
-    [[ -n "$name" ]] || continue
+  for name in "${!CHILD_PIDS[@]}"; do
     remove_pid_file "$name"
-    remove_wrapper_pid_file "$name"
-  done < <(managed_process_names)
+  done
   remove_pid_file watchdog
   rm -f "$MANAGER_PID_FILE"
 
@@ -946,17 +800,30 @@ echo "$$" > "$MANAGER_PID_FILE"
 # ── Start workers (only those in ACTIVE_WORKERS) ──────────
 
 for queue in "${ACTIVE_WORKERS[@]}"; do
-  start_worker_process "$queue"
+  # analysis worker: force prefetch=1 (one LLM call at a time)
+  extra_args=""
+  [[ "$queue" == "analysis" ]] && extra_args="--prefetch-multiplier=1"
+
+  run_with_restart "$queue" \
+    $CELERY_CMD worker -Q "$queue" -n "${queue}@${WORKER_HOST}" $extra_args \
+    --loglevel="$LOG_LEVEL" --logfile="$LOG_DIR/celery-${queue}.log" &
+  WRAPPER_PIDS[$queue]=$!
 done
 
-start_beat_process
+run_with_restart beat \
+  $CELERY_CMD beat \
+  --loglevel="$LOG_LEVEL" --logfile="$LOG_DIR/celery-beat.log" &
+WRAPPER_PIDS[beat]=$!
 
 # ── Flower (optional) ─────────────────────────────────────
 if [[ "$ENABLE_FLOWER" == "1" ]]; then
   # Delay Flower start so workers have time to register with the broker
   log main "等待 5s 让 workers 注册到 broker..."
   sleep 5
-  start_flower_process
+  run_with_restart flower \
+    env FLOWER_UNAUTHENTICATED_API=true $CELERY_CMD flower --port="$FLOWER_PORT" \
+    --inspect_timeout="$FLOWER_INSPECT_TIMEOUT" &
+  WRAPPER_PIDS[flower]=$!
   log main "Flower 已启动: http://localhost:${FLOWER_PORT}"
 fi
 
