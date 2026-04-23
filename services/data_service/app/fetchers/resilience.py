@@ -47,21 +47,24 @@ def retry_sync(
     """
     cfg = _get_resilience_settings()
     last_exc: Exception | None = None
+    total_attempts = max(1, cfg.max_retries + 1)
 
     import traceback
-    for attempt in range(1, cfg.max_retries + 1):
+    for attempt in range(1, total_attempts + 1):
         try:
             return fn()
         except Exception as exc:
             last_exc = exc
             tb_str = traceback.format_exc()
-            if attempt < cfg.max_retries:
+            if attempt < total_attempts:
                 backoff = cfg.backoff_base_seconds * (2 ** (attempt - 1))
                 logger.warning(
                     "resilience.retry",
                     label=label,
                     symbol=symbol,
                     attempt=attempt,
+                    total_attempts=total_attempts,
+                    retries_remaining=total_attempts - attempt,
                     backoff_s=backoff,
                     error=str(exc),
                     traceback=tb_str,
@@ -72,6 +75,7 @@ def retry_sync(
                     "resilience.exhausted",
                     label=label,
                     symbol=symbol,
+                    attempts=total_attempts,
                     attempts_exhausted=cfg.max_retries,
                     error=str(exc),
                     traceback=tb_str,

@@ -66,14 +66,24 @@ def _fetch_option_chain_sync(symbol: str) -> OptionChainSnapshot | None:
             symbol=symbol,
         )
         if hist.empty:
-            logger.warning("option_fetcher.no_history", symbol=symbol)
+            import traceback
+            logger.warning(
+                "option_fetcher.no_history",
+                symbol=symbol,
+                traceback=traceback.format_exc()
+            )
             return None
         underlying_price = float(hist["Close"].iloc[-1])
 
         # 2) 获取所有到期日
         expiries = ticker.options
         if not expiries:
-            logger.warning("option_fetcher.no_expiries", symbol=symbol)
+            import traceback
+            logger.warning(
+                "option_fetcher.no_expiries",
+                symbol=symbol,
+                traceback=traceback.format_exc()
+            )
             return None
 
         contracts: list[OptionContract] = []
@@ -107,11 +117,13 @@ def _fetch_option_chain_sync(symbol: str) -> OptionChainSnapshot | None:
                     symbol=symbol,
                 )
             except Exception as e:
+                import traceback
                 logger.warning(
                     "option_fetcher.chain_error",
                     symbol=symbol,
                     expiry=expiry_str,
                     error=str(e),
+                    traceback=traceback.format_exc(),
                 )
                 continue
 
@@ -150,11 +162,13 @@ def _fetch_option_chain_sync(symbol: str) -> OptionChainSnapshot | None:
                         )
                         contracts.append(contract)
                     except Exception as e:
+                        import traceback
                         logger.debug(
                             "option_fetcher.contract_parse_error",
                             symbol=symbol,
                             expiry=expiry_str,
                             error=str(e),
+                            traceback=traceback.format_exc(),
                         )
 
         snapshot = OptionChainSnapshot(
@@ -173,7 +187,13 @@ def _fetch_option_chain_sync(symbol: str) -> OptionChainSnapshot | None:
         return snapshot
 
     except Exception as e:
-        logger.error("option_fetcher.failed", symbol=symbol, error=str(e))
+        import traceback
+        logger.error(
+            "option_fetcher.failed",
+            symbol=symbol,
+            error=str(e),
+            traceback=traceback.format_exc(),
+        )
         return None
 
 

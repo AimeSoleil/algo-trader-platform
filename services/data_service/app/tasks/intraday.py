@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import asyncio
 
-from celery import group
+from celery import chain as celery_chain
 
 from shared.celery_app import celery_app
 from shared.config import get_settings
@@ -24,7 +24,7 @@ def capture_intraday_options(self) -> dict:
     """盘中定时任务：采集期权链快照 → 直接写入 DB (option_5min_snapshots)
 
     Triggered by Celery Beat via crontab during market hours.
-    Splits watchlist into chunks and dispatches them in parallel via group.
+    Splits watchlist into chunks and dispatches them in a controlled chain.
     Uses @distributed_once to ensure only one data worker per tick runs this
     orchestrator when celery-data is scaled horizontally.
     """
@@ -49,15 +49,25 @@ async def _capture_intraday_orchestrator() -> dict:
         symbols=len(symbols),
         chunks=len(chunks),
         chunk_size=chunk_size,
+        dispatch_mode="serial_chain",
     )
 
-    job = group(
-        capture_intraday_chunk.si(chunk).set(queue="data")
-        for chunk in chunks
+    if not chunks:
+        return {"dispatched_chunks": 0, "symbols": 0, "dispatch_mode": "serial_chain"}
+
+    job = celery_chain(
+        *[
+            capture_intraday_chunk.si(chunk).set(queue="data")
+            for chunk in chunks
+        ]
     )
-    # apply_async is sync-safe; we don't await sub-task results
+    # apply_async is sync-safe; chain enforces one chunk task at a time.
     job.apply_async()
-    return {"dispatched_chunks": len(chunks), "symbols": len(symbols)}
+    return {
+        "dispatched_chunks": len(chunks),
+        "symbols": len(symbols),
+        "dispatch_mode": "serial_chain",
+    }
 
 
 @celery_app.task(
@@ -81,9 +91,20 @@ async def _capture_intraday_chunk_async(symbols: list[str]) -> dict:
     rows_written = 0
     errors: list[str] = []
 
+    fetcher = get_option_fetcher()
+    snapshots = await fetcher.fetch_current_multiple(symbols)
+
     for symbol in symbols:
         try:
-            snapshot = await get_option_fetcher().fetch_current(symbol)
+            snapshot = snapshots.get(symbol)
+            if snapshot is None:
+                errors.append(f"{symbol}: no snapshot returned")
+                logger.warning(
+                    "capture_intraday.symbol_missing",
+                    symbol=symbol,
+                )
+                continue
+
             if snapshot:
                 snapshot, _ = apply_option_pipeline(snapshot)
                 rows = contracts_to_rows(snapshot, top_expiries=None)

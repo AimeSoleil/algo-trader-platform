@@ -49,7 +49,13 @@ def _fetch_stock_quote_sync(symbol: str) -> dict | None:
             "timestamp": now_utc().isoformat(),
         }
     except Exception as e:
-        logger.error("stock_fetcher.failed", symbol=symbol, error=str(e))
+        import traceback
+        logger.error(
+            "stock_fetcher.failed",
+            symbol=symbol,
+            error=str(e),
+            traceback=traceback.format_exc(),
+        )
         return None
 
 
@@ -82,7 +88,13 @@ def _fetch_stock_bars_sync(
             )
         return bars
     except Exception as e:
-        logger.error("stock_fetcher.bars_failed", symbol=symbol, error=str(e))
+        import traceback
+        logger.error(
+            "stock_fetcher.bars_failed",
+            symbol=symbol,
+            error=str(e),
+            traceback=traceback.format_exc(),
+        )
         return []
 
 
@@ -142,13 +154,15 @@ def _fetch_stock_bars_range_sync(
             rows.append(entry)
         return rows, warnings
     except Exception as e:
+        import traceback
         logger.error(
             "stock_fetcher.range_failed",
             symbol=symbol,
             interval=interval,
             error=str(e),
+            traceback=traceback.format_exc(),
         )
-        return [], [f"{symbol}: fetch error \u2013 {e}"]
+        return [], [f"{symbol}: fetch error – {e}"]
 
 def _fetch_next_earnings_sync(symbol: str) -> date | None:
     """Return the next earnings date for *symbol*, or ``None`` if unavailable."""
@@ -180,7 +194,13 @@ def _fetch_next_earnings_sync(symbol: str) -> date | None:
         return date.fromisoformat(str(raw)[:10])
 
     except Exception as e:
-        logger.warning("stock_fetcher.earnings_failed", symbol=symbol, error=str(e))
+        import traceback
+        logger.warning(
+            "stock_fetcher.earnings_failed",
+            symbol=symbol,
+            error=str(e),
+            traceback=traceback.format_exc(),
+        )
         return None
 
 # ── Async class ────────────────────────────────────────────

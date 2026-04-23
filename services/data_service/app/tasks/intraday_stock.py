@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import asyncio
 
-from celery import group
+from celery import chain as celery_chain
 
 from shared.celery_app import celery_app
 from shared.config import get_settings
@@ -24,7 +24,7 @@ def capture_intraday_stock(self) -> dict:
     """盘中定时任务：采集 5m stock bars → 直接写入 DB (stock_5min_bars)
 
     Triggered by Celery Beat via crontab during market hours.
-    Splits watchlist into chunks and dispatches them in parallel via group.
+    Splits watchlist into chunks and dispatches them in a controlled chain.
     Uses @distributed_once to ensure only one data worker per tick runs this
     orchestrator when celery-data is scaled horizontally.
     """
@@ -49,14 +49,24 @@ async def _capture_intraday_stock_orchestrator() -> dict:
         symbols=len(symbols),
         chunks=len(chunks),
         chunk_size=chunk_size,
+        dispatch_mode="serial_chain",
     )
 
-    job = group(
-        capture_intraday_stock_chunk.si(chunk).set(queue="data")
-        for chunk in chunks
+    if not chunks:
+        return {"dispatched_chunks": 0, "symbols": 0, "dispatch_mode": "serial_chain"}
+
+    job = celery_chain(
+        *[
+            capture_intraday_stock_chunk.si(chunk).set(queue="data")
+            for chunk in chunks
+        ]
     )
     job.apply_async()
-    return {"dispatched_chunks": len(chunks), "symbols": len(symbols)}
+    return {
+        "dispatched_chunks": len(chunks),
+        "symbols": len(symbols),
+        "dispatch_mode": "serial_chain",
+    }
 
 
 @celery_app.task(
@@ -78,9 +88,20 @@ async def _capture_intraday_stock_chunk_async(symbols: list[str]) -> dict:
     rows_written = 0
     errors: list[str] = []
 
+    fetcher = get_stock_fetcher()
+    bars_by_symbol = await fetcher.fetch_bars_multiple(symbols, period="1d", interval="5m")
+
     for symbol in symbols:
         try:
-            bars = await get_stock_fetcher().fetch_bars(symbol, period="1d", interval="5m")
+            bars = bars_by_symbol.get(symbol)
+            if not bars:
+                errors.append(f"{symbol}: no bars returned")
+                logger.warning(
+                    "capture_intraday_stock.symbol_missing",
+                    symbol=symbol,
+                )
+                continue
+
             if bars:
                 bar = bars[-1]  # only the latest bar
                 row = {
