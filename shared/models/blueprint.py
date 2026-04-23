@@ -60,6 +60,14 @@ def _normalize_expiry_value(value: Any) -> Any:
     return date.today() + timedelta(days=target_days)
 
 
+def _is_valid_enum_value(enum_cls: type[Enum], value: Any) -> bool:
+    try:
+        enum_cls(value)
+    except (ValueError, TypeError):
+        return False
+    return True
+
+
 def _sanitize_trigger_condition_items(items: Any) -> Any:
     if not isinstance(items, list):
         return items
@@ -67,9 +75,12 @@ def _sanitize_trigger_condition_items(items: Any) -> Any:
     sanitized: list[Any] = []
     for item in items:
         if not isinstance(item, dict):
-            sanitized.append(item)
             continue
         normalized = dict(item)
+        if not _is_valid_enum_value(ConditionField, normalized.get("field")):
+            continue
+        if not _is_valid_enum_value(ConditionOperator, normalized.get("operator")):
+            continue
         normalized_value = _normalize_numeric_value(normalized.get("value"))
         if normalized_value is None:
             continue
@@ -85,17 +96,22 @@ def _sanitize_adjustment_rules(items: Any) -> Any:
     sanitized: list[Any] = []
     for item in items:
         if not isinstance(item, dict):
-            sanitized.append(item)
             continue
         normalized = dict(item)
         trigger = normalized.get("trigger")
         if isinstance(trigger, dict):
             normalized_trigger = dict(trigger)
+            if not _is_valid_enum_value(ConditionField, normalized_trigger.get("field")):
+                continue
+            if not _is_valid_enum_value(ConditionOperator, normalized_trigger.get("operator")):
+                continue
             normalized_value = _normalize_numeric_value(normalized_trigger.get("value"))
             if normalized_value is None:
                 continue
             normalized_trigger["value"] = normalized_value
             normalized["trigger"] = normalized_trigger
+        elif not isinstance(trigger, str):
+            continue
         sanitized.append(normalized)
     return sanitized
 
@@ -143,6 +159,7 @@ class ConditionOperator(str, Enum):
 class ConditionField(str, Enum):
     """规则引擎可读取的字段"""
     UNDERLYING_PRICE = "underlying_price"
+    VWAP = "vwap"
     IV = "iv"
     IV_RANK = "iv_rank"
     DELTA = "delta"
@@ -247,6 +264,7 @@ _FIELD_ALIASES: dict[str, ConditionField] = {
     "underlying_price": ConditionField.UNDERLYING_PRICE,
     "underlying": ConditionField.UNDERLYING_PRICE,
     "price": ConditionField.UNDERLYING_PRICE,
+    "vwap": ConditionField.VWAP,
     "iv_rank": ConditionField.IV_RANK,
     "iv rank": ConditionField.IV_RANK,
     "iv": ConditionField.IV,

@@ -21,7 +21,7 @@ async def build_market_context(
 
     Keys populated:
         underlying_price, price, bid, ask, time,
-        iv, iv_rank, delta, volume  (from signal features cache, if present).
+        vwap, iv, iv_rank, delta, volume  (from signal features cache, if present).
 
     .. note::
         # TODO(后续考虑-1): Check quote/signal timestamp freshness.  When the
@@ -58,7 +58,9 @@ async def build_market_context(
     if sig_data:
         try:
             sig = json.loads(sig_data)
+            stock = sig.get("stock_indicators", {})
             opt = sig.get("option_indicators", {})
+            ctx.setdefault("vwap", stock.get("vwap", 0.0))
             ctx.setdefault("iv", opt.get("current_iv", 0.0))
             ctx.setdefault("iv_rank", opt.get("iv_rank", 0.0))
             ctx.setdefault("delta", opt.get("delta_exposure_profile", {}).get("total", 0.0))

@@ -11,6 +11,8 @@ import pytest
 from pydantic import ValidationError
 
 from shared.models.blueprint import (
+    AdjustmentAction,
+    ConditionField,
     Direction,
     LLMTradingBlueprint,
     OptionLeg,
@@ -131,6 +133,65 @@ class TestSymbolPlan:
     def test_invalid_direction(self):
         with pytest.raises(ValidationError):
             SymbolPlan(**_make_plan(direction="sideways"))
+
+    def test_vwap_entry_condition_is_allowed(self):
+        plan = SymbolPlan(**_make_plan(entry_conditions=[
+            {
+                "field": "vwap",
+                "operator": ">",
+                "value": 185.5,
+                "description": "Price above VWAP confirms bullish bias",
+            },
+        ]))
+
+        assert plan.entry_conditions[0].field.value == "vwap"
+
+    def test_invalid_entry_condition_field_is_ignored(self):
+        plan = SymbolPlan(**_make_plan(entry_conditions=[
+            {
+                "field": "unsupported_metric",
+                "operator": ">",
+                "value": 1,
+                "description": "Bad field should be dropped",
+            },
+            {
+                "field": "vwap",
+                "operator": ">",
+                "value": 185.5,
+                "description": "Valid field should remain",
+            },
+        ]))
+
+        assert len(plan.entry_conditions) == 1
+        assert plan.entry_conditions[0].field == ConditionField.VWAP
+
+    def test_invalid_adjustment_rule_trigger_is_ignored(self):
+        plan = SymbolPlan(**_make_plan(adjustment_rules=[
+            {
+                "trigger": {
+                    "field": "unsupported_metric",
+                    "operator": ">",
+                    "value": 1,
+                    "description": "Bad trigger should be dropped",
+                },
+                "action": "close_all",
+                "description": "drop me",
+            },
+            {
+                "trigger": {
+                    "field": "underlying_price",
+                    "operator": "<=",
+                    "value": 170,
+                    "description": "Valid trigger should remain",
+                },
+                "action": "close_all",
+                "description": "keep me",
+            },
+        ]))
+
+        assert len(plan.adjustment_rules) == 1
+        assert plan.adjustment_rules[0].action == AdjustmentAction.CLOSE_ALL
+        assert plan.adjustment_rules[0].trigger.field == ConditionField.UNDERLYING_PRICE
 
 
 # ---------------------------------------------------------------------------

@@ -239,13 +239,13 @@ signal_service:
 
 analysis_service:
   llm:
-    provider: "copilot"                 # openai / copilot / qiniu / closeai
+    provider: "closeai"                 # openai / copilot / qiniu / closeai
     openai:
       api_key: ""                       # or env: ANALYSIS_SERVICE__LLM__OPENAI__API_KEY
       model: "claude-opus-4.6"
       reasoning_effort: "high"          # low / medium / high
       temperature: 0.1
-      max_tokens: 16384
+      max_tokens: 32768
       request_timeout_seconds: 600
     copilot:
       cli_path: "copilot"
@@ -260,7 +260,7 @@ analysis_service:
       reasoning_effort: "high"          # low / medium / high
       temperature: 0.1
       max_tokens: 32768                 # Gemini 2.5 Flash supports up to 65536 output tokens
-      request_timeout_seconds: 900
+      request_timeout_seconds: 600
     closeai:
       api_key: ""                       # or env: ANALYSIS_SERVICE__LLM__CLOSEAI__API_KEY
       base_url: "https://api.openai-proxy.org/v1"

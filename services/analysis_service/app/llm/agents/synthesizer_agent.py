@@ -17,7 +17,7 @@ from pydantic import ValidationError
 
 from shared.config import get_settings
 from shared.metrics import llm_request_duration, llm_retries_total, llm_tokens_total
-from shared.models.blueprint import LLMTradingBlueprint
+from shared.models.blueprint import ConditionField, ConditionOperator, LLMTradingBlueprint
 from shared.utils import decode_escaped_unicode, get_logger, now_utc, next_trading_day
 
 from services.analysis_service.app.llm.agents.base_agent import AgentLLMProvider, LLMUsageTracker, _default_provider
@@ -95,60 +95,104 @@ def _normalize_numeric_value(value: Any) -> float | list[float] | None:
     return None
 
 
-def _normalize_trigger_conditions(items: Any) -> tuple[list[dict[str, Any]], int]:
+def _is_valid_enum_value(enum_cls: type, value: Any) -> bool:
+    try:
+        enum_cls(value)
+    except (ValueError, TypeError):
+        return False
+    return True
+
+
+def _append_dropped_sample(samples: list[Any], item: Any, limit: int = 3) -> None:
+    if len(samples) >= limit:
+        return
+    try:
+        safe_item = json.loads(json.dumps(item, ensure_ascii=False, default=str))
+    except (TypeError, ValueError):
+        safe_item = str(item)
+    samples.append(safe_item)
+
+
+def _normalize_trigger_conditions(items: Any) -> tuple[list[dict[str, Any]], int, list[Any]]:
     if not isinstance(items, list):
-        return [], 0
+        return [], 0, []
 
     normalized_items: list[dict[str, Any]] = []
     dropped = 0
+    dropped_samples: list[Any] = []
     for item in items:
         if not isinstance(item, dict):
             dropped += 1
+            _append_dropped_sample(dropped_samples, item)
             continue
         normalized = dict(item)
+        if not _is_valid_enum_value(ConditionField, normalized.get("field")):
+            dropped += 1
+            _append_dropped_sample(dropped_samples, item)
+            continue
+        if not _is_valid_enum_value(ConditionOperator, normalized.get("operator")):
+            dropped += 1
+            _append_dropped_sample(dropped_samples, item)
+            continue
         normalized_value = _normalize_numeric_value(normalized.get("value"))
         if normalized_value is None:
             dropped += 1
+            _append_dropped_sample(dropped_samples, item)
             continue
         normalized["value"] = normalized_value
         normalized_items.append(normalized)
-    return normalized_items, dropped
+    return normalized_items, dropped, dropped_samples
 
 
-def _normalize_adjustment_rules(items: Any) -> tuple[list[dict[str, Any]], int]:
+def _normalize_adjustment_rules(items: Any) -> tuple[list[dict[str, Any]], int, list[Any]]:
     if not isinstance(items, list):
-        return [], 0
+        return [], 0, []
 
     normalized_items: list[dict[str, Any]] = []
     dropped = 0
+    dropped_samples: list[Any] = []
     for item in items:
         if not isinstance(item, dict):
             dropped += 1
+            _append_dropped_sample(dropped_samples, item)
             continue
         normalized = dict(item)
         trigger = normalized.get("trigger")
         if not isinstance(trigger, dict):
             dropped += 1
+            _append_dropped_sample(dropped_samples, item)
             continue
         normalized_trigger = dict(trigger)
+        if not _is_valid_enum_value(ConditionField, normalized_trigger.get("field")):
+            dropped += 1
+            _append_dropped_sample(dropped_samples, item)
+            continue
+        if not _is_valid_enum_value(ConditionOperator, normalized_trigger.get("operator")):
+            dropped += 1
+            _append_dropped_sample(dropped_samples, item)
+            continue
         normalized_value = _normalize_numeric_value(normalized_trigger.get("value"))
         if normalized_value is None:
             dropped += 1
+            _append_dropped_sample(dropped_samples, item)
             continue
         normalized_trigger["value"] = normalized_value
         normalized["trigger"] = normalized_trigger
         normalized_items.append(normalized)
-    return normalized_items, dropped
+    return normalized_items, dropped, dropped_samples
 
 
-def _normalize_blueprint_payload(data: dict[str, Any], signal_date: date | None) -> tuple[dict[str, Any], dict[str, int]]:
+def _normalize_blueprint_payload(data: dict[str, Any], signal_date: date | None) -> tuple[dict[str, Any], dict[str, Any]]:
     normalized_data = dict(data)
     stats = {
         "legs_expiry_normalized": 0,
         "legs_strike_normalized": 0,
         "entry_conditions_dropped": 0,
+        "entry_conditions_dropped_samples": [],
         "exit_conditions_dropped": 0,
+        "exit_conditions_dropped_samples": [],
         "adjustment_rules_dropped": 0,
+        "adjustment_rules_dropped_samples": [],
     }
 
     symbol_plans = normalized_data.get("symbol_plans")
@@ -184,20 +228,26 @@ def _normalize_blueprint_payload(data: dict[str, Any], signal_date: date | None)
                 normalized_legs.append(normalized_leg)
             normalized_plan["legs"] = normalized_legs
 
-        normalized_plan["entry_conditions"], dropped = _normalize_trigger_conditions(
+        normalized_plan["entry_conditions"], dropped, dropped_samples = _normalize_trigger_conditions(
             normalized_plan.get("entry_conditions")
         )
         stats["entry_conditions_dropped"] += dropped
+        for sample in dropped_samples:
+            _append_dropped_sample(stats["entry_conditions_dropped_samples"], sample)
 
-        normalized_plan["exit_conditions"], dropped = _normalize_trigger_conditions(
+        normalized_plan["exit_conditions"], dropped, dropped_samples = _normalize_trigger_conditions(
             normalized_plan.get("exit_conditions")
         )
         stats["exit_conditions_dropped"] += dropped
+        for sample in dropped_samples:
+            _append_dropped_sample(stats["exit_conditions_dropped_samples"], sample)
 
-        normalized_plan["adjustment_rules"], dropped = _normalize_adjustment_rules(
+        normalized_plan["adjustment_rules"], dropped, dropped_samples = _normalize_adjustment_rules(
             normalized_plan.get("adjustment_rules")
         )
         stats["adjustment_rules_dropped"] += dropped
+        for sample in dropped_samples:
+            _append_dropped_sample(stats["adjustment_rules_dropped_samples"], sample)
 
         normalized_plans.append(normalized_plan)
 
@@ -564,14 +614,14 @@ Top-level: max_total_positions, max_daily_loss, max_margin_usage, portfolio_delt
 StrategyType: single_leg|vertical_spread|iron_condor|iron_butterfly|butterfly|calendar_spread|diagonal_spread|straddle|strangle|covered_call|protective_put|collar
 Direction: bullish|bearish|neutral
 AdjustmentAction: hedge_delta|roll_strike|close_leg|add_leg|close_all
-ConditionField: underlying_price|iv|iv_rank|delta|gamma|theta|portfolio_delta|spread_width|time|pnl_percent|volume
+ConditionField: underlying_price|vwap|iv|iv_rank|delta|gamma|theta|portfolio_delta|spread_width|time|pnl_percent|volume
 ConditionOperator: >|>=|<|<=|==|between|crosses_above|crosses_below
 
 ────────────────────────────────────────────────────────
 ENTRY CONDITIONS ROLE
 ────────────────────────────────────────────────────────
 entry_conditions = HARD GATES (strategic prerequisites). The intraday optimizer evaluates ALL non-time entry_conditions as boolean AND-gates before scoring timing quality. If any condition fails, the plan is skipped entirely.
-- Non-time conditions (iv_rank, underlying_price, delta, volume, etc.) → hard prerequisites.
+- Non-time conditions (iv_rank, underlying_price, vwap, delta, volume, etc.) → hard prerequisites.
 - field=time conditions → SOFT REFERENCE only (logged for auditability). The optimizer's continuous time-of-day scoring replaces binary time gates with nuanced preferred-window weighting.
 
 ────────────────────────────────────────────────────────
