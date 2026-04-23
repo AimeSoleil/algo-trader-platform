@@ -49,7 +49,8 @@ def _create_agent_provider(provider_name: str | None = None) -> AgentLLMProvider
     Parameters
     ----------
     provider_name:
-        ``"openai"`` or ``"copilot"``.  Defaults to ``settings.analysis_service.llm.provider``.
+        ``"openai"``, ``"copilot"``, ``"qiniu"`` or ``"closeai"``.
+        Defaults to ``settings.analysis_service.llm.provider``.
     """
     if provider_name is None:
         provider_name = get_settings().analysis_service.llm.provider
@@ -65,6 +66,12 @@ def _create_agent_provider(provider_name: str | None = None) -> AgentLLMProvider
             QiniuAgentProvider,
         )
         return QiniuAgentProvider()
+
+    if provider_name == "closeai":
+        from services.analysis_service.app.llm.agents._closeai_agent_provider import (
+            CloseAIAgentProvider,
+        )
+        return CloseAIAgentProvider()
 
     # Default / "openai"
     from services.analysis_service.app.llm.agents._openai_agent_provider import (

@@ -48,6 +48,12 @@ def _default_provider() -> "AgentLLMProvider":
         )
         return QiniuAgentProvider()
 
+    if provider_name == "closeai":
+        from services.analysis_service.app.llm.agents._closeai_agent_provider import (
+            CloseAIAgentProvider,
+        )
+        return CloseAIAgentProvider()
+
     from services.analysis_service.app.llm.agents._openai_agent_provider import (
         OpenAIAgentProvider,
     )

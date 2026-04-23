@@ -57,9 +57,13 @@ def _normalize_expiry(value: Any, signal_date: date | None) -> Any:
     if not isinstance(value, str):
         return value
 
+    minimum_expiry = next_trading_day(from_date=signal_date)
     raw = value.strip()
     try:
-        return date.fromisoformat(raw).isoformat()
+        parsed_date = date.fromisoformat(raw)
+        if parsed_date < minimum_expiry:
+            return minimum_expiry.isoformat()
+        return parsed_date.isoformat()
     except ValueError:
         pass
 
@@ -250,6 +254,7 @@ class SynthesizerAgent:
             agent_outputs, signals_summary,
             current_positions, previous_execution,
             critic_feedback,
+            signal_date=signal_date,
             trade_symbols=trade_symbols,
         )
 
@@ -377,9 +382,11 @@ class SynthesizerAgent:
         previous_execution: dict | None,
         critic_feedback: str | None,
         *,
+        signal_date: date | None = None,
         trade_symbols: list[str] | None = None,
     ) -> str:
         parts: list[str] = []
+        target_trading_date = next_trading_day(from_date=signal_date).isoformat()
 
         # Agent analyses
         parts.append("## Specialist Agent Analyses\n")
@@ -392,6 +399,13 @@ class SynthesizerAgent:
         for s in signals_summary:
             parts.append(f"- {s.get('symbol', '?')}: close={s.get('close_price', '?')}, "
                          f"volume={s.get('volume', '?')}, regime={s.get('volatility_regime', '?')}")
+
+        parts.append("\n## Signal Date Context\n")
+        parts.append(
+            f"Input signal_date is {(signal_date.isoformat() if signal_date else 'not provided')} (ISO format). "
+            f"Generate the trading blueprint for the NEXT trading day: {target_trading_date}. "
+            f"Every legs.expiry must be an ISO date on or after {target_trading_date}; never output past expiry dates."
+        )
 
         # Positions
         if current_positions and current_positions.get("count", 0) > 0:
@@ -425,6 +439,7 @@ class SynthesizerAgent:
         # Task
         parts.append(
             "\n## Task\n\n"
+            f"Generate the Trading Blueprint for {target_trading_date}.\n"
             "Synthesize the specialist analyses into a complete Trading Blueprint JSON.\n"
             "Resolve any conflicts between agents (e.g. Flow rejects Trend's direction).\n"
             "Apply risk-management constraints to all plans.\n"
@@ -594,6 +609,7 @@ Example: {"field":"time","operator":"between","value":[10.0,11.0],"description":
 
 ## STRICT OUTPUT TYPING
 - `legs[].expiry` MUST be a concrete ISO date string (`YYYY-MM-DD`), never `30-45 DTE` text.
+- `legs[].expiry` MUST be on or after the next trading day specified in the prompt; never output historical expiry dates.
 - `legs[].strike` MUST be a numeric strike price, never symbolic text like `0.30_delta`.
 - `entry_conditions[].value`, `exit_conditions[].value`, and `adjustment_rules[].trigger.value` MUST be numeric or `[low, high]` numeric lists only.
 - NEVER output symbolic references like `vwap`, `short_strike`, `long_strike`, `atm`, or field names inside any `value` field.

@@ -134,21 +134,41 @@ def create_celery_app() -> Celery:
             reason="refresh_earnings_time should be before post_market_time",
         )
 
+    def _build_intraday_capture_schedule_entries(schedule_name: str, task_name: str) -> dict:
+        entries: dict[str, dict] = {}
+        minutes_by_hour: dict[int, list[int]] = {}
+        current_minute = _mkt_start_h * 60 + _mkt_start_m
+        end_minute = _mkt_end_h * 60 + _mkt_end_m
+
+        while current_minute < end_minute:
+            hour, minute = divmod(current_minute, 60)
+            minutes_by_hour.setdefault(hour, []).append(minute)
+            current_minute += intraday_interval
+
+        for index, (hour, minutes) in enumerate(minutes_by_hour.items()):
+            entry_name = schedule_name if index == 0 else f"{schedule_name}-{hour:02d}"
+            entries[entry_name] = {
+                "task": task_name,
+                "schedule": crontab(
+                    minute=",".join(str(minute) for minute in minutes),
+                    hour=hour,
+                    day_of_week="1-5",
+                ),
+                "options": {"queue": "data"},
+            }
+
+        return entries
+
     app.conf.beat_schedule = {
         "post-market-pipeline": {
             "task": "data_service.tasks.run_post_market_pipeline",
             "schedule": crontab(hour=_pm_h, minute=_pm_m, day_of_week="1-5"),
             "options": {"queue": "data"},
         },
-        "intraday-option-capture": {
-            "task": "data_service.tasks.capture_intraday_options",
-            "schedule": crontab(
-                minute=f"*/{intraday_interval}",
-                hour=f"{_mkt_start_h}-{_mkt_end_h - 1}",
-                day_of_week="1-5",
-            ),
-            "options": {"queue": "data"},
-        },
+        **_build_intraday_capture_schedule_entries(
+            "intraday-option-capture",
+            "data_service.tasks.capture_intraday_options",
+        ),
         "intraday-option-capture-close": {
             "task": "data_service.tasks.capture_intraday_options",
             "schedule": crontab(
@@ -158,15 +178,10 @@ def create_celery_app() -> Celery:
             ),
             "options": {"queue": "data"},
         },
-        "intraday-stock-capture": {
-            "task": "data_service.tasks.capture_intraday_stock",
-            "schedule": crontab(
-                minute=f"*/{intraday_interval}",
-                hour=f"{_mkt_start_h}-{_mkt_end_h - 1}",
-                day_of_week="1-5",
-            ),
-            "options": {"queue": "data"},
-        },
+        **_build_intraday_capture_schedule_entries(
+            "intraday-stock-capture",
+            "data_service.tasks.capture_intraday_stock",
+        ),
         "intraday-stock-capture-close": {
             "task": "data_service.tasks.capture_intraday_stock",
             "schedule": crontab(
