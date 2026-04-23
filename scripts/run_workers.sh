@@ -121,9 +121,27 @@ read_pid_file() {
   cat "$pidfile" 2>/dev/null || true
 }
 
+read_wrapper_pid_file() {
+  local name="$1"
+  local pidfile="$LOG_DIR/${name}.wrapper.pid"
+  [[ -f "$pidfile" ]] || return 1
+  cat "$pidfile" 2>/dev/null || true
+}
+
 is_pid_running() {
   local pid="$1"
   [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null
+}
+
+collect_descendant_pids() {
+  local parent_pid="$1"
+  local child_pid
+
+  while IFS= read -r child_pid; do
+    [[ -n "$child_pid" ]] || continue
+    collect_descendant_pids "$child_pid"
+    printf '%s\n' "$child_pid"
+  done < <(pgrep -P "$parent_pid" 2>/dev/null || true)
 }
 
 worker_node_name() {
@@ -297,7 +315,13 @@ while (( $# > 0 )); do
       # 0) Stop manager daemon first (if running)
       if [[ -f "$MANAGER_PID_FILE" ]]; then
         manager_pid="$(cat "$MANAGER_PID_FILE" 2>/dev/null || true)"
-        if [[ -n "$manager_pid" ]] && kill -0 "$manager_pid" 2>/dev/null; then
+        if is_pid_running "$manager_pid"; then
+          mapfile -t manager_descendants < <(collect_descendant_pids "$manager_pid")
+          if (( ${#manager_descendants[@]} > 0 )); then
+            echo "  SIGTERM → manager descendants (${#manager_descendants[@]} processes)"
+            kill "${manager_descendants[@]}" 2>/dev/null || true
+            stopped=$((stopped + ${#manager_descendants[@]}))
+          fi
           echo "  SIGTERM → manager (pid=${manager_pid})"
           kill "$manager_pid" 2>/dev/null || true
           stopped=$((stopped + 1))
@@ -308,6 +332,12 @@ while (( $# > 0 )); do
       # 1) Kill processes tracked by PID files
       while IFS= read -r name; do
         [[ -n "$name" ]] || continue
+        wrapper_pid="$(read_wrapper_pid_file "$name" || true)"
+        if is_pid_running "$wrapper_pid"; then
+          echo "  SIGTERM → ${name} wrapper (pid=${wrapper_pid})"
+          kill "$wrapper_pid" 2>/dev/null || true
+          stopped=$((stopped + 1))
+        fi
         pid="$(read_pid_file "$name" || true)"
         if is_pid_running "$pid"; then
           echo "  SIGTERM → ${name} (pid=${pid})"
@@ -315,6 +345,7 @@ while (( $# > 0 )); do
           stopped=$((stopped + 1))
         fi
         rm -f "$LOG_DIR/${name}.pid"
+        rm -f "$LOG_DIR/${name}.wrapper.pid"
       done < <(printf '%s\n' "${ALL_QUEUES[@]}" beat flower watchdog)
 
       # 2) Also ask Celery to shut down any workers it knows about
@@ -325,6 +356,13 @@ while (( $# > 0 )); do
 
       # Brief grace period then force-kill survivors
       sleep 2
+      if [[ -n "${manager_pid:-}" ]] && is_pid_running "$manager_pid"; then
+        mapfile -t manager_descendants < <(collect_descendant_pids "$manager_pid")
+        if (( ${#manager_descendants[@]} > 0 )); then
+          kill -9 "${manager_descendants[@]}" 2>/dev/null || true
+        fi
+        kill -9 "$manager_pid" 2>/dev/null || true
+      fi
       pkill -9 -f "celery.*shared.celery_app" 2>/dev/null || true
 
       if (( stopped > 0 )); then
@@ -519,9 +557,19 @@ write_pid_file() {
   echo "$pid" > "$LOG_DIR/${name}.pid"
 }
 
+write_wrapper_pid_file() {
+  local name="$1" pid="$2"
+  echo "$pid" > "$LOG_DIR/${name}.wrapper.pid"
+}
+
 remove_pid_file() {
   local name="$1"
   rm -f "$LOG_DIR/${name}.pid"
+}
+
+remove_wrapper_pid_file() {
+  local name="$1"
+  rm -f "$LOG_DIR/${name}.wrapper.pid"
 }
 
 resolve_pid() {
@@ -633,6 +681,7 @@ start_managed_process() {
   shift
   run_with_restart "$name" "$@" &
   WRAPPER_PIDS[$name]=$!
+  write_wrapper_pid_file "$name" "${WRAPPER_PIDS[$name]}"
 }
 
 start_worker_process() {
@@ -858,6 +907,7 @@ cleanup() {
   while IFS= read -r name; do
     [[ -n "$name" ]] || continue
     remove_pid_file "$name"
+    remove_wrapper_pid_file "$name"
   done < <(managed_process_names)
   remove_pid_file watchdog
   rm -f "$MANAGER_PID_FILE"
