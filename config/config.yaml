@@ -167,7 +167,7 @@ data_service:
 
   # ── 采集器韧性（provider 无关）──
   resilience:
-    max_retries: 1                     # 禁用重试（仅 1 次请求）
+    max_retries: 1                     # 单次采集失败后最大重试次数（0 = 不重试，1 = 重试一次，依此类推）
     backoff_base_seconds: 1.0          # 指数退避基础（1s → 2s → 4s）
     rate_limit_per_call_seconds: 0.5   # 单次 API 调用间隔（如每个到期日请求之间）
     rate_limit_per_symbol_seconds: 1.5 # 多 symbol 批量采集时，symbol 之间的间隔
