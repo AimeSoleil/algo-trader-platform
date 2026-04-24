@@ -284,10 +284,16 @@ async def create_hypertables() -> None:
 
 async def apply_retention_policies() -> None:
     settings = get_settings()
-    stock_days = settings.data_service.retention_days.stock_1min
-    option_days = settings.data_service.retention_days.option_5min
+    stock_1min_days = settings.data_service.retention_days.stock_1min
+    stock_5min_days = settings.data_service.retention_days.stock_5min
+    option_5min_days = settings.data_service.retention_days.option_5min
 
-    print(f"[init_db] 应用 retention policy: stock_1min={stock_days}d option_5min={option_days}d")
+    print(
+        "[init_db] 应用 retention policy: "
+        f"stock_1min={stock_1min_days}d "
+        f"stock_5min={stock_5min_days}d "
+        f"option_5min={option_5min_days}d"
+    )
     engine = get_timescale_engine()
 
     async with engine.begin() as conn:
@@ -298,36 +304,37 @@ async def apply_retention_policies() -> None:
         await conn.execute(text("SELECT remove_retention_policy('stock_5min_bars', if_exists => TRUE)"))
         await conn.execute(text("SELECT remove_retention_policy('option_5min_snapshots', if_exists => TRUE)"))
 
-        if stock_days > 0:
+        if stock_1min_days > 0:
             await conn.execute(
                 text(
                     f"""
                     SELECT add_retention_policy(
                         'stock_1min_bars',
-                        INTERVAL '{int(stock_days)} days',
+                        INTERVAL '{int(stock_1min_days)} days',
                         if_not_exists => TRUE
                     );
                     """
                 )
             )
-        if option_days > 0:
+        if stock_5min_days > 0:
             await conn.execute(
                 text(
                     f"""
                     SELECT add_retention_policy(
                         'stock_5min_bars',
-                        INTERVAL '{int(option_days)} days',
+                        INTERVAL '{int(stock_5min_days)} days',
                         if_not_exists => TRUE
                     );
                     """
                 )
             )
+        if option_5min_days > 0:
             await conn.execute(
                 text(
                     f"""
                     SELECT add_retention_policy(
                         'option_5min_snapshots',
-                        INTERVAL '{int(option_days)} days',
+                        INTERVAL '{int(option_5min_days)} days',
                         if_not_exists => TRUE
                     );
                     """

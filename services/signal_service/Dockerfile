@@ -11,12 +11,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 COPY shared/ /app/shared/
-COPY config/ /app/config/
 COPY services/signal_service/ /app/services/signal_service/
 
 RUN pip install --upgrade pip setuptools wheel && \
-    pip install -e /app/shared && \
-    pip install -e /app/services/signal_service
+    pip install --no-compile -e /app/shared && \
+    pip install --no-compile -e /app/services/signal_service
 
 
 FROM python:3.11-slim
@@ -31,7 +30,7 @@ RUN groupadd --system app && useradd --system --gid app --create-home app
 
 COPY --from=builder /usr/local /usr/local
 COPY shared/ /app/shared/
-COPY config/ /app/config/
+COPY config/config.yaml /app/config/config.yaml
 COPY services/signal_service/ /app/services/signal_service/
 
 RUN chown -R app:app /app

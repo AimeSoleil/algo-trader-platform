@@ -236,9 +236,9 @@ class DataProviderSettings(BaseSettings):
     options: str = "yfinance"
 
 class IntradayRetentionSettings(BaseSettings):
-    stock_1min: int = 90
-    stock_5min: int = 60
-    option_5min: int = 60
+    stock_1min: int = 30
+    stock_5min: int = 30
+    option_5min: int = 30
 
 class ResilienceSettings(BaseSettings):
     """Provider-agnostic retry / rate-limit / concurrency settings."""
