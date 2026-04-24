@@ -102,6 +102,7 @@ Data Service 使用 fetcher registry 做 provider 抽象。
 ### Manual Collection
 
 - `POST /api/v1/data/collect/stock`
+- `POST /api/v1/data/collect/post-market`
 - `GET /api/v1/data/collect/{task_id}`
 
 ### Earnings
@@ -123,6 +124,22 @@ Data Service 使用 fetcher registry 做 provider 抽象。
 - 当天盘后允许正常执行
 
 很多 `422` 会附带 `suggested_request_body`，可以直接重试。
+
+`POST /api/v1/data/collect/post-market` 用于手动触发盘后“数据阶段”任务，只做：
+
+- `aggregate_option_daily`
+- `capture_post_market_chunk` fan-out 股票采集
+
+它不会触发：
+
+- `compute_daily_signals`
+- `generate_daily_blueprint`
+
+行为约束：
+
+- 工作日仅允许在收盘后触发
+- 周末默认回补到上一个交易日
+- 结果仍通过 `GET /api/v1/data/collect/{task_id}` 轮询
 
 ## Workers And Queues
 

@@ -87,7 +87,8 @@ class CelerySettings(BaseSettings):
     concurrency: int = 0                   # 0 = Celery default (CPU cores)
 
 class BeatSettings(BaseSettings):
-    redbeat_lock_timeout: int = 900        # seconds before a dead beat loses the lock
+    redbeat_lock_timeout: int = 1800       # seconds before a dead beat loses the lock
+    max_loop_interval_seconds: int = 60    # beat wake-up interval; shorter helps RedBeat refresh locks more often
 
 class FlowerSettings(BaseSettings):
     port: int = 5555

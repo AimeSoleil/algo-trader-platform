@@ -73,6 +73,7 @@ def create_celery_app() -> Celery:
         task_reject_on_worker_lost=celery_cfg.task_reject_on_worker_lost,
         worker_prefetch_multiplier=celery_cfg.prefetch_multiplier,
         worker_max_memory_per_child=celery_cfg.max_memory_per_child,
+        beat_max_loop_interval=settings.common.beat.max_loop_interval_seconds,
         # Task routes — each service handles its own tasks
         task_routes={
             "data_service.tasks.*": {"queue": "data"},
@@ -112,6 +113,7 @@ def create_celery_app() -> Celery:
 
     # Unified post-market pipeline
     _pm_h, _pm_m = map(int, settings.data_service.worker.schedule.post_market_time.split(":"))
+    _pm_watchdog_h, _pm_watchdog_m = divmod(_pm_h * 60 + _pm_m + 10, 60)
 
     # Earnings cache refresh
     _earn_h, _earn_m = map(int, settings.data_service.worker.schedule.refresh_earnings_time.split(":"))
@@ -163,6 +165,11 @@ def create_celery_app() -> Celery:
         "post-market-pipeline": {
             "task": "data_service.tasks.run_post_market_pipeline",
             "schedule": crontab(hour=_pm_h, minute=_pm_m, day_of_week="1-5"),
+            "options": {"queue": "data"},
+        },
+        "post-market-pipeline-watchdog": {
+            "task": "data_service.tasks.ensure_post_market_pipeline_started",
+            "schedule": crontab(hour=_pm_watchdog_h, minute=_pm_watchdog_m, day_of_week="1-5"),
             "options": {"queue": "data"},
         },
         **_build_intraday_capture_schedule_entries(

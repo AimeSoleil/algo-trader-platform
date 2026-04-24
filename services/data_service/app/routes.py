@@ -100,6 +100,13 @@ class CollectResponse(BaseModel):
     message: str = ""
 
 
+def _default_post_market_collection_date() -> date:
+    trading_date = today_trading()
+    if now_market().weekday() >= 5:
+        return previous_trading_day(trading_date)
+    return trading_date
+
+
 def _build_collect_suggested_body(
     req: CollectRequest,
     *,
@@ -485,6 +492,52 @@ async def trigger_collection(req: CollectRequest):
         task_id=task.id,
         status="queued",
         message=message,
+    )
+
+
+@router.post("/data/collect/post-market", status_code=202, response_model=CollectResponse)
+async def trigger_post_market_collection():
+    """Trigger post-market options aggregation + stock capture only.
+
+    This endpoint intentionally does not dispatch signal or analysis tasks.
+    """
+    market_now = now_market()
+    settings = get_settings()
+    market_close = settings.common.market_hours.end
+
+    if market_now.weekday() < 5 and (before_market_open() or is_market_open()):
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "error": (
+                    f"Post-market collection can only be triggered after market close ({market_close}). "
+                    f"Current market time: {market_now.strftime('%H:%M')}."
+                ),
+            },
+        )
+
+    trading_date = _default_post_market_collection_date()
+    task = celery_app.send_task(
+        "data_service.tasks.run_post_market_collection_only",
+        args=[trading_date.isoformat()],
+        queue="data",
+    )
+
+    logger.info(
+        "manual_post_market_collection.queued",
+        task_id=task.id,
+        queue="data",
+        trading_date=trading_date.isoformat(),
+        downstream="skipped",
+    )
+
+    return CollectResponse(
+        task_id=task.id,
+        status="queued",
+        message=(
+            f"Post-market data collection queued for {trading_date} "
+            f"(options aggregation + stock capture only; signal and analysis not triggered)"
+        ),
     )
 
 

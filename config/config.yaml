@@ -114,7 +114,8 @@ common:
     concurrency: 0                     # worker 并发数（0 = Celery 默认，即 CPU 核数）
 
   beat:
-    redbeat_lock_timeout: 900          # RedBeat 分布式锁超时秒数（续期间隔 = timeout/5 = 180s）
+    redbeat_lock_timeout: 1800         # RedBeat 分布式锁超时秒数；高于官方默认建议，降低短暂 Redis 抖动导致丢锁概率
+    max_loop_interval_seconds: 60      # Beat 最长休眠秒数；缩短轮询周期以更频繁刷新 RedBeat 锁
 
   flower:
     port: 5555
