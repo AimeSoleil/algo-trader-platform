@@ -162,9 +162,9 @@ data_service:
 
   # ── 数据保留策略 ──
   retention_days:
-    stock_1min: 30                     # 盘中 1m bars 热存储保留天数
-    stock_5min: 30                     # 盘中 5m bars 热存储保留天数
-    option_5min: 30                    # 盘中 option snapshots 保留天数
+    stock_1min: 14                     # 盘中 1m bars 热存储保留天数
+    stock_5min: 21                     # 盘中 5m bars 热存储保留天数
+    option_5min: 21                    # 盘中 option snapshots 保留天数
 
   # ── 采集器韧性（provider 无关）──
   resilience:
@@ -282,8 +282,10 @@ analysis_service:
     cache_enabled: true
     cache_ttl: 3600
     skill_dir: ""
+    output_budget_ratio: 0.8               # 实际请求 completion token 预算 = provider max_tokens 的 80%
+    output_truncation_threshold_ratio: 0.95  # 若输出达到请求预算的 95%，视为接近截断并触发保护
     max_critic_revisions: 1               # Synthesizer↔Critic revision rounds
-    orchestrator_chunk_size: 9            # max non-benchmark symbols per LLM chunk
+    orchestrator_chunk_size: 5            # max non-benchmark symbols per LLM chunk
     orchestrator_max_parallel: 3          # max parallel chunk pipelines
     specialist_parallel_limit: 2          # max parallel specialists (pipeline-level gate)
 

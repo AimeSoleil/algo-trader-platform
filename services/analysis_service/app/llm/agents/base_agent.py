@@ -31,6 +31,50 @@ from services.analysis_service.app.llm.json_utils import parse_llm_json
 logger = get_logger("analysis_agent")
 
 
+@dataclass(frozen=True)
+class GenerationConfig:
+    temperature: float | None
+    provider_max_tokens: int
+    request_max_tokens: int
+    truncation_threshold_tokens: int
+    output_budget_ratio: float
+    output_truncation_threshold_ratio: float
+
+
+def _resolve_generation_config(provider_name: str) -> GenerationConfig:
+    """Resolve provider-specific generation defaults for agent calls."""
+    settings = get_settings()
+    llm_settings = settings.analysis_service.llm
+    output_budget_ratio = llm_settings.output_budget_ratio
+    output_truncation_threshold_ratio = llm_settings.output_truncation_threshold_ratio
+
+    if provider_name == "qiniu":
+        temperature = llm_settings.qiniu.temperature
+        provider_max_tokens = llm_settings.qiniu.max_tokens
+    elif provider_name == "closeai":
+        temperature = llm_settings.closeai.temperature
+        provider_max_tokens = llm_settings.closeai.max_tokens
+    elif provider_name == "openai":
+        temperature = llm_settings.openai.temperature
+        provider_max_tokens = llm_settings.openai.max_tokens
+    else:
+        # Copilot does not currently expose its own temperature / max_tokens config.
+        temperature = None
+        provider_max_tokens = 16384
+
+    request_max_tokens = max(1, int(provider_max_tokens * output_budget_ratio))
+    truncation_threshold_tokens = max(1, int(request_max_tokens * output_truncation_threshold_ratio))
+
+    return GenerationConfig(
+        temperature=temperature,
+        provider_max_tokens=provider_max_tokens,
+        request_max_tokens=request_max_tokens,
+        truncation_threshold_tokens=truncation_threshold_tokens,
+        output_budget_ratio=output_budget_ratio,
+        output_truncation_threshold_ratio=output_truncation_threshold_ratio,
+    )
+
+
 def _default_provider() -> "AgentLLMProvider":
     """Module-level helper: build the correct provider based on config."""
     settings = get_settings()
@@ -279,6 +323,7 @@ class AnalysisAgent(ABC):
         max_retries = settings.analysis_service.llm.max_retries
         backoff_base = settings.analysis_service.llm.backoff_base_seconds
         backoff_max = settings.analysis_service.llm.backoff_max_seconds
+        generation_config = _resolve_generation_config(provider.name)
 
         # max_retries=0 means "one attempt, no retries"; ≥1 means up to N+1 total attempts.
         max_attempts = max_retries + 1
@@ -288,12 +333,11 @@ class AnalysisAgent(ABC):
             t0 = perf_counter()
             status = "error"
             try:
-                _max_tokens = 16384
                 result = await provider.generate(
                     instructions=self.system_prompt,
                     user_prompt=user_prompt,
-                    temperature=settings.analysis_service.llm.openai.temperature,
-                    max_tokens=_max_tokens,
+                    temperature=generation_config.temperature,
+                    max_tokens=generation_config.request_max_tokens,
                     model=model,
                     agent_name=self.name,
                     analysis_chunk_id=analysis_chunk_id,
@@ -302,7 +346,7 @@ class AnalysisAgent(ABC):
                 # Detect output truncation: if the model hit the token ceiling,
                 # the JSON is almost certainly incomplete.  Raise immediately so
                 # we retry rather than trying to parse garbage.
-                if result.output_tokens >= _max_tokens * 0.97:
+                if result.output_tokens >= generation_config.truncation_threshold_tokens:
                     raw_output = result.raw_content or result.content
                     logger.error(
                         f"agent.{self.name}.output_truncated",
@@ -310,7 +354,11 @@ class AnalysisAgent(ABC):
                         provider=provider.name,
                         model=result.model,
                         output_tokens=result.output_tokens,
-                        max_tokens=_max_tokens,
+                        request_max_tokens=generation_config.request_max_tokens,
+                        provider_max_tokens=generation_config.provider_max_tokens,
+                        output_budget_ratio=generation_config.output_budget_ratio,
+                        output_truncation_threshold_ratio=generation_config.output_truncation_threshold_ratio,
+                        truncation_threshold_tokens=generation_config.truncation_threshold_tokens,
                         input_symbols=len(filtered),
                         attempt=attempt + 1,
                         raw_tail=raw_output[-200:] if raw_output else "",
@@ -318,7 +366,11 @@ class AnalysisAgent(ABC):
                     raise ValueError(
                         f"agent.{self.name} output likely truncated: "
                         f"output_tokens={result.output_tokens} >= "
-                        f"{_max_tokens * 0.97:.0f} (97% of max_tokens={_max_tokens}). "
+                        f"{generation_config.truncation_threshold_tokens} "
+                        f"({generation_config.output_truncation_threshold_ratio * 100:.0f}% of "
+                        f"request_max_tokens={generation_config.request_max_tokens}, "
+                        f"provider_max_tokens={generation_config.provider_max_tokens}, "
+                        f"output_budget_ratio={generation_config.output_budget_ratio:.2f}). "
                         f"input_symbols={len(filtered)}"
                     )
 
@@ -476,6 +528,11 @@ class AnalysisAgent(ABC):
         parts.append(
             "\n## Task\n"
             "Analyze each symbol per your instructions. "
+            "Keep output compact. "
+            "For each symbol, keep reasoning to at most 2 short sentences. "
+            "For each strategy, keep reasoning to at most 1 short sentence. "
+            "Avoid long reasoning paragraphs or chain-of-thought. "
+            "If uncertain, lower confidence instead of writing more text. "
             "Output ONLY valid JSON (RFC 8259). No markdown fences."
         )
 

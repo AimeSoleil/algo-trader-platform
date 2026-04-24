@@ -236,9 +236,9 @@ class DataProviderSettings(BaseSettings):
     options: str = "yfinance"
 
 class IntradayRetentionSettings(BaseSettings):
-    stock_1min: int = 30
-    stock_5min: int = 30
-    option_5min: int = 30
+    stock_1min: int = 14
+    stock_5min: int = 21
+    option_5min: int = 21
 
 class ResilienceSettings(BaseSettings):
     """Provider-agnostic retry / rate-limit / concurrency settings."""
@@ -397,9 +397,11 @@ class LLMSettings(BaseSettings):
     cache_enabled: bool = True
     cache_ttl: int = 3600
     skill_dir: str = ""
+    output_budget_ratio: float = Field(default=0.8, gt=0.0, le=1.0)
+    output_truncation_threshold_ratio: float = Field(default=0.95, gt=0.0, le=1.0)
 
     # ── Orchestrator — symbol chunking for context window management ──
-    orchestrator_chunk_size: int = 9
+    orchestrator_chunk_size: int = 7
     orchestrator_max_parallel: int = 3
 
     # ── Specialist flow parallel gate (pipeline-level) ──
