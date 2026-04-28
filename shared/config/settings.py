@@ -238,7 +238,7 @@ class DataProviderSettings(BaseSettings):
 class IntradayRetentionSettings(BaseSettings):
     stock_1min: int = 14
     stock_5min: int = 21
-    option_5min: int = 21
+    option_5min: int = 3
 
 class ResilienceSettings(BaseSettings):
     """Provider-agnostic retry / rate-limit / concurrency settings."""

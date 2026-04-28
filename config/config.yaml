@@ -164,7 +164,7 @@ data_service:
   retention_days:
     stock_1min: 14                     # 盘中 1m bars 热存储保留天数
     stock_5min: 21                     # 盘中 5m bars 热存储保留天数
-    option_5min: 21                    # 盘中 option snapshots 保留天数
+    option_5min: 3                     # 盘中 option snapshots 保留天数
 
   # ── 采集器韧性（provider 无关）──
   resilience:
