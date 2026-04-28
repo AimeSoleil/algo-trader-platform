@@ -27,6 +27,16 @@ logger = get_logger("synthesizer_agent")
 
 _NUMBER_RE = re.compile(r"[+-]?\d+(?:\.\d+)?")
 _DTE_RE = re.compile(r"(?P<start>\d+)(?:\s*-\s*(?P<end>\d+))?\s*dte", re.I)
+_SIDE_ALIASES = {
+    "buy": "buy",
+    "sell": "sell",
+    "long": "buy",
+    "short": "sell",
+    "buy_to_open": "buy",
+    "sell_to_open": "sell",
+    "bto": "buy",
+    "sto": "sell",
+}
 
 
 def _is_http_500_error(exc: Exception) -> bool:
@@ -93,6 +103,13 @@ def _normalize_numeric_value(value: Any) -> float | list[float] | None:
         parsed = _extract_float(value)
         return parsed
     return None
+
+
+def _normalize_leg_side(value: Any) -> Any:
+    if not isinstance(value, str):
+        return value
+    key = re.sub(r"[\s-]+", "_", value.strip().lower())
+    return _SIDE_ALIASES.get(key, value)
 
 
 def _is_valid_enum_value(enum_cls: type, value: Any) -> bool:
@@ -187,6 +204,7 @@ def _normalize_blueprint_payload(data: dict[str, Any], signal_date: date | None)
     stats = {
         "legs_expiry_normalized": 0,
         "legs_strike_normalized": 0,
+        "legs_side_normalized": 0,
         "entry_conditions_dropped": 0,
         "entry_conditions_dropped_samples": [],
         "exit_conditions_dropped": 0,
@@ -224,6 +242,12 @@ def _normalize_blueprint_payload(data: dict[str, Any], signal_date: date | None)
                 if updated_strike is not None and updated_strike != original_strike:
                     stats["legs_strike_normalized"] += 1
                     normalized_leg["strike"] = updated_strike
+
+                original_side = normalized_leg.get("side")
+                updated_side = _normalize_leg_side(original_side)
+                if updated_side != original_side:
+                    stats["legs_side_normalized"] += 1
+                    normalized_leg["side"] = updated_side
 
                 normalized_legs.append(normalized_leg)
             normalized_plan["legs"] = normalized_legs
@@ -607,7 +631,7 @@ RISK MANAGEMENT (Priority 5 — MANDATORY)
 BLUEPRINT JSON SCHEMA
 ────────────────────────────────────────────────────────
 market_regime:str, market_analysis:str(2-3 sentences)
-symbol_plans[]: underlying, strategy_type, direction, legs[{expiry,strike,option_type,side,quantity}], entry_conditions[{field,operator,value,description}], exit_conditions[], adjustment_rules[{trigger:{field,operator,value,timeframe,description},action:hedge_delta|roll_strike|close_leg|add_leg|close_all,params:{},description}], max_position_size(FLOAT 0.0-1.5, position sizing ratio: 1.0=full, 0.5=half, 0.7=70%), max_contracts(INTEGER ≥1, number of contract sets to trade), stop_loss_amount, take_profit_amount, max_loss_per_trade, reasoning(MUST reference agents), confidence(0-1)
+symbol_plans[]: underlying, strategy_type, direction, legs[{expiry,strike,option_type,side=buy|sell,quantity}], entry_conditions[{field,operator,value,description}], exit_conditions[], adjustment_rules[{trigger:{field,operator,value,timeframe,description},action:hedge_delta|roll_strike|close_leg|add_leg|close_all,params:{},description}], max_position_size(FLOAT 0.0-1.5, position sizing ratio: 1.0=full, 0.5=half, 0.7=70%), max_contracts(INTEGER ≥1, number of contract sets to trade), stop_loss_amount, take_profit_amount, max_loss_per_trade, reasoning(MUST reference agents), confidence(0-1)
 Top-level: max_total_positions, max_daily_loss, max_margin_usage, portfolio_delta_limit, portfolio_gamma_limit
 
 ## Enums
@@ -661,6 +685,7 @@ Example: {"field":"time","operator":"between","value":[10.0,11.0],"description":
 - `legs[].expiry` MUST be a concrete ISO date string (`YYYY-MM-DD`), never `30-45 DTE` text.
 - `legs[].expiry` MUST be on or after the next trading day specified in the prompt; never output historical expiry dates.
 - `legs[].strike` MUST be a numeric strike price, never symbolic text like `0.30_delta`.
+- `legs[].side` MUST be exactly `buy` or `sell`. Never output `long` or `short`.
 - `entry_conditions[].value`, `exit_conditions[].value`, and `adjustment_rules[].trigger.value` MUST be numeric or `[low, high]` numeric lists only.
 - NEVER output symbolic references like `vwap`, `short_strike`, `long_strike`, `atm`, or field names inside any `value` field.
 
