@@ -92,7 +92,9 @@ def _load_runtime_env(explicit_env_file: str | None) -> None:
         print("[init_db] 未找到 .env.local 或 .env，继续使用当前 shell 环境")
         return
 
-    load_dotenv(env_path, override=False)
+    # For this script, the selected env file should win over any stale shell
+    # exports so host-vs-docker connection targets are deterministic.
+    load_dotenv(env_path, override=True)
     print(f"[init_db] 已加载环境文件: {env_path}")
 
 
