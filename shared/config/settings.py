@@ -525,7 +525,11 @@ class TradeServiceSettings(BaseSettings):
 
 class Settings(BaseSettings):
     """Root settings — assembles all sub-settings"""
-    model_config = {"env_prefix": "", "env_nested_delimiter": "__"}
+    model_config = {
+        "env_prefix": "",
+        "env_nested_delimiter": "__",
+        "nested_model_default_partial_update": True,
+    }
     _yaml_path: ClassVar[Path] = _default_yaml_path()
 
     common: CommonSettings = Field(default_factory=CommonSettings)
