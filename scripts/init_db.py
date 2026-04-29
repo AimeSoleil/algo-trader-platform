@@ -16,6 +16,7 @@ import argparse
 import asyncio
 import sys
 from pathlib import Path
+from urllib.parse import urlsplit, urlunsplit
 
 from dotenv import load_dotenv
 from sqlalchemy import text
@@ -96,6 +97,39 @@ def _load_runtime_env(explicit_env_file: str | None) -> None:
     # exports so host-vs-docker connection targets are deterministic.
     load_dotenv(env_path, override=True)
     print(f"[init_db] 已加载环境文件: {env_path}")
+
+
+def _redact_url(url: str) -> str:
+    parts = urlsplit(url)
+    if parts.password is None:
+        return url
+
+    userinfo = parts.username or ""
+    if userinfo:
+        userinfo = f"{userinfo}:***"
+    else:
+        userinfo = "***"
+
+    host = parts.hostname or ""
+    netloc = f"{userinfo}@{host}"
+    if parts.port is not None:
+        netloc = f"{netloc}:{parts.port}"
+
+    return urlunsplit((parts.scheme, netloc, parts.path, parts.query, parts.fragment))
+
+
+def _print_loaded_db_targets() -> None:
+    settings = get_settings()
+    print(
+        "[init_db] Timescale loaded config: "
+        f"host={settings.infra.database.timescale_host} "
+        f"url={_redact_url(settings.infra.database.timescale_url)}"
+    )
+    print(
+        "[init_db] Postgres loaded config: "
+        f"host={settings.infra.database.postgres_host} "
+        f"url={_redact_url(settings.infra.database.postgres_url)}"
+    )
 
 
 async def init_timescale_schema() -> None:
@@ -425,6 +459,7 @@ async def main() -> None:
     args = parse_args()
     _load_runtime_env(args.env_file)
     print("[init_db] 开始数据库初始化")
+    _print_loaded_db_targets()
 
     if (args.truncate_all or args.drop_all) and not args.yes:
         raise RuntimeError("Destructive operation requires --yes")
