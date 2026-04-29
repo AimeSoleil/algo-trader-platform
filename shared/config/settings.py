@@ -1,6 +1,7 @@
 """系统配置 — 从 .env 和 config.yaml 加载"""
 from __future__ import annotations
 
+import os
 from functools import lru_cache
 from pathlib import Path
 from typing import Any, ClassVar
@@ -40,22 +41,66 @@ class YamlSettingsSource(PydanticBaseSettingsSource):
 # ── Infrastructure ───────────────────────────────────────────
 
 class DatabaseSettings(BaseSettings):
-    timescale_url: str = "postgresql+asyncpg://trader:trader_dev@localhost:5432/algo_trader"
-    postgres_url: str = "postgresql+asyncpg://trader:trader_dev@localhost:5433/algo_trader_biz"
+    timescale_user: str = "trader"
+    timescale_password: str = "trader_dev"
+    timescale_host: str = "localhost"
+    timescale_port: int = 5432
+    timescale_db: str = "algo_trader"
+    postgres_user: str = "trader"
+    postgres_password: str = "trader_dev"
+    postgres_host: str = "localhost"
+    postgres_port: int = 5433
+    postgres_db: str = "algo_trader_biz"
+    timescale_url: str = ""
+    postgres_url: str = ""
+
+    def model_post_init(self, __context: Any) -> None:
+        if not self.timescale_url:
+            self.timescale_url = (
+                f"postgresql+asyncpg://{self.timescale_user}:{self.timescale_password}"
+                f"@{self.timescale_host}:{self.timescale_port}/{self.timescale_db}"
+            )
+        if not self.postgres_url:
+            self.postgres_url = (
+                f"postgresql+asyncpg://{self.postgres_user}:{self.postgres_password}"
+                f"@{self.postgres_host}:{self.postgres_port}/{self.postgres_db}"
+            )
 
 class RedisSettings(BaseSettings):
-    url: str = "redis://localhost:6379/0"
+    password: str = "redis_trader_dev_secure"
+    host: str = "localhost"
+    port: int = 6379
+    db: int = 0
+    url: str = ""
     lock_ttl_default: int = 300
     lock_retry_interval: float = 0.5
 
-class RabbitMQSettings(BaseSettings):
-    url: str = "amqp://trader:trader_dev@localhost:5672//"
+    def model_post_init(self, __context: Any) -> None:
+        redis_password = os.getenv("REDIS_PASSWORD", self.password)
+        redis_host = os.getenv("REDIS_HOST", self.host)
+        redis_port = int(os.getenv("REDIS_PORT", str(self.port)))
+        redis_db = int(os.getenv("REDIS_DB", str(self.db)))
 
-class MinioSettings(BaseSettings):
-    endpoint: str = "localhost:9000"
-    access_key: str = "minioadmin"
-    secret_key: str = "minioadmin"
-    secure: bool = False
+        self.password = redis_password
+        self.host = redis_host
+        self.port = redis_port
+        self.db = redis_db
+
+        if not self.url:
+            self.url = f"redis://:{self.password}@{self.host}:{self.port}/{self.db}"
+
+class RabbitMQSettings(BaseSettings):
+    user: str = "trader"
+    password: str = "trader_dev"
+    host: str = "localhost"
+    port: int = 5672
+    vhost: str = "/"
+    url: str = ""
+
+    def model_post_init(self, __context: Any) -> None:
+        if not self.url:
+            vhost_path = self.vhost if self.vhost.startswith("/") else f"/{self.vhost}"
+            self.url = f"amqp://{self.user}:{self.password}@{self.host}:{self.port}{vhost_path}"
 
 class PrometheusSettings(BaseSettings):
     url: str = "http://localhost:9090"
@@ -68,7 +113,6 @@ class InfraSettings(BaseSettings):
     database: DatabaseSettings = Field(default_factory=DatabaseSettings)
     redis: RedisSettings = Field(default_factory=RedisSettings)
     rabbitmq: RabbitMQSettings = Field(default_factory=RabbitMQSettings)
-    minio: MinioSettings = Field(default_factory=MinioSettings)
     prometheus: PrometheusSettings = Field(default_factory=PrometheusSettings)
     grafana: GrafanaSettings = Field(default_factory=GrafanaSettings)
 
@@ -448,7 +492,14 @@ class BrokerSettings(BaseSettings):
     futu: FutuBrokerSettings = Field(default_factory=FutuBrokerSettings)
 
 class RiskSettings(BaseSettings):
+    class BlueprintLimitsSettings(BaseSettings):
+        max_daily_loss: float = 2000.0
+        max_margin_usage: float = Field(default=0.5, ge=0.0, le=1.0)
+        portfolio_delta_limit: float = Field(default=0.5, ge=0.0)
+        portfolio_gamma_limit: float = Field(default=0.1, ge=0.0)
+
     stop_loss: StopLossSettings = Field(default_factory=StopLossSettings)
+    blueprint_limits: BlueprintLimitsSettings = Field(default_factory=BlueprintLimitsSettings)
 
 class IntradayOptimizerSettings(BaseSettings):
     """trade_service.intraday_optimizer — 盘中入场优化器."""

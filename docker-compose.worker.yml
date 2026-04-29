@@ -138,7 +138,7 @@ services:
       - flower
       - --port=5555
       - --basic-auth=${FLOWER_USER:-admin}:${FLOWER_PASSWORD:-changeme}
-      - --broker_api=http://${RABBITMQ_USER:-trader}:${RABBITMQ_PASS:-trader_dev}@algo_rabbitmq:15672/api/
+      - --broker_api=http://${INFRA__RABBITMQ__USER:-trader}:${INFRA__RABBITMQ__PASSWORD:-trader_dev}@algo_rabbitmq:15672/api/
       - --persistent=true
       - --db=/tmp/flower.db
     env_file:

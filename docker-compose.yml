@@ -20,9 +20,9 @@ services:
     ports:
       - "5432:5432"
     environment:
-      POSTGRES_DB: algo_trader
-      POSTGRES_USER: trader
-      POSTGRES_PASSWORD: trader_dev
+      POSTGRES_DB: ${INFRA__DATABASE__TIMESCALE_DB:-algo_trader}
+      POSTGRES_USER: ${INFRA__DATABASE__TIMESCALE_USER:-trader}
+      POSTGRES_PASSWORD: ${INFRA__DATABASE__TIMESCALE_PASSWORD:-trader_dev}
     volumes:
       - timescaledb_data:/var/lib/postgresql/data
     networks:
@@ -31,7 +31,7 @@ services:
           - timescaledb
           - algo_timescaledb
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U trader -d algo_trader"]
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -43,9 +43,9 @@ services:
     ports:
       - "5433:5432"
     environment:
-      POSTGRES_DB: algo_trader_biz
-      POSTGRES_USER: trader
-      POSTGRES_PASSWORD: trader_dev
+      POSTGRES_DB: ${INFRA__DATABASE__POSTGRES_DB:-algo_trader_biz}
+      POSTGRES_USER: ${INFRA__DATABASE__POSTGRES_USER:-trader}
+      POSTGRES_PASSWORD: ${INFRA__DATABASE__POSTGRES_PASSWORD:-trader_dev}
     volumes:
       - postgres_data:/var/lib/postgresql/data
     networks:
@@ -54,7 +54,7 @@ services:
           - postgres
           - algo_postgres
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U trader -d algo_trader_biz"]
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -67,17 +67,21 @@ services:
     container_name: algo_redis
     ports:
       - "6379:6379"
+    environment:
+      REDIS_PASSWORD: ${INFRA__REDIS__PASSWORD:-redis_trader_dev_secure}
     volumes:
       - redis_data:/data
       - ./config/redis.conf:/usr/local/etc/redis/redis.conf:ro
-    command: ["redis-server", "/usr/local/etc/redis/redis.conf", "--port", "6379"]
+    command: sh -c "redis-server /usr/local/etc/redis/redis.conf --port 6379 --requirepass $${REDIS_PASSWORD}"
     networks:
       algo_trader_net:
         aliases:
           - redis
           - algo_redis
+    sysctls:
+      vm.overcommit_memory: 1
     healthcheck:
-      test: ["CMD", "redis-cli", "-p", "6379", "ping"]
+      test: ["CMD-SHELL", "redis-cli -p 6379 -a \"$$REDIS_PASSWORD\" ping"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -91,8 +95,8 @@ services:
       - "5672:5672"
       - "15672:15672"
     environment:
-      RABBITMQ_DEFAULT_USER: trader
-      RABBITMQ_DEFAULT_PASS: trader_dev
+      RABBITMQ_DEFAULT_USER: ${INFRA__RABBITMQ__USER:-trader}
+      RABBITMQ_DEFAULT_PASS: ${INFRA__RABBITMQ__PASSWORD:-trader_dev}
       # Set Erlang VM max ports (= file descriptors for sockets/pipes).
       # Must match ulimit nofile below. RabbitMQ uses ~3 FDs per AMQP connection.
       ERL_MAX_PORTS: "65536"
@@ -121,26 +125,6 @@ services:
       timeout: 5s
       retries: 5
       start_period: 30s
-
-  # ── Object Storage ─────────────────────────────────────────
-
-  minio:
-    image: minio/minio:latest
-    container_name: algo_minio
-    ports:
-      - "9000:9000"
-      - "9001:9001"
-    environment:
-      MINIO_ROOT_USER: minioadmin
-      MINIO_ROOT_PASSWORD: minioadmin
-    command: server /data --console-address ":9001"
-    volumes:
-      - minio_data:/data
-    networks:
-      algo_trader_net:
-        aliases:
-          - minio
-          - algo_minio
 
   # ── Observability ──────────────────────────────────────────
 
@@ -188,6 +172,5 @@ volumes:
   postgres_data:
   redis_data:
   rabbitmq_data:
-  minio_data:
   prometheus_data:
   grafana_data:

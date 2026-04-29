@@ -523,7 +523,7 @@ class LLMTradingBlueprint(BaseModel):
     symbol_plans: list[SymbolPlan] = Field(default_factory=list)
     
     # 全局风控约束
-    max_total_positions: int = 10
+    max_total_positions: int = 5
     max_daily_loss: float = 2000.0  # 日最大亏损限额
     max_margin_usage: float = 0.5  # 最大保证金占用比例
     portfolio_delta_limit: float = 0.5  # 组合 Delta 上限

@@ -175,6 +175,7 @@ class CriticAgent:
         signals_summary: list[dict[str, Any]],
     ) -> str:
         parts: list[str] = []
+        risk_limits = get_settings().trade_service.risk.blueprint_limits
 
         parts.append("## Blueprint to Review\n")
         parts.append(json.dumps(blueprint_json, separators=(",", ":"), ensure_ascii=False))
@@ -187,6 +188,20 @@ class CriticAgent:
         parts.append("\n## Signal Context\n")
         for s in signals_summary:
             parts.append(f"- {s.get('symbol', '?')}: close={s.get('close_price', '?')}")
+
+        parts.append("\n## Global Risk Policy Caps\n")
+        parts.append(
+            json.dumps(
+                {
+                    "max_daily_loss": risk_limits.max_daily_loss,
+                    "max_margin_usage": risk_limits.max_margin_usage,
+                    "portfolio_delta_limit": risk_limits.portfolio_delta_limit,
+                    "portfolio_gamma_limit": risk_limits.portfolio_gamma_limit,
+                },
+                separators=(",", ":"),
+                ensure_ascii=False,
+            )
+        )
 
         parts.append(
             "\n## Task\n"
@@ -225,8 +240,10 @@ CHECKLIST
 - straddle: 2 (same strike, C+P) | strangle: 2 (diff strikes, C+P)
 
 2. Risk Compliance:
-- portfolio_delta_limit ≤ 0.5 (0.8 with justification) | portfolio_gamma_limit ≤ 0.1
-- max_daily_loss ≤ $2000
+- portfolio_delta_limit must NOT exceed configured global risk policy cap
+- portfolio_gamma_limit must NOT exceed configured global risk policy cap
+- max_daily_loss must NOT exceed configured global risk policy cap
+- max_margin_usage must NOT exceed configured global risk policy cap
 - Every plan: stop_loss_amount > 0, max_loss_per_trade > 0, confidence 0-1
 
 3. Agent Consistency:

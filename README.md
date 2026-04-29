@@ -66,7 +66,6 @@ flowchart LR
    subgraph storage[Datastores]
       tsdb[TimescaleDB\n行情与期权时序]
       pg[PostgreSQL\nBlueprint Positions Orders]
-      minio[MinIO\n对象存储]
    end
 
    subgraph observability[Observability]
@@ -97,7 +96,6 @@ flowchart LR
    flower --> rabbit
 
    data --> tsdb
-   data --> minio
    signal --> pg
    analysis --> pg
    trade --> pg
@@ -124,7 +122,7 @@ flowchart LR
    class user,market edge;
    class gateway,data,signal,analysis,trade service;
    class rabbit,redis,worker,beat,flower orchestration;
-   class tsdb,pg,minio storage;
+   class tsdb,pg storage;
    class prom,grafana observability;
 ```
 
@@ -328,7 +326,6 @@ docker compose up -d
 - PostgreSQL
 - Redis
 - RabbitMQ
-- MinIO
 - Prometheus
 - Grafana
 

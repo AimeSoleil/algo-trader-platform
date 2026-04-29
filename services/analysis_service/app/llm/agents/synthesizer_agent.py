@@ -200,11 +200,19 @@ def _normalize_adjustment_rules(items: Any) -> tuple[list[dict[str, Any]], int, 
 
 
 def _normalize_blueprint_payload(data: dict[str, Any], signal_date: date | None) -> tuple[dict[str, Any], dict[str, Any]]:
+    settings = get_settings()
+    risk_limits = settings.trade_service.risk.blueprint_limits
+
     normalized_data = dict(data)
     stats = {
         "legs_expiry_normalized": 0,
         "legs_strike_normalized": 0,
         "legs_side_normalized": 0,
+        "symbol_plans_trimmed": 0,
+        "max_daily_loss_clamped": 0,
+        "max_margin_usage_clamped": 0,
+        "portfolio_delta_limit_clamped": 0,
+        "portfolio_gamma_limit_clamped": 0,
         "entry_conditions_dropped": 0,
         "entry_conditions_dropped_samples": [],
         "exit_conditions_dropped": 0,
@@ -275,6 +283,60 @@ def _normalize_blueprint_payload(data: dict[str, Any], signal_date: date | None)
 
         normalized_plans.append(normalized_plan)
 
+    max_total_positions = normalized_data.get("max_total_positions", 5)
+    try:
+        max_total_positions_int = max(1, int(max_total_positions))
+    except (TypeError, ValueError):
+        max_total_positions_int = 5
+
+    if len(normalized_plans) > max_total_positions_int:
+        stats["symbol_plans_trimmed"] = len(normalized_plans) - max_total_positions_int
+        normalized_plans = normalized_plans[:max_total_positions_int]
+
+    def _coerce_risk_limit(
+        key: str,
+        policy_cap: float,
+        *,
+        fallback: float,
+        non_negative: bool = True,
+    ) -> None:
+        raw = normalized_data.get(key, fallback)
+        try:
+            value = float(raw)
+        except (TypeError, ValueError):
+            value = fallback
+
+        if non_negative and value < 0:
+            value = 0.0
+        if value > policy_cap:
+            value = policy_cap
+
+        if value != raw:
+            stats[f"{key}_clamped"] += 1
+        normalized_data[key] = value
+
+    _coerce_risk_limit(
+        "max_daily_loss",
+        risk_limits.max_daily_loss,
+        fallback=risk_limits.max_daily_loss,
+    )
+    _coerce_risk_limit(
+        "max_margin_usage",
+        risk_limits.max_margin_usage,
+        fallback=risk_limits.max_margin_usage,
+    )
+    _coerce_risk_limit(
+        "portfolio_delta_limit",
+        risk_limits.portfolio_delta_limit,
+        fallback=risk_limits.portfolio_delta_limit,
+    )
+    _coerce_risk_limit(
+        "portfolio_gamma_limit",
+        risk_limits.portfolio_gamma_limit,
+        fallback=risk_limits.portfolio_gamma_limit,
+    )
+
+    normalized_data["max_total_positions"] = max_total_positions_int
     normalized_data["symbol_plans"] = normalized_plans
     return normalized_data, stats
 
@@ -461,6 +523,7 @@ class SynthesizerAgent:
     ) -> str:
         parts: list[str] = []
         target_trading_date = next_trading_day(from_date=signal_date).isoformat()
+        risk_limits = get_settings().trade_service.risk.blueprint_limits
 
         # Agent analyses
         parts.append("## Specialist Agent Analyses\n")
@@ -509,6 +572,21 @@ class SynthesizerAgent:
                 f"Other symbols (benchmarks) are provided as cross-asset context only — "
                 f"do NOT create plans for them."
             )
+
+        parts.append("\n## Global Risk Policy Caps\n")
+        parts.append(
+            json.dumps(
+                {
+                    "max_total_positions": 5,
+                    "max_daily_loss": risk_limits.max_daily_loss,
+                    "max_margin_usage": risk_limits.max_margin_usage,
+                    "portfolio_delta_limit": risk_limits.portfolio_delta_limit,
+                    "portfolio_gamma_limit": risk_limits.portfolio_gamma_limit,
+                },
+                separators=(",", ":"),
+                ensure_ascii=False,
+            )
+        )
 
         # Task
         parts.append(
@@ -619,10 +697,10 @@ CQ3. If Cross-Asset effective_size_modifier ≤ 0.5 → constrain max_position_s
 ────────────────────────────────────────────────────────
 RISK MANAGEMENT (Priority 5 — MANDATORY)
 ────────────────────────────────────────────────────────
-- portfolio_delta_limit ≤ 0.5 (allow 0.8 if trend_strength > 0.7)
-- portfolio_gamma_limit ≤ 0.1
-- max_daily_loss = $2000
-- max_margin_usage = 0.5
+- portfolio_delta_limit must NOT exceed configured global risk policy cap
+- portfolio_gamma_limit must NOT exceed configured global risk policy cap
+- max_daily_loss must NOT exceed configured global risk policy cap
+- max_margin_usage must NOT exceed configured global risk policy cap
 - Every plan: stop_loss_amount + max_loss_per_trade required
 - Risk/trade ≤ 2% equity
 - Correlated positions (same sector | corr > 0.7) → reduce combined 30%
@@ -633,6 +711,7 @@ BLUEPRINT JSON SCHEMA
 market_regime:str, market_analysis:str(2-3 sentences)
 symbol_plans[]: underlying, strategy_type, direction, legs[{expiry,strike,option_type,side=buy|sell,quantity}], entry_conditions[{field,operator,value,description}], exit_conditions[], adjustment_rules[{trigger:{field,operator,value,timeframe,description},action:hedge_delta|roll_strike|close_leg|add_leg|close_all,params:{},description}], max_position_size(FLOAT 0.0-1.5, position sizing ratio: 1.0=full, 0.5=half, 0.7=70%), max_contracts(INTEGER ≥1, number of contract sets to trade), stop_loss_amount, take_profit_amount, max_loss_per_trade, reasoning(MUST reference agents), confidence(0-1)
 Top-level: max_total_positions, max_daily_loss, max_margin_usage, portfolio_delta_limit, portfolio_gamma_limit
+Hard cap: symbol_plans length MUST be <= max_total_positions. Default max_total_positions is 5.
 
 ## Enums
 StrategyType: single_leg|vertical_spread|iron_condor|iron_butterfly|butterfly|calendar_spread|diagonal_spread|straddle|strangle|covered_call|protective_put|collar

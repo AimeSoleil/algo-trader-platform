@@ -4,12 +4,101 @@ from __future__ import annotations
 import asyncio
 import json
 from datetime import date
+from typing import Any
 
 from shared.celery_app import celery_app
 from shared.config import get_settings
 from shared.utils import get_logger, today_trading, now_market
 
 logger = get_logger("intraday_task")
+
+
+def _coerce_positive_int(value: Any, default: int) -> int:
+    try:
+        parsed = int(value)
+        return parsed if parsed > 0 else default
+    except (TypeError, ValueError):
+        return default
+
+
+def _coerce_positive_float(value: Any, default: float) -> float:
+    try:
+        parsed = float(value)
+        return parsed if parsed > 0 else default
+    except (TypeError, ValueError):
+        return default
+
+
+def _coerce_float(value: Any, default: float = 0.0) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+async def _check_global_risk_gate(
+    symbol: str,
+    trading_date: date,
+    blueprint_json: dict[str, Any],
+    broker,
+) -> tuple[bool, list[str]]:
+    settings = get_settings()
+    policy = settings.trade_service.risk.blueprint_limits
+
+    max_total_positions = _coerce_positive_int(blueprint_json.get("max_total_positions"), 5)
+    max_daily_loss = _coerce_positive_float(blueprint_json.get("max_daily_loss"), policy.max_daily_loss)
+    max_margin_usage = _coerce_positive_float(blueprint_json.get("max_margin_usage"), policy.max_margin_usage)
+    portfolio_delta_limit = _coerce_positive_float(
+        blueprint_json.get("portfolio_delta_limit"), policy.portfolio_delta_limit
+    )
+    portfolio_gamma_limit = _coerce_positive_float(
+        blueprint_json.get("portfolio_gamma_limit"), policy.portfolio_gamma_limit
+    )
+
+    reasons: list[str] = []
+
+    from services.trade_service.app.portfolio.service import get_performance, get_positions
+
+    positions_data = await get_positions()
+    open_underlyings = {
+        str(pos.get("underlying") or pos.get("symbol") or "").upper().strip()
+        for pos in positions_data.get("positions", [])
+        if str(pos.get("underlying") or pos.get("symbol") or "").strip()
+    }
+    symbol_upper = symbol.upper()
+    projected_total_positions = len(open_underlyings) + (0 if symbol_upper in open_underlyings else 1)
+    if projected_total_positions > max_total_positions:
+        reasons.append(
+            f"max_total_positions exceeded ({projected_total_positions} > {max_total_positions})"
+        )
+
+    aggregates = positions_data.get("aggregates", {})
+    total_delta = abs(_coerce_float(aggregates.get("total_delta", 0.0), 0.0))
+    total_gamma = abs(_coerce_float(aggregates.get("total_gamma", 0.0), 0.0))
+    if total_delta > portfolio_delta_limit:
+        reasons.append(f"portfolio_delta_limit exceeded ({total_delta:.4f} > {portfolio_delta_limit:.4f})")
+    if total_gamma > portfolio_gamma_limit:
+        reasons.append(f"portfolio_gamma_limit exceeded ({total_gamma:.4f} > {portfolio_gamma_limit:.4f})")
+
+    perf = await get_performance(trading_date)
+    net_pnl = _coerce_float(perf.get("net_pnl", 0.0), 0.0)
+    if net_pnl <= -abs(max_daily_loss):
+        reasons.append(f"max_daily_loss exceeded ({abs(net_pnl):.2f} >= {max_daily_loss:.2f})")
+
+    try:
+        account = await broker.get_account()
+    except Exception as exc:
+        logger.warning("intraday_task.account_fetch_failed", symbol=symbol, error=str(exc))
+        account = {}
+
+    cash = _coerce_float(account.get("cash", 0.0), 0.0) if isinstance(account, dict) else 0.0
+    total_market_value = abs(_coerce_float(aggregates.get("total_market_value", 0.0), 0.0))
+    if cash > 0:
+        margin_usage = total_market_value / (total_market_value + cash)
+        if margin_usage > max_margin_usage:
+            reasons.append(f"max_margin_usage exceeded ({margin_usage:.4f} > {max_margin_usage:.4f})")
+
+    return len(reasons) == 0, reasons
 
 
 @celery_app.task(
@@ -94,7 +183,7 @@ async def _evaluate_async(trading_date: str | None = None) -> dict:
             continue
 
         if cfg.execution_mode == "auto":
-            success = await _execute_entry(symbol, plan, td, blueprint_id, decision)
+            success = await _execute_entry(symbol, plan, td, blueprint_id, blueprint_json, decision)
             if success:
                 executed.append(symbol)
         else:
@@ -130,6 +219,7 @@ async def _execute_entry(
     plan: dict,
     trading_date: date,
     blueprint_id: str,
+    blueprint_json: dict[str, Any],
     decision,
 ) -> bool:
     """Place entry orders via broker (auto mode)."""
@@ -144,6 +234,20 @@ async def _execute_entry(
     await broker.connect()
 
     try:
+        gate_passed, gate_reasons = await _check_global_risk_gate(
+            symbol=symbol,
+            trading_date=trading_date,
+            blueprint_json=blueprint_json,
+            broker=broker,
+        )
+        if not gate_passed:
+            logger.warning(
+                "intraday_task.global_risk_gate_blocked",
+                symbol=symbol,
+                reasons=gate_reasons,
+            )
+            return False
+
         for i, leg in enumerate(legs):
             order_payload = {
                 "symbol": symbol,

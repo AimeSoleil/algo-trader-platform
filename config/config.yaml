@@ -128,21 +128,30 @@ common:
 
 infra:
   database:
-    timescale_url: "postgresql+asyncpg://trader:trader_dev@localhost:5432/algo_trader"
-    postgres_url: "postgresql+asyncpg://trader:trader_dev@localhost:5433/algo_trader_biz"
+    timescale_user: "trader"
+    timescale_password: "trader_dev"
+    timescale_host: "localhost"
+    timescale_port: 5432
+    timescale_db: "algo_trader"
+    postgres_user: "trader"
+    postgres_password: "trader_dev"
+    postgres_host: "localhost"
+    postgres_port: 5433
+    postgres_db: "algo_trader_biz"
 
   redis:
     # Standalone Redis (single instance)
-    url: "redis://localhost:6379/0"
+    password: "redis_trader_dev_secure"
+    host: "localhost"
+    port: 6379
+    db: 0
 
   rabbitmq:
-    url: "amqp://trader:trader_dev@localhost:5672//"
-
-  minio:
-    endpoint: "localhost:9000"
-    access_key: "minioadmin"
-    secret_key: "minioadmin"
-    secure: false
+    user: "trader"
+    password: "trader_dev"
+    host: "localhost"
+    port: 5672
+    vhost: "/"
 
   prometheus:
     url: "http://localhost:9090"
@@ -314,6 +323,11 @@ trade_service:
       portfolio_loss_limit: 2000.0
       position_loss_limit: 500.0
       cooldown_seconds: 60
+    blueprint_limits:
+      max_daily_loss: 2000.0
+      max_margin_usage: 0.5
+      portfolio_delta_limit: 0.5
+      portfolio_gamma_limit: 0.1
 
   # ── 盘中入场优化器 ──
   intraday_optimizer:
