@@ -100,13 +100,6 @@ class CollectResponse(BaseModel):
     message: str = ""
 
 
-def _default_post_market_collection_date() -> date:
-    trading_date = today_trading()
-    if now_market().weekday() >= 5:
-        return previous_trading_day(trading_date)
-    return trading_date
-
-
 def _build_collect_suggested_body(
     req: CollectRequest,
     *,
@@ -496,27 +489,37 @@ async def trigger_collection(req: CollectRequest):
 
 
 @router.post("/data/collect/post-market", status_code=202, response_model=CollectResponse)
-async def trigger_post_market_collection():
+async def trigger_post_market_collection(
+    trading_date: date = Query(..., description="Trading date to collect post-market data for"),
+):
     """Trigger post-market options aggregation + stock capture only.
 
     This endpoint intentionally does not dispatch signal or analysis tasks.
     """
+    today = today_trading()
     market_now = now_market()
     settings = get_settings()
     market_close = settings.common.market_hours.end
 
-    if market_now.weekday() < 5 and (before_market_open() or is_market_open()):
+    if trading_date > today:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "error": "trading_date cannot be in the future",
+            },
+        )
+
+    if trading_date == today and market_now.weekday() < 5 and (before_market_open() or is_market_open()):
         raise HTTPException(
             status_code=422,
             detail={
                 "error": (
-                    f"Post-market collection can only be triggered after market close ({market_close}). "
+                    f"Post-market collection for {trading_date.isoformat()} can only be triggered after market close ({market_close}). "
                     f"Current market time: {market_now.strftime('%H:%M')}."
                 ),
             },
         )
 
-    trading_date = _default_post_market_collection_date()
     task = celery_app.send_task(
         "data_service.tasks.run_post_market_collection_only",
         args=[trading_date.isoformat()],
