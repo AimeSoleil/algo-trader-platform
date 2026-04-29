@@ -17,6 +17,7 @@ import asyncio
 import sys
 from pathlib import Path
 
+from dotenv import load_dotenv
 from sqlalchemy import text
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -50,6 +51,11 @@ BUSINESS_TABLES = [
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Initialize or reset project databases")
     parser.add_argument(
+        "--env-file",
+        default=None,
+        help="Optional env file to load before initializing databases (.env.local -> .env by default)",
+    )
+    parser.add_argument(
         "--truncate-all",
         action="store_true",
         help="Truncate all known tables (keep schema), then re-init",
@@ -65,6 +71,29 @@ def parse_args() -> argparse.Namespace:
         help="Required for destructive operations",
     )
     return parser.parse_args()
+
+
+def _resolve_env_file(explicit_env_file: str | None) -> Path | None:
+    if explicit_env_file:
+        env_path = Path(explicit_env_file)
+        return env_path if env_path.is_absolute() else _REPO_ROOT / env_path
+
+    for candidate in (".env.local", ".env"):
+        env_path = _REPO_ROOT / candidate
+        if env_path.exists():
+            return env_path
+
+    return None
+
+
+def _load_runtime_env(explicit_env_file: str | None) -> None:
+    env_path = _resolve_env_file(explicit_env_file)
+    if env_path is None:
+        print("[init_db] 未找到 .env.local 或 .env，继续使用当前 shell 环境")
+        return
+
+    load_dotenv(env_path, override=False)
+    print(f"[init_db] 已加载环境文件: {env_path}")
 
 
 async def init_timescale_schema() -> None:
@@ -392,6 +421,7 @@ async def drop_all_tables() -> None:
 
 async def main() -> None:
     args = parse_args()
+    _load_runtime_env(args.env_file)
     print("[init_db] 开始数据库初始化")
 
     if (args.truncate_all or args.drop_all) and not args.yes:
