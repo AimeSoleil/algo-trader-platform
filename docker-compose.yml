@@ -78,8 +78,6 @@ services:
         aliases:
           - redis
           - algo_redis
-    sysctls:
-      vm.overcommit_memory: 1
     healthcheck:
       test: ["CMD-SHELL", "redis-cli -p 6379 -a \"$$REDIS_PASSWORD\" ping"]
       interval: 10s
