@@ -250,3 +250,21 @@ class CriticVerdict(BaseModel):
     verdict: str = "pass"  # "pass", "revise"
     issues: list[CriticIssue] = Field(default_factory=list)
     summary: str = ""
+
+
+class PostMergeConflictExplanation(BaseModel):
+    """LLM explanation for a symbol-level portfolio ranking choice."""
+
+    symbol: str
+    decision: str = "keep"  # keep | drop | deprioritize
+    rationale: str = ""
+
+
+class PostMergeReview(BaseModel):
+    """Structured output from the post-merge portfolio review agent."""
+
+    selected_symbols: list[str] = Field(default_factory=list)
+    ranking: list[str] = Field(default_factory=list)
+    portfolio_summary: str = ""
+    risk_notes: list[str] = Field(default_factory=list)
+    conflict_explanations: list[PostMergeConflictExplanation] = Field(default_factory=list)

@@ -425,6 +425,7 @@ class AgentModelsSettings(BaseSettings):
     cross_asset: str = ""
     synthesizer: str = ""
     critic: str = ""
+    post_merge: str = ""
 
 class LLMSettings(BaseSettings):
     provider: str = "copilot"

@@ -33,6 +33,8 @@ from services.analysis_service.app.llm.agents.chain_agent import ChainAgent
 from services.analysis_service.app.llm.agents.cross_asset_agent import CrossAssetAgent
 from services.analysis_service.app.llm.agents.critic_agent import CriticAgent
 from services.analysis_service.app.llm.agents.flow_agent import FlowAgent
+from services.analysis_service.app.llm.agents.portfolio_selector import PlanCandidate, PortfolioSelector
+from services.analysis_service.app.llm.agents.post_merge_portfolio_agent import PostMergePortfolioAgent
 from services.analysis_service.app.llm.agents.spread_agent import SpreadAgent
 from services.analysis_service.app.llm.agents.synthesizer_agent import SynthesizerAgent
 from services.analysis_service.app.llm.agents.trend_agent import TrendAgent
@@ -102,6 +104,8 @@ class AgentOrchestrator:
         # Synthesis & review
         self._synthesizer = SynthesizerAgent()
         self._critic = CriticAgent()
+        self._portfolio_selector = PortfolioSelector()
+        self._post_merge_portfolio_agent = PostMergePortfolioAgent()
 
         # Provider — lazy-created on first use if not supplied
         self._provider = provider
@@ -222,7 +226,6 @@ class AgentOrchestrator:
             # Chunk trade symbols; inject ALL benchmark symbols into each chunk
             # for cross-asset context.  Dedup in case a symbol is both trade
             # and benchmark (e.g. SPY, QQQ, IWM).
-            benchmark_sym_set = {sf.symbol.upper() for sf in benchmark_features}
             chunks: list[list[SignalFeatures]] = []
             for i in range(0, len(trade_features), chunk_size):
                 trade_slice = trade_features[i : i + chunk_size]
@@ -287,31 +290,115 @@ class AgentOrchestrator:
                 *[_run_chunk(i, c) for i, c in enumerate(chunks)]
             )
 
-            # Merge: concatenate symbol_plans, combine reasoning_context
             blueprint = chunk_blueprints[0]
-            for other in chunk_blueprints[1:]:
-                blueprint.symbol_plans.extend(other.symbol_plans)
+            quality_by_symbol = {
+                sf.symbol.upper(): sf.data_quality.score
+                for sf in signal_features
+            }
+            chunk_limits = [
+                {
+                    "chunk_index": idx,
+                    "chunk_id": (bp.reasoning_context or {}).get("analysis_chunk_id"),
+                    "max_total_positions": bp.max_total_positions,
+                    "max_daily_loss": bp.max_daily_loss,
+                    "max_margin_usage": bp.max_margin_usage,
+                    "portfolio_delta_limit": bp.portfolio_delta_limit,
+                    "portfolio_gamma_limit": bp.portfolio_gamma_limit,
+                }
+                for idx, bp in enumerate(chunk_blueprints)
+            ]
+            merged_plan_candidates: list[PlanCandidate] = []
+            original_order = 0
+            for idx, bp in enumerate(chunk_blueprints):
+                chunk_id = (bp.reasoning_context or {}).get("analysis_chunk_id")
+                for plan in bp.symbol_plans:
+                    merged_plan_candidates.append(PlanCandidate(
+                        plan=plan,
+                        chunk_index=idx,
+                        original_order=original_order,
+                        quality_score=quality_by_symbol.get(plan.underlying.upper(), plan.data_quality_score),
+                        chunk_id=chunk_id,
+                    ))
+                    original_order += 1
 
-            # Reconcile portfolio-level limits conservatively across chunks.
-            blueprint.max_total_positions = min(bp.max_total_positions for bp in chunk_blueprints)
-            blueprint.max_daily_loss = min(bp.max_daily_loss for bp in chunk_blueprints)
-            blueprint.max_margin_usage = min(bp.max_margin_usage for bp in chunk_blueprints)
-            blueprint.portfolio_delta_limit = min(bp.portfolio_delta_limit for bp in chunk_blueprints)
-            blueprint.portfolio_gamma_limit = min(bp.portfolio_gamma_limit for bp in chunk_blueprints)
+            llm_post_merge_review: dict[str, Any] | None = None
+            llm_post_merge_metadata: dict[str, Any] = {"status": "skipped", "reason": "provider_missing_generate"}
+            if hasattr(provider, "generate") and len(merged_plan_candidates) > 1:
+                agent_models_cfg = settings.analysis_service.llm.agent_models_override
+                post_merge_model = agent_models_cfg.post_merge or None
+                candidate_summaries = [
+                    {
+                        "symbol": candidate.plan.underlying.upper(),
+                        "strategy_type": candidate.plan.strategy_type.value,
+                        "direction": candidate.plan.direction.value,
+                        "confidence": candidate.plan.confidence,
+                        "data_quality_score": candidate.quality_score,
+                        "max_position_size": candidate.plan.max_position_size,
+                        "max_contracts": candidate.plan.max_contracts,
+                        "chunk_index": candidate.chunk_index,
+                        "chunk_id": candidate.chunk_id,
+                    }
+                    for candidate in merged_plan_candidates
+                ]
+                selector_context = {
+                    "candidate_count": len(merged_plan_candidates),
+                    "max_total_positions": min(bp.max_total_positions for bp in chunk_blueprints),
+                    "trade_symbols": sorted(trade_syms),
+                }
+                try:
+                    review = await self._post_merge_portfolio_agent.review(
+                        candidate_summaries=candidate_summaries,
+                        current_positions=current_positions,
+                        previous_execution=previous_execution,
+                        chunk_limit_proposals=chunk_limits,
+                        selector_metadata=selector_context,
+                        max_total_positions=min(bp.max_total_positions for bp in chunk_blueprints),
+                        provider=provider,
+                        usage_tracker=usage_tracker,
+                        model=post_merge_model,
+                    )
+                    llm_post_merge_review = review.model_dump(mode="json")
+                    llm_post_merge_metadata = {
+                        "status": "applied",
+                        "ranking": review.ranking,
+                        "selected_symbols": review.selected_symbols,
+                        "portfolio_summary": review.portfolio_summary,
+                        "risk_notes": review.risk_notes,
+                        "conflict_explanations": [item.model_dump() for item in review.conflict_explanations],
+                    }
+                except Exception as exc:
+                    logger.warning(
+                        "orchestrator.post_merge_review_failed",
+                        error_type=type(exc).__name__,
+                        error=str(exc),
+                    )
+                    llm_post_merge_metadata = {
+                        "status": "failed",
+                        "error_type": type(exc).__name__,
+                        "error": str(exc),
+                    }
 
-            # Keep only plans for trade symbols (drop benchmark-only plans)
-            # and de-duplicate (a symbol in multiple chunks keeps the first).
-            seen_symbols: set[str] = set()
-            deduped_plans = []
-            for plan in blueprint.symbol_plans:
-                sym = plan.underlying.upper()
-                if sym in seen_symbols:
-                    continue
-                if sym not in trade_syms:
-                    continue
-                seen_symbols.add(sym)
-                deduped_plans.append(plan)
-            blueprint.symbol_plans = deduped_plans
+            selected_plans, final_limits, selection_metadata = self._portfolio_selector.select(
+                candidates=merged_plan_candidates,
+                max_total_positions=min(bp.max_total_positions for bp in chunk_blueprints),
+                trade_symbols=trade_syms,
+                chunk_limits=chunk_limits,
+                risk_policy=settings.trade_service.risk.blueprint_limits,
+                current_positions=current_positions,
+                previous_execution=previous_execution,
+                llm_review=llm_post_merge_review,
+            )
+            selection_metadata["llm_review"] = {
+                **selection_metadata.get("llm_review", {}),
+                **llm_post_merge_metadata,
+            }
+
+            blueprint.symbol_plans = selected_plans
+            blueprint.max_total_positions = final_limits["max_total_positions"]
+            blueprint.max_daily_loss = final_limits["max_daily_loss"]
+            blueprint.max_margin_usage = final_limits["max_margin_usage"]
+            blueprint.portfolio_delta_limit = final_limits["portfolio_delta_limit"]
+            blueprint.portfolio_gamma_limit = final_limits["portfolio_gamma_limit"]
 
             # Merge reasoning contexts
             all_contexts = [bp.reasoning_context for bp in chunk_blueprints if bp.reasoning_context]
@@ -320,12 +407,16 @@ class AgentOrchestrator:
                 "provider": provider.name,
                 "chunks": len(chunks),
                 "chunk_contexts": all_contexts,
+                "post_merge_phase": selection_metadata,
             }
 
             logger.info(
                 "orchestrator.chunks_merged",
                 total_plans=len(blueprint.symbol_plans),
                 chunks=len(chunks),
+                trimmed_plans=selection_metadata["deduped_plan_count"] - selection_metadata["output_plan_count"],
+                max_total_positions=blueprint.max_total_positions,
+                ranking_method=selection_metadata["ranking_method"],
             )
 
             # Merge chunk trackers into the main usage tracker
@@ -576,6 +667,7 @@ class AgentOrchestrator:
         blueprint.reasoning_context = {
             "pipeline": "agentic" if not is_chunk else "agentic_chunk",
             "provider": provider.name,
+            "analysis_chunk_id": analysis_chunk_id,
             "signals_summary": signals_summary,
             "agent_outputs": agent_outputs,
             "critic_history": critic_history,
