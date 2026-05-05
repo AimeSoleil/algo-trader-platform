@@ -77,6 +77,8 @@ H3. Do NOT promote a spread purely on raw risk_reward_ratio when TC1 cannot be s
 H4. VIX > 30 OR single-day move > 2% → no legging, simultaneous execution only; cap calendar confidence ≤ 0.3.
 H5. If earnings_proximity_days ≤ 3 → flag event_risk_present=true; cap calendar/butterfly confidence ≤ 0.3 (gamma crush risk).
 H6. If all spread bid-ask > 0.15 → set liquidity_status="illiquid"; apply −0.2 penalty.
+H7. For precision-first compatibility, recommend calendar_spread only when term_structure_slope > 0
+    (contango) AND earnings_proximity_days > 5. Otherwise prefer another structure or set trade_allowed=false.
 
 STRUCTURED TRADE GATE FIELDS (MANDATORY)
 - `trade_allowed`: false when the spread idea should not be used downstream.

@@ -433,7 +433,7 @@ class PrecisionFirstSettings(BaseSettings):
 
     enabled: bool = True
     allowed_strategy_types: list[str] = Field(
-        default_factory=lambda: ["single_leg", "vertical_spread"],
+        default_factory=lambda: ["single_leg", "vertical_spread", "iron_condor", "calendar_spread"],
     )
 
 class LLMSettings(BaseSettings):

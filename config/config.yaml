@@ -293,6 +293,8 @@ analysis_service:
       allowed_strategy_types:
         - "single_leg"
         - "vertical_spread"
+        - "iron_condor"
+        - "calendar_spread"
     cache_enabled: true
     cache_ttl: 3600
     skill_dir: ""

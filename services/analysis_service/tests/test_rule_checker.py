@@ -464,6 +464,71 @@ class TestExpiryConsistency:
         assert not any(i.rule == "expiry_consistency" for i in result.issues)
 
 
+class TestCalendarPrecisionFirstGates:
+    def test_calendar_requires_positive_contango(self):
+        signals = {
+            "AAPL": {
+                "close_price": 150.0,
+                "option_indicators": {"term_structure_slope": 0.0},
+                "cross_asset_indicators": {"earnings_proximity_days": 10},
+            }
+        }
+        result = check_blueprint(
+            _blueprint(symbol_plans=[_plan(
+                strategy_type="calendar_spread",
+                direction="neutral",
+                legs=[
+                    _leg(expiry="2026-05-15", strike=150, side="sell"),
+                    _leg(expiry="2026-06-19", strike=150, side="buy"),
+                ],
+            )]),
+            signal_features=signals,
+        )
+        assert any(i.rule == "calendar_requires_contango" and i.severity == "error" for i in result.issues)
+
+    def test_calendar_near_earnings_is_rejected_inside_five_days(self):
+        signals = {
+            "AAPL": {
+                "close_price": 150.0,
+                "option_indicators": {"term_structure_slope": 0.02},
+                "cross_asset_indicators": {"earnings_proximity_days": 5},
+            }
+        }
+        result = check_blueprint(
+            _blueprint(symbol_plans=[_plan(
+                strategy_type="calendar_spread",
+                direction="neutral",
+                legs=[
+                    _leg(expiry="2026-05-15", strike=150, side="sell"),
+                    _leg(expiry="2026-06-19", strike=150, side="buy"),
+                ],
+            )]),
+            signal_features=signals,
+        )
+        assert any(i.rule == "calendar_near_earnings" and i.severity == "error" for i in result.issues)
+
+    def test_calendar_with_contango_and_earnings_buffer_passes_context_checks(self):
+        signals = {
+            "AAPL": {
+                "close_price": 150.0,
+                "option_indicators": {"term_structure_slope": 0.02},
+                "cross_asset_indicators": {"earnings_proximity_days": 8},
+            }
+        }
+        result = check_blueprint(
+            _blueprint(symbol_plans=[_plan(
+                strategy_type="calendar_spread",
+                direction="neutral",
+                legs=[
+                    _leg(expiry="2026-05-15", strike=150, side="sell"),
+                    _leg(expiry="2026-06-19", strike=150, side="buy"),
+                ],
+            )]),
+            signal_features=signals,
+        )
+        assert not any(i.rule in {"calendar_requires_contango", "calendar_near_earnings"} for i in result.issues)
+
+
 # ---------------------------------------------------------------------------
 # Duplicate symbols check
 # ---------------------------------------------------------------------------

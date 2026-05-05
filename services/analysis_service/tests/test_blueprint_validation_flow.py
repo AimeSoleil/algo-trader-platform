@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+from datetime import date, timedelta
 from types import SimpleNamespace
 
-from shared.models.blueprint import LLMTradingBlueprint, OptionLeg, SymbolPlan
+from shared.models.blueprint import Direction, LLMTradingBlueprint, OptionLeg, StrategyType, SymbolPlan
 import services.analysis_service.app.tasks.blueprint as blueprint_task
 from services.analysis_service.app.tasks.blueprint import (
     _apply_deterministic_validation,
@@ -115,3 +116,49 @@ def test_precision_first_strategy_scope_prunes_complex_strategies(monkeypatch):
     assert summary["allowed_strategy_types"] == ["single_leg", "vertical_spread"]
     assert summary["strategy_scope_pruned_symbols"] == ["MSFT"]
     assert summary["strategy_scope_pruned_plan_count"] == 1
+
+
+def test_precision_first_keeps_calendar_when_allowed_and_context_is_clean(monkeypatch):
+    settings = SimpleNamespace(
+        analysis_service=SimpleNamespace(
+            llm=SimpleNamespace(
+                precision_first=SimpleNamespace(
+                    enabled=True,
+                    allowed_strategy_types=["single_leg", "vertical_spread", "iron_condor", "calendar_spread"],
+                )
+            )
+        )
+    )
+    monkeypatch.setattr(blueprint_task, "get_settings", lambda: settings)
+
+    front_expiry = (date.today() + timedelta(days=21)).isoformat()
+    back_expiry = (date.today() + timedelta(days=56)).isoformat()
+
+    calendar_plan = _make_plan("MSFT").model_copy(update={
+        "strategy_type": StrategyType.CALENDAR_SPREAD,
+        "direction": Direction.NEUTRAL,
+        "legs": [
+            OptionLeg(expiry=front_expiry, strike=100, option_type="call", side="sell"),
+            OptionLeg(expiry=back_expiry, strike=100, option_type="call", side="buy"),
+        ],
+    })
+    blueprint = _make_blueprint(["AAPL"]).model_copy(update={"symbol_plans": [calendar_plan]})
+    signal_map = {
+        "MSFT": {
+            "close_price": 100.0,
+            "stock_indicators": {},
+            "option_indicators": {"current_iv": 0.3, "term_structure_slope": 0.02},
+            "cross_asset_indicators": {"earnings_proximity_days": 8},
+        }
+    }
+
+    blueprint, summary = _apply_deterministic_validation(
+        blueprint,
+        signal_map,
+        agent_outputs=None,
+    )
+
+    assert [plan.underlying for plan in blueprint.symbol_plans] == ["MSFT"]
+    assert summary["allowed_strategy_types"] == ["single_leg", "vertical_spread", "iron_condor", "calendar_spread"]
+    assert summary["error_count"] == 0
+    assert summary["passed"] is True

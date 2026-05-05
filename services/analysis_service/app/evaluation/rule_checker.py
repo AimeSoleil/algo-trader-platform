@@ -160,6 +160,7 @@ def check_blueprint(
             _check_counter_trend(plan, sig, result)
             _check_liquidity(plan, sig, result)
             _check_vertical_spread_moneyness(plan, sig, result)
+            _check_calendar_spread_context(plan, sig, result)
             _check_earnings_proximity(plan, sig, result)
             _check_confidence_quality_gate(plan, sig, result)
             _check_cross_asset_quality_guards(plan, sig, result)
@@ -623,7 +624,18 @@ def _check_earnings_proximity(plan: dict, signal: dict, result: CheckResult) -> 
         return
 
     strategy = plan.get("strategy_type", "")
-    if earnings_days <= 1 and strategy not in {"straddle", "strangle"}:
+    if strategy == "calendar_spread" and earnings_days <= 5:
+        result.issues.append(RuleIssue(
+            severity="error",
+            category="risk_breach",
+            symbol=sym,
+            rule="calendar_near_earnings",
+            description=(
+                f"earnings_proximity_days={earnings_days} — calendar_spread requires more than 5 days "
+                "of earnings buffer in precision-first validation"
+            ),
+        ))
+    elif earnings_days <= 1 and strategy not in {"straddle", "strangle"}:
         result.issues.append(RuleIssue(
             severity="error",
             category="risk_breach",
@@ -634,7 +646,7 @@ def _check_earnings_proximity(plan: dict, signal: dict, result: CheckResult) -> 
                 "(straddle/strangle) are allowed this close to earnings"
             ),
         ))
-    elif earnings_days <= 3 and strategy in {"calendar_spread", "butterfly", "iron_butterfly"}:
+    elif earnings_days <= 3 and strategy in {"butterfly", "iron_butterfly"}:
         result.issues.append(RuleIssue(
             severity="error",
             category="risk_breach",
@@ -643,6 +655,45 @@ def _check_earnings_proximity(plan: dict, signal: dict, result: CheckResult) -> 
             description=(
                 f"earnings_proximity_days={earnings_days} — {strategy} is too gamma-sensitive "
                 "this close to earnings"
+            ),
+        ))
+
+
+def _check_calendar_spread_context(plan: dict, signal: dict, result: CheckResult) -> None:
+    """Require explicit contango for precision-first calendar spreads."""
+    if plan.get("strategy_type") != "calendar_spread":
+        return
+
+    sym = plan.get("underlying", "UNKNOWN")
+    option_indicators = signal.get("option_indicators", {})
+    if not isinstance(option_indicators, dict):
+        option_indicators = {}
+
+    slope = option_indicators.get("term_structure_slope")
+    try:
+        slope_val = float(slope)
+    except (TypeError, ValueError):
+        result.issues.append(RuleIssue(
+            severity="error",
+            category="strategy_mismatch",
+            symbol=sym,
+            rule="calendar_requires_contango",
+            description=(
+                "calendar_spread requires a positive term_structure_slope (contango), "
+                "but the signal data is missing or non-numeric"
+            ),
+        ))
+        return
+
+    if slope_val <= 0.0:
+        result.issues.append(RuleIssue(
+            severity="error",
+            category="strategy_mismatch",
+            symbol=sym,
+            rule="calendar_requires_contango",
+            description=(
+                f"term_structure_slope={slope_val:.4f} — calendar_spread is allowed only in contango "
+                "under precision-first validation"
             ),
         ))
 

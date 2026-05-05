@@ -779,9 +779,12 @@ HE3. Spread effective_rr < 1.0 after costs → exclude that spread setup.
     If effective_rr is null (cannot be estimated) → OMIT that spread setup. Do not guess cost realism.
 HE4. Every symbol_plan must have confidence ≥ 0.3. If you cannot justify 0.3+, omit.
 HE5. It is BETTER to output fewer high-quality plans than many low-confidence ones.
-HE6. Precision-first default: prefer single_leg or vertical_spread. Use more complex multi-leg structures
-    only when liquidity is clearly strong, event risk is absent, and a simpler defined-risk structure
-    cannot express the thesis cleanly.
+HE6. Precision-first default: prefer single_leg or vertical_spread for directional theses.
+    In clearly range-bound, liquid, non-event setups, iron_condor is also acceptable.
+    In liquid, non-event setups with positive contango and earnings_proximity_days > 5,
+    calendar_spread is also acceptable.
+    Use other more complex multi-leg structures only when liquidity is clearly strong, event risk is absent,
+    and a simpler defined-risk structure cannot express the thesis cleanly.
 HE7. strategy_type MUST strictly match the actual legs count and structure.
     - 1 leg → single_leg only
     - 2 legs → vertical_spread | calendar_spread | diagonal_spread | straddle | strangle only
@@ -902,6 +905,7 @@ Example: {"field":"time","operator":"between","value":[10.0,11.0],"description":
 - 1d: no NEW positions unless explicit earnings play (straddle/strangle).
 - 2-3d: avoid new premium-selling or gamma-sensitive multi-leg structures; prefer omission or simple
     defined-risk single_leg/vertical_spread only when liquidity is strong and the thesis is unusually clear.
+- calendar_spread specifically requires positive term_structure_slope and earnings_proximity_days > 5.
 - null (unknown): normal rules.
 - >10d: ignore earnings effect.
 

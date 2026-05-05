@@ -259,6 +259,20 @@ def test_synthesizer_system_prompt_requires_strategy_type_leg_match():
     assert "Never label a 4-leg position as vertical_spread" in _SYNTHESIZER_SYSTEM_PROMPT
 
 
+def test_synthesizer_system_prompt_allows_iron_condor_for_clean_range_bound_setups():
+    from services.analysis_service.app.llm.agents.synthesizer_agent import _SYNTHESIZER_SYSTEM_PROMPT
+
+    assert "prefer single_leg or vertical_spread for directional theses" in _SYNTHESIZER_SYSTEM_PROMPT
+    assert "iron_condor is also acceptable" in _SYNTHESIZER_SYSTEM_PROMPT
+
+
+def test_synthesizer_system_prompt_gates_calendar_to_contango_and_earnings_buffer():
+    from services.analysis_service.app.llm.agents.synthesizer_agent import _SYNTHESIZER_SYSTEM_PROMPT
+
+    assert "calendar_spread is also acceptable" in _SYNTHESIZER_SYSTEM_PROMPT
+    assert "calendar_spread specifically requires positive term_structure_slope and earnings_proximity_days > 5" in _SYNTHESIZER_SYSTEM_PROMPT
+
+
 def test_volatility_system_prompt_lists_supported_contango_and_backwardation_regimes():
     from services.analysis_service.app.llm.agents.volatility_agent import _SYSTEM_PROMPT
 

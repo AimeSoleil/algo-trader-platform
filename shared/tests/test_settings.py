@@ -65,6 +65,8 @@ analysis_service:
       allowed_strategy_types:
         - single_leg
         - vertical_spread
+        - iron_condor
+        - calendar_spread
 """.strip(),
         encoding="utf-8",
     )
@@ -72,4 +74,4 @@ analysis_service:
     settings = Settings.from_yaml(yaml_path)
 
     assert settings.analysis_service.llm.precision_first.enabled is True
-    assert settings.analysis_service.llm.precision_first.allowed_strategy_types == ["single_leg", "vertical_spread"]
+    assert settings.analysis_service.llm.precision_first.allowed_strategy_types == ["single_leg", "vertical_spread", "iron_condor", "calendar_spread"]
