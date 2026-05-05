@@ -427,6 +427,15 @@ class AgentModelsSettings(BaseSettings):
     critic: str = ""
     post_merge: str = ""
 
+
+class PrecisionFirstSettings(BaseSettings):
+    """Precision-first strategy restrictions for blueprint generation."""
+
+    enabled: bool = True
+    allowed_strategy_types: list[str] = Field(
+        default_factory=lambda: ["single_leg", "vertical_spread"],
+    )
+
 class LLMSettings(BaseSettings):
     provider: str = "copilot"
 
@@ -437,6 +446,7 @@ class LLMSettings(BaseSettings):
 
     # ── Per-agent model overrides ──
     agent_models_override: AgentModelsSettings = Field(default_factory=AgentModelsSettings)
+    precision_first: PrecisionFirstSettings = Field(default_factory=PrecisionFirstSettings)
 
     # ── Common ──
     cache_enabled: bool = True

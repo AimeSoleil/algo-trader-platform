@@ -212,7 +212,7 @@ async def _manual_analyze_async(
         duration_ms=round((perf_counter() - started) * 1000, 2),
     )
     validation = (blueprint.reasoning_context or {}).get("deterministic_validation", {})
-    soft_blocked = bool(validation.get("error_count", 0) > 0)
+    soft_blocked = bool(validation.get("error_count", 0) > 0 or not blueprint.symbol_plans)
     return {
         "trading_date": str(blueprint.trading_date),
         "blueprint_id": manual_id,

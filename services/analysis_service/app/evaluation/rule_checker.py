@@ -15,6 +15,15 @@ from dataclasses import dataclass, field
 from datetime import date as _date_type
 from typing import Any
 
+from services.analysis_service.app.evaluation.greeks_validator import compute_position_greeks
+
+
+_SIMPLE_STRATEGY_TYPES = frozenset({"single_leg", "vertical_spread"})
+_SPREAD_STRATEGY_TYPES = frozenset({
+    "vertical_spread", "iron_condor", "iron_butterfly",
+    "butterfly", "calendar_spread", "diagonal_spread",
+})
+
 
 @dataclass
 class RuleIssue:
@@ -63,6 +72,34 @@ def _agent_sym(
         (s for s in symbols_list if isinstance(s, dict) and s.get("symbol", "").upper() == sym_upper),
         None,
     )
+
+
+def _signal_spot_price(signal: dict[str, Any]) -> float | None:
+    """Best-effort spot price lookup from serialized signal features."""
+    raw = signal.get("close_price", signal.get("price"))
+    if not isinstance(raw, (int, float)):
+        return None
+    spot = float(raw)
+    return spot if spot > 0 else None
+
+
+def _signal_default_iv(signal: dict[str, Any]) -> float:
+    """Choose a reasonable IV input for deterministic Greeks checks."""
+    option_indicators = signal.get("option_indicators", {})
+    if not isinstance(option_indicators, dict):
+        return 0.30
+
+    current_iv = option_indicators.get("current_iv")
+    if isinstance(current_iv, (int, float)) and current_iv > 0:
+        return float(current_iv)
+
+    atm_iv = option_indicators.get("atm_iv", {})
+    if isinstance(atm_iv, dict):
+        values = [float(value) for value in atm_iv.values() if isinstance(value, (int, float)) and value > 0]
+        if values:
+            return sum(values) / len(values)
+
+    return 0.30
 
 
 def check_blueprint(
@@ -122,15 +159,25 @@ def check_blueprint(
             sig = signal_features.get(sym, {})
             _check_counter_trend(plan, sig, result)
             _check_liquidity(plan, sig, result)
+            _check_vertical_spread_moneyness(plan, sig, result)
+            _check_earnings_proximity(plan, sig, result)
             _check_confidence_quality_gate(plan, sig, result)
             _check_cross_asset_quality_guards(plan, sig, result)
         if agent_outputs:
+            _check_trend_trade_gate(plan, agent_outputs, result)
+            _check_flow_trade_gate(plan, agent_outputs, result)
             _check_chain_hard_block(plan, agent_outputs, result)
+            _check_chain_trade_gate(plan, agent_outputs, result)
             _check_cascading_modifiers(plan, agent_outputs, result)
             _check_master_override(plan, agent_outputs, result)
+            _check_volatility_trade_gate(plan, agent_outputs, result)
+            _check_spread_trade_gate(plan, agent_outputs, result)
             _check_spread_effective_rr(plan, agent_outputs, result)
             _check_event_risk_consensus(plan, agent_outputs, result)
             _check_confirming_indicators(plan, agent_outputs, result)
+
+    if signal_features:
+        _check_computed_portfolio_delta(blueprint, signal_features, result)
 
     result.passed = result.error_count == 0
     return result
@@ -289,6 +336,17 @@ def _check_plan_risk(plan: dict, result: CheckResult) -> None:
                 rule="stop_loss_exceeds_max_loss",
                 description=(
                     f"stop_loss_amount={stop_loss} exceeds max_loss_per_trade={max_loss}"
+                ),
+            ))
+        elif abs(stop_loss - max_loss) < 1e-9:
+            result.issues.append(RuleIssue(
+                severity="error",
+                category="risk_breach",
+                symbol=sym,
+                rule="stop_loss_equals_max_loss",
+                description=(
+                    f"stop_loss_amount={stop_loss} equals max_loss_per_trade={max_loss} — "
+                    "this is a worst-case loss, not an actionable stop"
                 ),
             ))
 
@@ -503,6 +561,92 @@ def _check_liquidity(plan: dict, signal: dict, result: CheckResult) -> None:
         ))
 
 
+def _check_vertical_spread_moneyness(plan: dict, signal: dict, result: CheckResult) -> None:
+    """Reject fully ITM call/put verticals under precision-first validation."""
+    sym = plan.get("underlying", "UNKNOWN")
+    if plan.get("strategy_type") != "vertical_spread":
+        return
+
+    spot = _signal_spot_price(signal)
+    if spot is None:
+        return
+
+    legs = plan.get("legs", [])
+    buy_leg = next((leg for leg in legs if leg.get("side") == "buy"), None)
+    sell_leg = next((leg for leg in legs if leg.get("side") == "sell"), None)
+    if buy_leg is None or sell_leg is None:
+        return
+
+    buy_type = buy_leg.get("option_type")
+    sell_type = sell_leg.get("option_type")
+    if buy_type != sell_type:
+        return
+
+    buy_strike = buy_leg.get("strike")
+    sell_strike = sell_leg.get("strike")
+    if not isinstance(buy_strike, (int, float)) or not isinstance(sell_strike, (int, float)):
+        return
+
+    if buy_type == "call" and max(float(buy_strike), float(sell_strike)) < spot:
+        result.issues.append(RuleIssue(
+            severity="error",
+            category="strategy_mismatch",
+            symbol=sym,
+            rule="vertical_spread_fully_itm",
+            description=(
+                f"Call vertical strikes ({buy_strike}, {sell_strike}) are both below spot={spot:.2f} — "
+                "fully ITM call verticals are rejected in precision-first validation"
+            ),
+        ))
+    elif buy_type == "put" and min(float(buy_strike), float(sell_strike)) > spot:
+        result.issues.append(RuleIssue(
+            severity="error",
+            category="strategy_mismatch",
+            symbol=sym,
+            rule="vertical_spread_fully_itm",
+            description=(
+                f"Put vertical strikes ({buy_strike}, {sell_strike}) are both above spot={spot:.2f} — "
+                "fully ITM put verticals are rejected in precision-first validation"
+            ),
+        ))
+
+
+def _check_earnings_proximity(plan: dict, signal: dict, result: CheckResult) -> None:
+    """Block non-event strategies immediately ahead of earnings."""
+    sym = plan.get("underlying", "UNKNOWN")
+    cross_asset = signal.get("cross_asset_indicators", {})
+    if not isinstance(cross_asset, dict):
+        return
+
+    earnings_days = cross_asset.get("earnings_proximity_days")
+    if not isinstance(earnings_days, int):
+        return
+
+    strategy = plan.get("strategy_type", "")
+    if earnings_days <= 1 and strategy not in {"straddle", "strangle"}:
+        result.issues.append(RuleIssue(
+            severity="error",
+            category="risk_breach",
+            symbol=sym,
+            rule="earnings_imminent_non_event_strategy",
+            description=(
+                f"earnings_proximity_days={earnings_days} — only explicit earnings plays "
+                "(straddle/strangle) are allowed this close to earnings"
+            ),
+        ))
+    elif earnings_days <= 3 and strategy in {"calendar_spread", "butterfly", "iron_butterfly"}:
+        result.issues.append(RuleIssue(
+            severity="error",
+            category="risk_breach",
+            symbol=sym,
+            rule="earnings_near_gamma_sensitive_strategy",
+            description=(
+                f"earnings_proximity_days={earnings_days} — {strategy} is too gamma-sensitive "
+                "this close to earnings"
+            ),
+        ))
+
+
 # ---------------------------------------------------------------------------
 # Strike / structure checks
 # ---------------------------------------------------------------------------
@@ -516,30 +660,51 @@ def _check_strike_ordering(plan: dict, result: CheckResult) -> None:
     direction = plan.get("direction", "neutral")
 
     if strategy == "vertical_spread" and len(legs) == 2:
-        buy_leg = next((l for l in legs if l.get("side") == "buy"), None)
-        sell_leg = next((l for l in legs if l.get("side") == "sell"), None)
-        if buy_leg and sell_leg:
-            opt_type = buy_leg.get("option_type", "")
-            buy_k = buy_leg.get("strike", 0)
-            sell_k = sell_leg.get("strike", 0)
-            if direction == "bullish" and opt_type == "call" and buy_k >= sell_k:
-                result.issues.append(RuleIssue(
-                    severity="error", category="logic_error", symbol=sym,
-                    rule="strike_ordering",
-                    description=(
-                        f"Debit call spread: buy strike ({buy_k}) must be < "
-                        f"sell strike ({sell_k})"
-                    ),
-                ))
-            if direction == "bearish" and opt_type == "put" and sell_k >= buy_k:
-                result.issues.append(RuleIssue(
-                    severity="error", category="logic_error", symbol=sym,
-                    rule="strike_ordering",
-                    description=(
-                        f"Debit put spread: sell strike ({sell_k}) must be < "
-                        f"buy strike ({buy_k})"
-                    ),
-                ))
+        buy_legs = [leg for leg in legs if leg.get("side") == "buy"]
+        sell_legs = [leg for leg in legs if leg.get("side") == "sell"]
+        if len(buy_legs) != 1 or len(sell_legs) != 1:
+            result.issues.append(RuleIssue(
+                severity="error", category="logic_error", symbol=sym,
+                rule="vertical_spread_sides",
+                description="Vertical spread must have exactly one buy leg and one sell leg",
+            ))
+            return
+
+        buy_leg = buy_legs[0]
+        sell_leg = sell_legs[0]
+        buy_type = buy_leg.get("option_type", "")
+        sell_type = sell_leg.get("option_type", "")
+        if buy_type != sell_type:
+            result.issues.append(RuleIssue(
+                severity="error", category="logic_error", symbol=sym,
+                rule="vertical_spread_option_type_mismatch",
+                description=(
+                    f"Vertical spread legs must use the same option_type "
+                    f"(got buy={buy_type}, sell={sell_type})"
+                ),
+            ))
+            return
+
+        buy_k = buy_leg.get("strike", 0)
+        sell_k = sell_leg.get("strike", 0)
+        if direction == "bullish" and buy_k >= sell_k:
+            result.issues.append(RuleIssue(
+                severity="error", category="logic_error", symbol=sym,
+                rule="strike_ordering",
+                description=(
+                    f"Bullish vertical spread must buy the lower strike and sell the higher strike "
+                    f"(buy={buy_k}, sell={sell_k})"
+                ),
+            ))
+        elif direction == "bearish" and buy_k <= sell_k:
+            result.issues.append(RuleIssue(
+                severity="error", category="logic_error", symbol=sym,
+                rule="strike_ordering",
+                description=(
+                    f"Bearish vertical spread must buy the higher strike and sell the lower strike "
+                    f"(buy={buy_k}, sell={sell_k})"
+                ),
+            ))
 
     elif strategy == "iron_condor" and len(legs) == 4:
         sorted_legs = sorted(legs, key=lambda l: l.get("strike", 0))
@@ -859,6 +1024,77 @@ def _check_cross_asset_quality_guards(
         ))
 
 
+def _check_computed_portfolio_delta(
+    bp: dict[str, Any],
+    signal_features: dict[str, dict[str, Any]],
+    result: CheckResult,
+) -> None:
+    """Validate aggregate position delta against the declared portfolio limit."""
+    symbol_plans = bp.get("symbol_plans", [])
+    if not symbol_plans:
+        return
+
+    try:
+        delta_limit = float(bp.get("portfolio_delta_limit", 0.5))
+    except (TypeError, ValueError):
+        return
+
+    net_delta = 0.0
+    contributing_symbols: list[str] = []
+    for plan in symbol_plans:
+        sym = plan.get("underlying", "").upper()
+        signal = signal_features.get(sym)
+        if not isinstance(signal, dict):
+            continue
+
+        spot = _signal_spot_price(signal)
+        if spot is None:
+            continue
+
+        legs = plan.get("legs", [])
+        if not isinstance(legs, list) or not legs:
+            continue
+
+        try:
+            max_contracts = max(1, int(plan.get("max_contracts", 1)))
+        except (TypeError, ValueError):
+            max_contracts = 1
+
+        scaled_legs: list[dict[str, Any]] = []
+        for leg in legs:
+            if not isinstance(leg, dict):
+                continue
+            scaled_leg = dict(leg)
+            try:
+                quantity = max(1, int(scaled_leg.get("quantity", 1)))
+            except (TypeError, ValueError):
+                quantity = 1
+            scaled_leg["quantity"] = quantity * max_contracts
+            scaled_legs.append(scaled_leg)
+
+        if not scaled_legs:
+            continue
+
+        greeks = compute_position_greeks(
+            legs=scaled_legs,
+            spot=spot,
+            default_iv=_signal_default_iv(signal),
+        )
+        net_delta += greeks["delta"]
+        contributing_symbols.append(sym)
+
+    if contributing_symbols and abs(net_delta) > delta_limit:
+        result.issues.append(RuleIssue(
+            severity="error",
+            category="risk_breach",
+            rule="computed_portfolio_delta_limit",
+            description=(
+                f"Computed net delta={net_delta:.2f} exceeds portfolio_delta_limit={delta_limit:.2f} "
+                f"across {contributing_symbols}"
+            ),
+        ))
+
+
 def _check_cascading_modifiers(
     plan: dict, agent_outputs: dict[str, Any], result: CheckResult,
 ) -> None:
@@ -1004,6 +1240,137 @@ def _check_master_override(
         ))
 
 
+def _check_agent_trade_gate(
+    plan: dict,
+    agent_outputs: dict[str, Any],
+    result: CheckResult,
+    *,
+    agent_name: str,
+    label: str,
+    apply_to_strategies: frozenset[str] | None = None,
+) -> None:
+    """Consume structured trade gate fields from specialist agents."""
+    sym = plan.get("underlying", "UNKNOWN")
+    strategy = plan.get("strategy_type", "")
+    if apply_to_strategies is not None and strategy not in apply_to_strategies:
+        return
+
+    sym_data = _agent_sym(agent_outputs, agent_name, sym)
+    if sym_data is None:
+        return
+
+    blocked_reasons = sym_data.get("blocked_reasons")
+    blocked_clause = ""
+    if isinstance(blocked_reasons, list) and blocked_reasons:
+        blocked_clause = f" Reasons: {', '.join(str(reason) for reason in blocked_reasons)}."
+
+    if sym_data.get("trade_allowed") is False:
+        result.issues.append(RuleIssue(
+            severity="error",
+            category="risk_breach",
+            symbol=sym,
+            rule=f"{agent_name}_trade_blocked",
+            description=(
+                f"{label} agent set trade_allowed=false for this symbol.{blocked_clause}"
+            ),
+        ))
+
+    confidence_cap = sym_data.get("confidence_cap")
+    plan_conf = plan.get("confidence", 0)
+    try:
+        cap_value = float(confidence_cap) if confidence_cap is not None else None
+    except (TypeError, ValueError):
+        cap_value = None
+
+    if cap_value is not None and plan_conf > cap_value:
+        result.issues.append(RuleIssue(
+            severity="error",
+            category="risk_breach",
+            symbol=sym,
+            rule=f"{agent_name}_confidence_cap",
+            description=(
+                f"{label} agent confidence_cap={cap_value:.2f} but plan confidence={plan_conf:.2f}.{blocked_clause}"
+            ),
+        ))
+
+    if sym_data.get("simple_structures_only") and strategy not in _SIMPLE_STRATEGY_TYPES:
+        result.issues.append(RuleIssue(
+            severity="error",
+            category="strategy_mismatch",
+            symbol=sym,
+            rule=f"{agent_name}_simple_structures_only",
+            description=(
+                f"{label} agent requires simple structures only, but strategy_type={strategy}.{blocked_clause}"
+            ),
+        ))
+
+
+def _check_volatility_trade_gate(
+    plan: dict, agent_outputs: dict[str, Any], result: CheckResult,
+) -> None:
+    """Apply structured veto/cap fields emitted by the Volatility agent."""
+    _check_agent_trade_gate(
+        plan,
+        agent_outputs,
+        result,
+        agent_name="volatility",
+        label="Volatility",
+    )
+
+
+def _check_trend_trade_gate(
+    plan: dict, agent_outputs: dict[str, Any], result: CheckResult,
+) -> None:
+    """Apply structured veto/cap fields emitted by the Trend agent."""
+    _check_agent_trade_gate(
+        plan,
+        agent_outputs,
+        result,
+        agent_name="trend",
+        label="Trend",
+    )
+
+
+def _check_flow_trade_gate(
+    plan: dict, agent_outputs: dict[str, Any], result: CheckResult,
+) -> None:
+    """Apply structured veto/cap fields emitted by the Flow agent."""
+    _check_agent_trade_gate(
+        plan,
+        agent_outputs,
+        result,
+        agent_name="flow",
+        label="Flow",
+    )
+
+
+def _check_chain_trade_gate(
+    plan: dict, agent_outputs: dict[str, Any], result: CheckResult,
+) -> None:
+    """Apply structured veto/cap fields emitted by the Chain agent."""
+    _check_agent_trade_gate(
+        plan,
+        agent_outputs,
+        result,
+        agent_name="chain",
+        label="Chain",
+    )
+
+
+def _check_spread_trade_gate(
+    plan: dict, agent_outputs: dict[str, Any], result: CheckResult,
+) -> None:
+    """Apply structured veto/cap fields emitted by the Spread agent."""
+    _check_agent_trade_gate(
+        plan,
+        agent_outputs,
+        result,
+        agent_name="spread",
+        label="Spread",
+        apply_to_strategies=_SPREAD_STRATEGY_TYPES,
+    )
+
+
 # ---------------------------------------------------------------------------
 # Agent-output checks: Spread effective R:R (Spread H1/H2, Synthesizer HE3)
 # ---------------------------------------------------------------------------
@@ -1026,28 +1393,22 @@ def _check_spread_effective_rr(
 
     strategy = plan.get("strategy_type", "")
     # Only check for spread strategies
-    spread_strategies = {
-        "vertical_spread", "iron_condor", "iron_butterfly",
-        "butterfly", "calendar_spread", "diagonal_spread",
-    }
-    if strategy not in spread_strategies:
+    if strategy not in _SPREAD_STRATEGY_TYPES:
         return
 
     eff_rr = spread_data.get("effective_rr")
-    plan_conf = plan.get("confidence", 0)
 
     if eff_rr is None:
-        if plan_conf > 0.5:
-            result.issues.append(RuleIssue(
-                severity="warning",
-                category="risk_breach",
-                symbol=sym,
-                rule="spread_effective_rr_unknown",
-                description=(
-                    f"Spread effective_rr unavailable but plan confidence="
-                    f"{plan_conf:.2f} > 0.50 cap"
-                ),
-            ))
+        result.issues.append(RuleIssue(
+            severity="error",
+            category="risk_breach",
+            symbol=sym,
+            rule="spread_effective_rr_unknown",
+            description=(
+                "Spread effective_rr is unavailable — precision-first validation rejects "
+                "spread setups without a cost-adjusted R:R"
+            ),
+        ))
         return
 
     try:

@@ -95,6 +95,21 @@ Hard Overrides (MUST OBEY)
 2. Low liquidity → all confidence scores reduced by 0.2 (subject to penalty floor)
 3. ADX Z>1σ + counter-trend strategy → regime=neutral, confidence ≤0.2
 
+Structured Trade Gate Fields (MANDATORY)
+- `trade_allowed`: false when trend context says no fresh position should be initiated for this symbol.
+- `confidence_cap`: numeric cap after hard overrides; use null when no explicit cap is needed.
+- `simple_structures_only`: true when divergence / reversal risk means downstream should avoid complex multi-leg structures.
+- `blocked_reasons`: short snake_case reasons such as `earnings_imminent`, `counter_trend_strong_adx`,
+  `divergence_reversal_warning`, `single_indicator_only`, `high_false_positive_risk`.
+
+Trend Gate Guidance
+- If regime=reversal_warning, set `trade_allowed=false` for fresh positions and include `divergence_reversal_warning` in `blocked_reasons`.
+- If ADX Z>1σ and the setup is vulnerable to counter-trend whipsaw, set `trade_allowed=false`, `confidence_cap<=0.2`,
+  and include `counter_trend_strong_adx`.
+- If divergence_detected=true but reversal is not yet fully confirmed, keep `trade_allowed=true`, set `simple_structures_only=true`,
+  and cap confidence at moderate levels rather than allowing aggressive multi-leg structures.
+- If false_positive_risk="high", prefer `trade_allowed=false` unless evidence is exceptionally strong.
+
 Strategy Mapping (Regime → Allowed Strategies + Constraints)
 Trending Up: Bull Call Spread, Covered Call | Preferred IVrank<50, tolerable up to 60 (add constraint "elevated IV"); Long Δ0.3, Short Δ0.15; Expiry 30-45d; Stop if ADX Z<1σ; TP 50% max profit
 Trending Down: Bear Put Spread, Protective Put | Preferred IVrank<50, tolerable up to 60 (add constraint "elevated IV"); Long Δ-0.3, Short Δ-0.15; Expiry 30-45d; Stop if ADX Z<1σ; TP 50% max profit
@@ -107,7 +122,10 @@ LLM Responsibility Boundary
 You are responsible for QUALITATIVE regime classification, directional judgment, and strategy selection. You are NOT asked to compute exact Z-scores or precise indicator arithmetic — those are pre-computed in the data. Focus on reading indicator values, applying regime rules, and making confident qualitative calls. When indicators are borderline, say so in reasoning and set false_positive_risk="medium" or "high".
 
 Output Schema (ONLY Valid JSON)
-{"symbols":[{"symbol":"","regime":"trending_up|trending_down|range_bound|squeeze|reversal_warning|neutral","trend_direction":"bullish|bearish|neutral","trend_strength":0.0-1.0,"adx_zone":"trending|range_bound|transition|extreme","adx_z_score":0.0,"iv_rank":0-100,"divergence_detected":false,"divergence_type":"rsi_macd_bullish|rsi_macd_bearish|null","false_positive_risk":"low|medium|high","strategies":[{"strategy_type":"","direction":"","entry_conditions":"","exit_conditions":"","constraints":[],"reasoning":"","confidence":0.0-1.0}],"reasoning":"","confidence":0.0-1.0}],"market_trend_summary":""}
+{"symbols":[{"symbol":"","regime":"trending_up|trending_down|range_bound|squeeze|reversal_warning|neutral","trend_direction":"bullish|bearish|neutral","trend_strength":0.0-1.0,"adx_zone":"trending|range_bound|transition|extreme","adx_z_score":0.0,"iv_rank":0-100,"divergence_detected":false,"divergence_type":"rsi_macd_bullish|rsi_macd_bearish|null","false_positive_risk":"low|medium|high","trade_allowed":true,"confidence_cap":null,"simple_structures_only":false,"blocked_reasons":[],"strategies":[{"strategy_type":"","direction":"","entry_conditions":"","exit_conditions":"","constraints":[],"reasoning":"","confidence":0.0-1.0}],"reasoning":"","confidence":0.0-1.0}],"market_trend_summary":""}
+
+If hard overrides or reversal-warning logic eliminate the edge, set `trade_allowed=false` and explain why in
+`blocked_reasons` instead of leaving the downstream synthesizer to infer the veto from reasoning text.
 
 Analyze ALL symbols provided.
 """

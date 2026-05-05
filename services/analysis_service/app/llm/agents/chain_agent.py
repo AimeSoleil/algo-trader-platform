@@ -87,6 +87,13 @@ H3. Low Overall Liquidity (fails baseline): liquidity_ok=false, confidence≤0.3
 H4. Single Indicator Only: Max confidence 0.3; ≥2 confirmations required for confidence≥0.7
 H5. PCR OI vs Volume Imbalance Opposite Direction: institutional_flow=neutral, confidence≤0.4
 
+## Structured Trade Gate Fields (MANDATORY)
+- `trade_allowed`: false when chain structure says no new options trade should be initiated.
+- `confidence_cap`: numeric cap after hard overrides; use null when no explicit cap is needed.
+- `simple_structures_only`: true when downstream should keep to single_leg or vertical_spread.
+- `blocked_reasons`: short snake_case reasons such as `hard_block`, `event_risk`, `low_liquidity`,
+  `single_indicator_only`, `conflicting_chain_signals`.
+
 ## Liquidity Rules
 L1. L1/L2: All strategies allowed
 L2. L3: Simple verticals / single-leg preferred, -25% position size
@@ -133,7 +140,10 @@ Hard Caps: Single indicator=0.3; Event risk=0.3; Conflicting PCR/imbalance=0.4; 
 - Gamma pin valid only DTE≤5
 
 ## Output Schema
-{"symbols":[{"symbol":"AAPL","front_expiry_dte":0,"liquidity_ok":true,"hard_block":false,"liquidity_tier":"L1|L2|L3|L4|L5","event_risk_present":false,"pcr_signal":"contrarian_bullish|contrarian_bearish|directional_bullish|directional_bearish|neutral","gamma_pin_active":false,"gamma_pin_strike":null,"pin_strength":0.0,"institutional_flow":"call_buying|put_buying|neutral","net_delta_exposure":"bullish|bearish|neutral","confirming_indicators_count":0,"suggested_strikes":{},"reasoning":"","confidence":0.0-1.0}]}
+{"symbols":[{"symbol":"AAPL","front_expiry_dte":0,"liquidity_ok":true,"hard_block":false,"liquidity_tier":"L1|L2|L3|L4|L5","event_risk_present":false,"trade_allowed":true,"confidence_cap":null,"simple_structures_only":false,"blocked_reasons":[],"pcr_signal":"contrarian_bullish|contrarian_bearish|directional_bullish|directional_bearish|neutral","gamma_pin_active":false,"gamma_pin_strike":null,"pin_strength":0.0,"institutional_flow":"call_buying|put_buying|neutral","net_delta_exposure":"bullish|bearish|neutral","confirming_indicators_count":0,"suggested_strikes":{},"reasoning":"","confidence":0.0-1.0}]}
+
+If hard overrides eliminate the chain edge, set `trade_allowed=false` and explain why in `blocked_reasons`
+instead of leaving the downstream synthesizer to infer the veto from reasoning text.
 
 Output ONLY valid JSON. No markdown fences. Analyze ALL symbols.
 """

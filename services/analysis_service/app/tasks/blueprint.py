@@ -57,6 +57,133 @@ def _claim_terminal_notification_slot(trading_date: str, outcome: str) -> bool:
         return True
 
 
+def _serialize_rule_issues(issues) -> list[dict[str, object]]:
+    """Convert checker issues into JSON-safe dictionaries."""
+    return [
+        {
+            "severity": issue.severity,
+            "rule": issue.rule,
+            "symbol": issue.symbol,
+            "category": issue.category,
+            "description": issue.description,
+        }
+        for issue in issues
+    ]
+
+
+def _summarize_check_result(check) -> dict[str, object]:
+    """Create a stable summary payload for reasoning_context storage."""
+    errors = [issue for issue in check.issues if issue.severity == "error"]
+    warnings = [issue for issue in check.issues if issue.severity == "warning"]
+    return {
+        "passed": check.passed,
+        "error_count": len(errors),
+        "warning_count": len(warnings),
+        "issues": _serialize_rule_issues(check.issues),
+    }
+
+
+def _apply_precision_first_strategy_scope(
+    blueprint: LLMTradingBlueprint,
+) -> tuple[LLMTradingBlueprint, list[str], list[dict[str, object]], list[str], bool]:
+    """Prune plans outside the configured precision-first strategy whitelist."""
+    precision_first = get_settings().analysis_service.llm.precision_first
+    allowed_strategy_types = [strategy_type.lower() for strategy_type in precision_first.allowed_strategy_types]
+    allowed_set = set(allowed_strategy_types)
+
+    if not precision_first.enabled or not allowed_set:
+        return blueprint, [], [], allowed_strategy_types, False
+
+    pruned_symbols: list[str] = []
+    pruned_issues: list[dict[str, object]] = []
+    surviving_plans = []
+    for plan in blueprint.symbol_plans:
+        strategy_value = getattr(plan.strategy_type, "value", plan.strategy_type)
+        strategy_type = str(strategy_value).lower()
+        if strategy_type in allowed_set:
+            surviving_plans.append(plan)
+            continue
+
+        symbol = plan.underlying.upper()
+        pruned_symbols.append(symbol)
+        pruned_issues.append(
+            {
+                "severity": "error",
+                "rule": "precision_first_strategy_scope",
+                "symbol": symbol,
+                "category": "strategy_mismatch",
+                "description": (
+                    f"strategy_type={strategy_type} is outside the precision-first allowlist "
+                    f"{sorted(allowed_set)}"
+                ),
+            }
+        )
+
+    if pruned_symbols:
+        blueprint = blueprint.model_copy(update={"symbol_plans": surviving_plans})
+
+    return blueprint, sorted(set(pruned_symbols)), pruned_issues, allowed_strategy_types, True
+
+
+def _apply_deterministic_validation(
+    blueprint: LLMTradingBlueprint,
+    signal_map: dict[str, dict[str, object]],
+    agent_outputs: dict[str, object] | None,
+) -> tuple[LLMTradingBlueprint, dict[str, object]]:
+    """Prune symbol plans with deterministic errors, then re-run validation."""
+    original_plan_count = len(blueprint.symbol_plans)
+    blueprint, scope_pruned_symbols, scope_pruned_issues, allowed_strategy_types, precision_first_enabled = (
+        _apply_precision_first_strategy_scope(blueprint)
+    )
+
+    initial_check = check_blueprint(
+        blueprint.model_dump(mode="json"),
+        signal_map,
+        agent_outputs=agent_outputs,
+    )
+    initial_errors = [issue for issue in initial_check.issues if issue.severity == "error"]
+    validation_pruned_symbols = sorted({issue.symbol.upper() for issue in initial_errors if issue.symbol})
+    pruned_symbols = sorted(set(scope_pruned_symbols) | set(validation_pruned_symbols))
+
+    pruned_symbol_errors = _serialize_rule_issues(
+        [issue for issue in initial_errors if issue.symbol and issue.symbol.upper() in validation_pruned_symbols]
+    )
+    if scope_pruned_issues:
+        pruned_symbol_errors = [*scope_pruned_issues, *pruned_symbol_errors]
+
+    if validation_pruned_symbols:
+        surviving_plans = [
+            plan for plan in blueprint.symbol_plans
+            if plan.underlying.upper() not in validation_pruned_symbols
+        ]
+        blueprint = blueprint.model_copy(update={"symbol_plans": surviving_plans})
+
+    final_check = check_blueprint(
+        blueprint.model_dump(mode="json"),
+        signal_map,
+        agent_outputs=agent_outputs,
+    )
+    summary = _summarize_check_result(final_check)
+    summary["initial_error_count"] = len(initial_errors)
+    summary["initial_warning_count"] = initial_check.warning_count
+    summary["precision_first_enabled"] = precision_first_enabled
+    summary["allowed_strategy_types"] = allowed_strategy_types
+    summary["strategy_scope_pruned_symbols"] = scope_pruned_symbols
+    summary["strategy_scope_pruned_plan_count"] = len(scope_pruned_issues)
+    summary["pruned_symbols"] = pruned_symbols
+    summary["pruned_plan_count"] = original_plan_count - len(blueprint.symbol_plans)
+    summary["pruned_symbol_errors"] = pruned_symbol_errors
+    summary["empty_after_pruning"] = len(blueprint.symbol_plans) == 0
+    summary["passed"] = bool(summary["passed"] and blueprint.symbol_plans)
+    return blueprint, summary
+
+
+def _is_blueprint_soft_blocked(blueprint: LLMTradingBlueprint) -> bool:
+    """Soft-block blueprints with remaining errors or no surviving plans."""
+    validation = (blueprint.reasoning_context or {}).get("deterministic_validation", {})
+    return bool(validation.get("error_count", 0) > 0 or not blueprint.symbol_plans)
+
+
 # ── Common pipeline (steps 2-4) ───────────────────────────────
 
 
@@ -142,53 +269,33 @@ async def _run_blueprint_pipeline(
         plans=len(blueprint.symbol_plans),
     )
 
-    # 4) Deterministic validation (warning-only minimal integration)
+    # 4) Deterministic validation with symbol-level pruning
     signal_map = {
         sf.symbol.upper(): sf.model_dump(mode="json")
         for sf in signal_features
     }
     ao = (blueprint.reasoning_context or {}).get("agent_outputs")
-    check = check_blueprint(
-        blueprint.model_dump(mode="json"),
-        signal_map,
-        agent_outputs=ao,
-    )
-    errors = [i for i in check.issues if i.severity == "error"]
-    warnings = [i for i in check.issues if i.severity == "warning"]
-    all_issues = [
-        {
-            "severity": i.severity,
-            "rule": i.rule,
-            "symbol": i.symbol,
-            "category": i.category,
-            "description": i.description,
-        }
-        for i in check.issues
-    ]
-    summary = {
-        "passed": check.passed,
-        "error_count": len(errors),
-        "warning_count": len(warnings),
-        "issues": all_issues,
-    }
+    blueprint, summary = _apply_deterministic_validation(blueprint, signal_map, ao)
     ctx = dict(blueprint.reasoning_context or {})
     ctx["deterministic_validation"] = summary
     blueprint = blueprint.model_copy(update={"reasoning_context": ctx})
 
-    if errors or warnings:
+    if summary["error_count"] or summary["warning_count"] or summary["pruned_symbols"]:
         logger.warning(
             "blueprint.pipeline_deterministic_validation",
             trading_date=str(td),
-            passed=check.passed,
-            error_count=len(errors),
-            warning_count=len(warnings),
-            issues=all_issues,
+            passed=summary["passed"],
+            error_count=summary["error_count"],
+            warning_count=summary["warning_count"],
+            pruned_symbols=summary["pruned_symbols"],
+            pruned_plan_count=summary["pruned_plan_count"],
+            issues=summary["issues"],
         )
     else:
         logger.info(
             "blueprint.pipeline_deterministic_validation",
             trading_date=str(td),
-            passed=check.passed,
+            passed=summary["passed"],
             error_count=0,
             warning_count=0,
         )
@@ -369,8 +476,7 @@ async def _generate_blueprint_async(trading_date_str: str | None = None) -> dict
 
     _annotate_blueprint_quality(blueprint, signal_features)
     blueprint = blueprint.model_copy(update={"id": blueprint.id})
-    validation = (blueprint.reasoning_context or {}).get("deterministic_validation", {})
-    soft_blocked = bool(validation.get("error_count", 0) > 0)
+    soft_blocked = _is_blueprint_soft_blocked(blueprint)
     blueprint_status = "cancelled" if soft_blocked else "pending"
 
     # 5) Write to DB (UPSERT)

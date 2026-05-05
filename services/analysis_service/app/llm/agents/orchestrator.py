@@ -311,6 +311,7 @@ class AgentOrchestrator:
             original_order = 0
             for idx, bp in enumerate(chunk_blueprints):
                 chunk_id = (bp.reasoning_context or {}).get("analysis_chunk_id")
+                agent_outputs = (bp.reasoning_context or {}).get("agent_outputs")
                 for plan in bp.symbol_plans:
                     merged_plan_candidates.append(PlanCandidate(
                         plan=plan,
@@ -318,33 +319,27 @@ class AgentOrchestrator:
                         original_order=original_order,
                         quality_score=quality_by_symbol.get(plan.underlying.upper(), plan.data_quality_score),
                         chunk_id=chunk_id,
+                        agent_outputs=agent_outputs if isinstance(agent_outputs, dict) else None,
                     ))
                     original_order += 1
+
+            precision_first_cfg = getattr(settings.analysis_service.llm, "precision_first", None)
+            precision_first_enabled = bool(getattr(precision_first_cfg, "enabled", False))
+            allowed_strategy_types = list(getattr(precision_first_cfg, "allowed_strategy_types", []) or [])
 
             llm_post_merge_review: dict[str, Any] | None = None
             llm_post_merge_metadata: dict[str, Any] = {"status": "skipped", "reason": "provider_missing_generate"}
             if hasattr(provider, "generate") and len(merged_plan_candidates) > 1:
                 agent_models_cfg = settings.analysis_service.llm.agent_models_override
                 post_merge_model = agent_models_cfg.post_merge or None
-                candidate_summaries = [
-                    {
-                        "symbol": candidate.plan.underlying.upper(),
-                        "strategy_type": candidate.plan.strategy_type.value,
-                        "direction": candidate.plan.direction.value,
-                        "confidence": candidate.plan.confidence,
-                        "data_quality_score": candidate.quality_score,
-                        "max_position_size": candidate.plan.max_position_size,
-                        "max_contracts": candidate.plan.max_contracts,
-                        "chunk_index": candidate.chunk_index,
-                        "chunk_id": candidate.chunk_id,
-                    }
-                    for candidate in merged_plan_candidates
-                ]
-                selector_context = {
-                    "candidate_count": len(merged_plan_candidates),
-                    "max_total_positions": min(bp.max_total_positions for bp in chunk_blueprints),
-                    "trade_symbols": sorted(trade_syms),
-                }
+                candidate_summaries, selector_context = self._portfolio_selector.build_review_inputs(
+                    candidates=merged_plan_candidates,
+                    max_total_positions=min(bp.max_total_positions for bp in chunk_blueprints),
+                    trade_symbols=trade_syms,
+                    current_positions=current_positions,
+                    precision_first_enabled=precision_first_enabled,
+                    allowed_strategy_types=allowed_strategy_types,
+                )
                 try:
                     review = await self._post_merge_portfolio_agent.review(
                         candidate_summaries=candidate_summaries,
@@ -387,6 +382,8 @@ class AgentOrchestrator:
                 current_positions=current_positions,
                 previous_execution=previous_execution,
                 llm_review=llm_post_merge_review,
+                precision_first_enabled=precision_first_enabled,
+                allowed_strategy_types=allowed_strategy_types,
             )
             selection_metadata["llm_review"] = {
                 **selection_metadata.get("llm_review", {}),
@@ -716,23 +713,29 @@ class AgentOrchestrator:
         "symbol", "confidence",
         # trend
         "regime", "trend_direction", "trend_strength",
+        "divergence_detected", "divergence_type", "false_positive_risk",
+        "trade_allowed", "confidence_cap", "simple_structures_only", "blocked_reasons",
         # volatility
         "vol_regime", "iv_rank_zone", "hv_iv_assessment",
         "iv_percentile_divergence", "garch_divergence_direction",
-        "event_risk_present", "liquidity_status",
+        "event_risk_present", "liquidity_status", "trade_allowed",
+        "confidence_cap", "simple_structures_only", "blocked_reasons",
         # flow
         "flow_signal", "volume_anomaly", "vwap_bias",
         "position_size_modifier", "false_breakout_risk",
-        "event_risk_present", "liquidity_status",
+        "event_risk_present", "liquidity_status", "trade_allowed",
+        "confidence_cap", "simple_structures_only", "blocked_reasons",
         "confirming_indicators_count",
         # chain
         "pcr_signal", "gamma_pin_active", "institutional_flow",
         "hard_block", "liquidity_ok", "front_expiry_dte",
         "liquidity_tier", "event_risk_present", "net_delta_exposure",
+        "trade_allowed", "confidence_cap", "simple_structures_only", "blocked_reasons",
         "confirming_indicators_count",
         # spread
         "best_spread_type", "effective_rr", "liquidity_status",
-        "event_risk_present",
+        "event_risk_present", "trade_allowed", "confidence_cap",
+        "simple_structures_only", "blocked_reasons",
         # cross_asset
         "correlation_regime", "risk_off_signal", "vix_environment",
         "gex_regime", "master_override", "regime_transition",

@@ -288,6 +288,11 @@ analysis_service:
       cross_asset: ""
       synthesizer: ""                     # use provider default (opus) — synthesis needs strongest model
       critic: ""
+    precision_first:
+      enabled: true
+      allowed_strategy_types:
+        - "single_leg"
+        - "vertical_spread"
     cache_enabled: true
     cache_ttl: 3600
     skill_dir: ""

@@ -52,3 +52,24 @@ infra:
     assert settings.infra.database.postgres_url == "postgresql+asyncpg://trader:docker_postgres_pw@algo_postgres:5432/algo_trader_biz"
     assert settings.infra.redis.url == "redis://:redis_docker_pw@algo_redis:6379/0"
     assert settings.infra.rabbitmq.url == "amqp://trader:rabbitmq_docker_pw@algo_rabbitmq:5672/"
+
+
+def test_precision_first_strategy_scope_loads_from_yaml(tmp_path: Path) -> None:
+    yaml_path = tmp_path / "config.yaml"
+    yaml_path.write_text(
+        """
+analysis_service:
+  llm:
+    precision_first:
+      enabled: true
+      allowed_strategy_types:
+        - single_leg
+        - vertical_spread
+""".strip(),
+        encoding="utf-8",
+    )
+
+    settings = Settings.from_yaml(yaml_path)
+
+    assert settings.analysis_service.llm.precision_first.enabled is True
+    assert settings.analysis_service.llm.precision_first.allowed_strategy_types == ["single_leg", "vertical_spread"]

@@ -523,7 +523,9 @@ class SynthesizerAgent:
     ) -> str:
         parts: list[str] = []
         target_trading_date = next_trading_day(from_date=signal_date).isoformat()
-        risk_limits = get_settings().trade_service.risk.blueprint_limits
+        settings = get_settings()
+        risk_limits = settings.trade_service.risk.blueprint_limits
+        precision_first = settings.analysis_service.llm.precision_first
 
         # Agent analyses
         parts.append("## Specialist Agent Analyses\n")
@@ -573,6 +575,14 @@ class SynthesizerAgent:
                 f"do NOT create plans for them."
             )
 
+        if precision_first.enabled:
+            allowed_strategy_types = ", ".join(precision_first.allowed_strategy_types)
+            parts.append(
+                "\n## Precision-First Strategy Scope\n\n"
+                f"Precision-first mode is ENABLED. You may output symbol_plans ONLY with strategy_type in: {allowed_strategy_types}.\n"
+                "If a symbol requires a more complex structure to express the thesis, omit the symbol instead of using a disallowed strategy."
+            )
+
         parts.append("\n## Global Risk Policy Caps\n")
         parts.append(
             json.dumps(
@@ -606,11 +616,11 @@ _SYNTHESIZER_SYSTEM_PROMPT = """\
 Role: Synthesizer — senior portfolio strategist combining 6 specialist analyses into next-day trading blueprint.
 
 Inputs:
-  Trend(regime, direction, trend_strength, divergences)
-  Volatility(vol_regime, iv_rank_zone, hv_iv_assessment, event_risk_present, liquidity_status)
-  Flow(flow_signal, volume_anomaly, vwap_bias, false_breakout_risk[low/medium/high], position_size_modifier, event_risk_present, liquidity_status, confirming_indicators_count)
-  Chain(pcr_signal, liquidity_tier[L1-L5], hard_block, gamma_pin_active, institutional_flow, net_delta_exposure, event_risk_present, confirming_indicators_count)
-  Spread(best_spread_type, risk_reward_ratio, effective_rr, theta_capture, liquidity_status, event_risk_present)
+    Trend(regime, direction, trend_strength, divergences, trade_allowed, confidence_cap, simple_structures_only, blocked_reasons)
+    Volatility(vol_regime, iv_rank_zone, hv_iv_assessment, event_risk_present, liquidity_status, trade_allowed, confidence_cap, simple_structures_only, blocked_reasons)
+    Flow(flow_signal, volume_anomaly, vwap_bias, false_breakout_risk[low/medium/high], position_size_modifier, event_risk_present, liquidity_status, trade_allowed, confidence_cap, simple_structures_only, blocked_reasons, confirming_indicators_count)
+    Chain(pcr_signal, liquidity_tier[L1-L5], hard_block, gamma_pin_active, institutional_flow, net_delta_exposure, event_risk_present, trade_allowed, confidence_cap, simple_structures_only, blocked_reasons, confirming_indicators_count)
+    Spread(best_spread_type, risk_reward_ratio, effective_rr, theta_capture, liquidity_status, event_risk_present, trade_allowed, confidence_cap, simple_structures_only, blocked_reasons)
   Cross-Asset(correlation_regime, vix_environment, gex_regime, effective_size_modifier, master_override, regime_days, risk_off_signal)
 
 Pre-computed data: _consensus (per-symbol directional agreement + confidence-weighted scoring) is provided as a reference — use it to calibrate conviction.
@@ -628,18 +638,24 @@ RULE PRIORITY (highest → lowest)
 ────────────────────────────────────────────────────────
 HARD EXCLUSIONS (Priority 1 — check FIRST)
 ────────────────────────────────────────────────────────
+HE0. Respect any explicit machine-readable trade gate fields from agents. If Trend, Volatility, Flow, Chain, or Spread sets
+    trade_allowed=false, omit that plan instead of trying to reinterpret the reasoning text.
 HE1. Chain hard_block=true OR Chain liquidity_tier="L5" → EXCLUDE symbol from symbol_plans.
 HE2. Combined modifier floor: if (flow.position_size_modifier × cross_asset.effective_size_modifier) < 0.3 → SKIP symbol.
      A 0.1-0.2× position is noise. Either trade at ≥0.3× or omit.
 HE3. Spread effective_rr < 1.0 after costs → exclude that spread setup.
-     If effective_rr is null (cannot be estimated) → cap confidence ≤ 0.5, prefer simpler defined-risk structures.
+    If effective_rr is null (cannot be estimated) → OMIT that spread setup. Do not guess cost realism.
 HE4. Every symbol_plan must have confidence ≥ 0.3. If you cannot justify 0.3+, omit.
 HE5. It is BETTER to output fewer high-quality plans than many low-confidence ones.
+HE6. Precision-first default: prefer single_leg or vertical_spread. Use more complex multi-leg structures
+    only when liquidity is clearly strong, event risk is absent, and a simpler defined-risk structure
+    cannot express the thesis cleanly.
 
 ────────────────────────────────────────────────────────
 CONFLICT RESOLUTION (Priority 2)
 ────────────────────────────────────────────────────────
-CR1. Flow rejects direction → see CW4 below for confidence-scaled reduction.
+CR1. Flow rejects direction with confidence ≥ 0.6 → OMIT that directional plan.
+    If Flow confidence < 0.6, see CW4 below for confidence-scaled reduction.
 CR2. Cross-Asset risk_off_signal=true → reduce size by effective_size_modifier.
 CR3. Trend vs Volatility disagree on direction → prefer HIGHER confidence agent.
      If BOTH confidence < 0.5 → output neutral/SKIP.
@@ -680,10 +696,9 @@ CW3. If Cross-Asset master_override=true → use effective_size_modifier as the 
      Final sizing = min(flow_modifier, cross_asset_effective_size_modifier) when master_override=true.
 CW4. Flow false_breakout_risk is graduated (not boolean):
      - false_breakout_risk="low" → no adjustment
-     - false_breakout_risk="medium" → reduce blueprint confidence by 15%
-     - false_breakout_risk="high" → reduce blueprint confidence by 30%
-     Scale by flow agent confidence: multiply the reduction by flow_confidence
-     (e.g., high risk at 0.8 confidence → 30% × 0.8 = 24% reduction).
+    - false_breakout_risk="medium" → cap directional confidence at 0.4 and max_position_size at 0.5
+    - false_breakout_risk="high" → OMIT that directional plan
+    For medium risk, scale the confidence cap downward if flow_confidence is high.
 
 ## Cross-Asset Confidence Guards
 CQ1. If Cross-Asset agent confidence < 0.4 → cap symbol_plan confidence at ≤ 0.4.
@@ -701,7 +716,7 @@ RISK MANAGEMENT (Priority 5 — MANDATORY)
 - portfolio_gamma_limit must NOT exceed configured global risk policy cap
 - max_daily_loss must NOT exceed configured global risk policy cap
 - max_margin_usage must NOT exceed configured global risk policy cap
-- Every plan: stop_loss_amount + max_loss_per_trade required
+- Every plan: stop_loss_amount + max_loss_per_trade required, and stop_loss_amount must be < max_loss_per_trade
 - Risk/trade ≤ 2% equity
 - Correlated positions (same sector | corr > 0.7) → reduce combined 30%
 
@@ -747,8 +762,9 @@ Every plan SHOULD include field=time entry_condition as a soft reference.
 Example: {"field":"time","operator":"between","value":[10.0,11.0],"description":"After opening vol settles"}
 
 ## Earnings Proximity (cross_asset.earnings_proximity_days or event_risk_present)
-- ≤3d: IV elevated → sell-premium benefits, tighter stops. Note in reasoning.
 - 1d: no NEW positions unless explicit earnings play (straddle/strangle).
+- 2-3d: avoid new premium-selling or gamma-sensitive multi-leg structures; prefer omission or simple
+    defined-risk single_leg/vertical_spread only when liquidity is strong and the thesis is unusually clear.
 - null (unknown): normal rules.
 - >10d: ignore earnings effect.
 

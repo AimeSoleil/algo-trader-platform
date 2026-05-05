@@ -62,6 +62,7 @@ def _make_blueprint(
     portfolio_delta_limit: float = 0.9,
     portfolio_gamma_limit: float = 0.2,
     analysis_chunk_id: str | None = None,
+    agent_outputs: dict | None = None,
 ) -> LLMTradingBlueprint:
     plans: list[SymbolPlan] = []
     for item in symbols:
@@ -82,6 +83,12 @@ def _make_blueprint(
             continue
         raise AssertionError(f"unsupported symbol fixture: {item}")
 
+    reasoning_context = {}
+    if analysis_chunk_id:
+        reasoning_context["analysis_chunk_id"] = analysis_chunk_id
+    if agent_outputs is not None:
+        reasoning_context["agent_outputs"] = agent_outputs
+
     return LLMTradingBlueprint(
         trading_date="2026-04-29",
         generated_at="2026-04-28T20:00:00",
@@ -92,7 +99,7 @@ def _make_blueprint(
         max_margin_usage=max_margin_usage,
         portfolio_delta_limit=portfolio_delta_limit,
         portfolio_gamma_limit=portfolio_gamma_limit,
-        reasoning_context={"analysis_chunk_id": analysis_chunk_id} if analysis_chunk_id else None,
+        reasoning_context=reasoning_context or None,
     )
 
 
@@ -114,6 +121,10 @@ async def test_chunked_merge_trims_plans_to_max_total_positions(monkeypatch):
             llm=SimpleNamespace(
                 orchestrator_chunk_size=2,
                 orchestrator_max_parallel=2,
+                precision_first=SimpleNamespace(
+                    enabled=True,
+                    allowed_strategy_types=["single_leg", "vertical_spread"],
+                ),
             )
         ),
         trade_service=SimpleNamespace(
@@ -266,6 +277,10 @@ async def test_chunked_merge_uses_portfolio_impact_heuristic(monkeypatch):
             llm=SimpleNamespace(
                 orchestrator_chunk_size=2,
                 orchestrator_max_parallel=2,
+                precision_first=SimpleNamespace(
+                    enabled=True,
+                    allowed_strategy_types=["single_leg", "vertical_spread"],
+                ),
             )
         ),
         trade_service=SimpleNamespace(
@@ -329,7 +344,7 @@ async def test_chunked_merge_uses_portfolio_impact_heuristic(monkeypatch):
     assert decisions["MSFT"]["portfolio_impact_score"] > decisions["AAPL"]["portfolio_impact_score"]
     assert "size_penalty" in decisions["MSFT"]["portfolio_impact_breakdown"]
     assert "strategy_penalty" in decisions["MSFT"]["portfolio_impact_breakdown"]
-    assert blueprint.reasoning_context["post_merge_phase"]["ranking_method"] == "confidence_quality_portfolio_impact_weighted"
+    assert blueprint.reasoning_context["post_merge_phase"]["ranking_method"] == "precision_first_confidence_quality_portfolio_impact_weighted"
 
 
 @pytest.mark.asyncio
@@ -425,6 +440,10 @@ async def test_chunked_merge_applies_llm_post_merge_ranking(monkeypatch):
                 orchestrator_chunk_size=2,
                 orchestrator_max_parallel=2,
                 agent_models_override=SimpleNamespace(post_merge=""),
+                precision_first=SimpleNamespace(
+                    enabled=True,
+                    allowed_strategy_types=["single_leg", "vertical_spread"],
+                ),
             )
         ),
         trade_service=SimpleNamespace(
@@ -451,6 +470,7 @@ async def test_chunked_merge_applies_llm_post_merge_ranking(monkeypatch):
     )
 
     orchestrator = AgentOrchestrator(provider=_LLMProvider())
+    captured_review_inputs: dict[str, object] = {}
 
     async def _fake_generate_single_pass(self, **kwargs):
         trade_symbols = kwargs["trade_symbols"]
@@ -462,16 +482,30 @@ async def test_chunked_merge_applies_llm_post_merge_ranking(monkeypatch):
                 ],
                 max_total_positions=2,
                 analysis_chunk_id="chunk-0",
+                agent_outputs={
+                    "trend": {
+                        "symbols": [
+                            {
+                                "symbol": "MSFT",
+                                "trade_allowed": True,
+                                "confidence_cap": 0.86,
+                                "simple_structures_only": False,
+                                "blocked_reasons": ["counter_trend_setup"],
+                            }
+                        ]
+                    }
+                },
             )
         if trade_symbols == ["NVDA"]:
             return _make_blueprint(
-                [("NVDA", 0.7)],
+                [("NVDA", 0.7, "covered_call", "bullish", 1.0, 1)],
                 max_total_positions=2,
                 analysis_chunk_id="chunk-1",
             )
         raise AssertionError(f"unexpected trade_symbols: {trade_symbols}")
 
     async def _fake_review(**kwargs):
+        captured_review_inputs.update(kwargs)
         return PostMergeReview(
             selected_symbols=["AAPL", "MSFT"],
             ranking=["AAPL", "MSFT", "NVDA"],
@@ -481,7 +515,7 @@ async def test_chunked_merge_applies_llm_post_merge_ranking(monkeypatch):
                 PostMergeConflictExplanation(
                     symbol="AAPL",
                     decision="keep",
-                    rationale="AAPL is promoted by global portfolio ranking despite lower raw heuristic score.",
+                    rationale="AAPL is promoted by better precision-first and portfolio impact inputs despite lower raw confidence.",
                 )
             ],
         )
@@ -500,3 +534,161 @@ async def test_chunked_merge_applies_llm_post_merge_ranking(monkeypatch):
     assert llm_review["status"] == "applied"
     assert llm_review["ranking"] == ["AAPL", "MSFT", "NVDA"]
     assert llm_review["portfolio_summary"] == "Prefer AAPL first for portfolio balance."
+    assert captured_review_inputs["selector_metadata"]["ranking_method"] == "precision_first_confidence_quality_portfolio_impact_weighted"
+    assert captured_review_inputs["selector_metadata"]["deterministic_sort_priority"][0] == "precision_first_score"
+    review_candidates = {item["symbol"]: item for item in captured_review_inputs["candidate_summaries"]}
+    assert review_candidates["AAPL"]["precision_first_score"] > review_candidates["MSFT"]["precision_first_score"]
+    assert review_candidates["MSFT"]["precision_first_breakdown"]["trade_blocked_agents"] == []
+    assert review_candidates["MSFT"]["precision_first_breakdown"]["confidence_caps"]["trend"] == 0.86
+    assert review_candidates["MSFT"]["precision_first_breakdown"]["blocked_reasons"] == ["counter_trend_setup"]
+    assert "portfolio_impact_breakdown" in review_candidates["AAPL"]
+    assert "selector_base_score" in review_candidates["AAPL"]
+
+
+@pytest.mark.asyncio
+async def test_chunked_merge_precision_first_prefers_simple_allowed_strategy(monkeypatch):
+    settings = SimpleNamespace(
+        analysis_service=SimpleNamespace(
+            llm=SimpleNamespace(
+                orchestrator_chunk_size=1,
+                orchestrator_max_parallel=2,
+                precision_first=SimpleNamespace(
+                    enabled=True,
+                    allowed_strategy_types=["single_leg", "vertical_spread"],
+                ),
+            )
+        ),
+        trade_service=SimpleNamespace(
+            risk=SimpleNamespace(
+                blueprint_limits=SimpleNamespace(
+                    max_daily_loss=2_000.0,
+                    max_margin_usage=0.5,
+                    portfolio_delta_limit=0.5,
+                    portfolio_gamma_limit=0.1,
+                )
+            )
+        ),
+        common=SimpleNamespace(
+            watchlist=SimpleNamespace(
+                for_trade=["AAPL", "MSFT"],
+                for_trade_benchmark=[],
+            )
+        ),
+    )
+
+    monkeypatch.setattr(
+        "services.analysis_service.app.llm.agents.orchestrator.get_settings",
+        lambda: settings,
+    )
+
+    orchestrator = AgentOrchestrator(provider=_Provider())
+
+    async def _fake_generate_single_pass(self, **kwargs):
+        trade_symbols = kwargs["trade_symbols"]
+        if trade_symbols == ["AAPL"]:
+            return _make_blueprint(
+                [("AAPL", 0.71, "single_leg", "bullish", 0.8, 1)],
+                max_total_positions=1,
+                analysis_chunk_id="chunk-0",
+            )
+        if trade_symbols == ["MSFT"]:
+            return _make_blueprint(
+                [("MSFT", 0.93, "covered_call", "neutral", 0.8, 1)],
+                max_total_positions=1,
+                analysis_chunk_id="chunk-1",
+            )
+        raise AssertionError(f"unexpected trade_symbols: {trade_symbols}")
+
+    monkeypatch.setattr(AgentOrchestrator, "_generate_single_pass", _fake_generate_single_pass)
+
+    blueprint = await orchestrator.generate([
+        _make_sf("AAPL"),
+        _make_sf("MSFT"),
+    ])
+
+    assert [plan.underlying for plan in blueprint.symbol_plans] == ["AAPL"]
+    decisions = {item["symbol"]: item for item in blueprint.reasoning_context["post_merge_phase"]["decisions"]}
+    assert decisions["AAPL"]["precision_first_score"] > decisions["MSFT"]["precision_first_score"]
+    assert decisions["MSFT"]["precision_first_breakdown"]["strategy_scope_penalty"] > 0.0
+    assert blueprint.reasoning_context["post_merge_phase"]["ranking_method"] == "precision_first_confidence_quality_portfolio_impact_weighted"
+
+
+@pytest.mark.asyncio
+async def test_chunked_merge_precision_first_prefers_fewer_gate_conflicts(monkeypatch):
+    settings = SimpleNamespace(
+        analysis_service=SimpleNamespace(
+            llm=SimpleNamespace(
+                orchestrator_chunk_size=1,
+                orchestrator_max_parallel=2,
+                precision_first=SimpleNamespace(
+                    enabled=True,
+                    allowed_strategy_types=["single_leg", "vertical_spread"],
+                ),
+            )
+        ),
+        trade_service=SimpleNamespace(
+            risk=SimpleNamespace(
+                blueprint_limits=SimpleNamespace(
+                    max_daily_loss=2_000.0,
+                    max_margin_usage=0.5,
+                    portfolio_delta_limit=0.5,
+                    portfolio_gamma_limit=0.1,
+                )
+            )
+        ),
+        common=SimpleNamespace(
+            watchlist=SimpleNamespace(
+                for_trade=["AAPL", "MSFT"],
+                for_trade_benchmark=[],
+            )
+        ),
+    )
+
+    monkeypatch.setattr(
+        "services.analysis_service.app.llm.agents.orchestrator.get_settings",
+        lambda: settings,
+    )
+
+    orchestrator = AgentOrchestrator(provider=_Provider())
+
+    async def _fake_generate_single_pass(self, **kwargs):
+        trade_symbols = kwargs["trade_symbols"]
+        if trade_symbols == ["AAPL"]:
+            return _make_blueprint(
+                [("AAPL", 0.74, "single_leg", "bullish", 0.8, 1)],
+                max_total_positions=1,
+                analysis_chunk_id="chunk-0",
+            )
+        if trade_symbols == ["MSFT"]:
+            return _make_blueprint(
+                [("MSFT", 0.92, "single_leg", "bullish", 0.8, 1)],
+                max_total_positions=1,
+                analysis_chunk_id="chunk-1",
+                agent_outputs={
+                    "trend": {
+                        "symbols": [
+                            {
+                                "symbol": "MSFT",
+                                "trade_allowed": False,
+                                "confidence_cap": 0.6,
+                                "simple_structures_only": False,
+                                "blocked_reasons": ["counter_trend_setup"],
+                            }
+                        ]
+                    }
+                },
+            )
+        raise AssertionError(f"unexpected trade_symbols: {trade_symbols}")
+
+    monkeypatch.setattr(AgentOrchestrator, "_generate_single_pass", _fake_generate_single_pass)
+
+    blueprint = await orchestrator.generate([
+        _make_sf("AAPL"),
+        _make_sf("MSFT"),
+    ])
+
+    assert [plan.underlying for plan in blueprint.symbol_plans] == ["AAPL"]
+    decisions = {item["symbol"]: item for item in blueprint.reasoning_context["post_merge_phase"]["decisions"]}
+    assert decisions["AAPL"]["precision_first_score"] > decisions["MSFT"]["precision_first_score"]
+    assert decisions["MSFT"]["precision_first_breakdown"]["trade_blocked_agents"] == ["trend"]
+    assert decisions["MSFT"]["precision_first_breakdown"]["confidence_caps"]["trend"] == 0.6

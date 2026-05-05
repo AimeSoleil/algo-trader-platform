@@ -244,7 +244,7 @@ CHECKLIST
 - portfolio_gamma_limit must NOT exceed configured global risk policy cap
 - max_daily_loss must NOT exceed configured global risk policy cap
 - max_margin_usage must NOT exceed configured global risk policy cap
-- Every plan: stop_loss_amount > 0, max_loss_per_trade > 0, confidence 0-1
+- Every plan: stop_loss_amount > 0, max_loss_per_trade > 0, stop_loss_amount < max_loss_per_trade, confidence 0-1
 
 3. Agent Consistency:
 - Chain hard_block=true OR Chain liquidity_tier="L5" → symbol must NOT appear in symbol_plans
@@ -252,6 +252,15 @@ CHECKLIST
 - Sizes should reflect Flow position_size_modifier
 - If Cross-Asset master_override=true → max_position_size must respect
   Cross-Asset effective_size_modifier (cannot exceed it)
+- If Trend reports trade_allowed=false, that plan must not appear.
+- If Trend reports confidence_cap, blueprint confidence must not exceed it.
+- If Trend reports simple_structures_only=true, avoid complex multi-leg strategies.
+- If Flow or Chain reports trade_allowed=false, that plan must not appear.
+- If Flow or Chain reports confidence_cap, blueprint confidence must not exceed it.
+- If Flow or Chain reports simple_structures_only=true, avoid complex multi-leg strategies.
+- If Volatility or Spread reports trade_allowed=false, that plan must not appear.
+- If Volatility or Spread reports confidence_cap, blueprint confidence must not exceed it.
+- If Volatility or Spread reports simple_structures_only=true, avoid complex multi-leg strategies.
 
 4. Logical Completeness:
 - Every leg: expiry, strike, option_type (call/put), side (buy/sell)
@@ -259,12 +268,13 @@ CHECKLIST
 - Reasoning references specific agent analyses
 
 5. Strike Ordering Verification:
-- Vertical spread (bullish): long_strike < short_strike for calls
-- Vertical spread (bearish): short_strike < long_strike for puts
+- Vertical spread (bullish): buy_strike < sell_strike
+- Vertical spread (bearish): buy_strike > sell_strike
 - Iron condor: put_long < put_short < call_short < call_long
 - Iron butterfly: short legs at SAME strike (ATM), long wings further OTM
 - Straddle: BOTH legs SAME strike | Strangle: call_strike > put_strike
 - Calendar: SAME strike, DIFFERENT expiry | Diagonal: different strike AND different expiry
+- Fully ITM call or put verticals should be flagged as errors in precision-first mode.
 
 6. Direction ↔ Strategy Coherence:
 - bullish direction → must NOT be a bearish-only structure (e.g., vertical_spread with
@@ -300,7 +310,7 @@ CHECKLIST
 
 11. Cost Realism Guard:
 - If Spread effective_rr < 1.0 → that setup must not appear in symbol_plans.
-- If Spread effective_rr is null → confidence should be ≤ 0.5.
+- If Spread effective_rr is null → that setup must not appear in symbol_plans.
 - If Spread effective_rr and risk_reward_ratio differ by > 30%, flag as info
   (significant cost drag — reasoning should acknowledge transaction costs).
 
@@ -309,6 +319,7 @@ CHECKLIST
   reflect this: tighter stops, reduced max_position_size, or explicit acknowledgment in reasoning.
 - If event risk is flagged but the plan uses earnings-sensitive strategies (calendar, butterfly)
   without acknowledging gamma crush risk → severity=warning.
+- If earnings_proximity_days ≤ 1, only explicit earnings plays (straddle/strangle) should appear.
 
 13. Liquidity Consensus Check:
 - Cross-reference liquidity signals: Volatility liquidity_status, Chain liquidity_tier,

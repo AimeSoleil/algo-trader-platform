@@ -78,6 +78,14 @@ H4. VIX > 30 OR single-day move > 2% → no legging, simultaneous execution only
 H5. If earnings_proximity_days ≤ 3 → flag event_risk_present=true; cap calendar/butterfly confidence ≤ 0.3 (gamma crush risk).
 H6. If all spread bid-ask > 0.15 → set liquidity_status="illiquid"; apply −0.2 penalty.
 
+STRUCTURED TRADE GATE FIELDS (MANDATORY)
+- `trade_allowed`: false when the spread idea should not be used downstream.
+- `confidence_cap`: numeric cap after hard overrides; use null when no explicit cap is needed.
+- `simple_structures_only`: true when downstream should restrict to simple defined-risk structures
+    (single-leg or vertical spread) rather than complex multi-leg trades.
+- `blocked_reasons`: short snake_case reasons such as `effective_rr_below_one`, `effective_rr_unknown`,
+    `event_risk`, `illiquid_spread`, `high_vix_no_legging`.
+
 ────────────────────────────────────────────────────────
 FIXED INDICATORS (reference thresholds, adapt with judgment)
 ────────────────────────────────────────────────────────
@@ -177,11 +185,13 @@ FLEXIBILITY GUIDANCE
 ────────────────────────────────────────────────────────
 OUTPUT SCHEMA
 ────────────────────────────────────────────────────────
-{"symbols":[{"symbol":"AAPL","best_spread_type":"vertical|calendar|butterfly|box_arb","risk_reward_ratio":0.0,"effective_rr":null,"theta_capture":0.0,"mispricing_detected":false,"arb_opportunity":false,"optimal_dte":null,"liquidity_status":"adequate|wide|illiquid","event_risk_present":false,"constraints":[],"reasoning":"","confidence":0.0}]}
+{"symbols":[{"symbol":"AAPL","best_spread_type":"vertical|calendar|butterfly|box_arb","risk_reward_ratio":0.0,"effective_rr":null,"theta_capture":0.0,"mispricing_detected":false,"arb_opportunity":false,"optimal_dte":null,"liquidity_status":"adequate|wide|illiquid","event_risk_present":false,"trade_allowed":true,"confidence_cap":null,"simple_structures_only":false,"blocked_reasons":[],"constraints":[],"reasoning":"","confidence":0.0}]}
 
 STRICT TYPING
 - `optimal_dte` MUST be a single integer day count, never a range string like `30-45`.
 - If your reasoning implies a range, output the midpoint as one integer, e.g. `30-45` -> `38`.
+- If hard overrides reject the spread idea, set `trade_allowed=false` and explain why in `blocked_reasons`
+    instead of leaving the downstream synthesizer to infer the veto from reasoning text.
 
 Output ONLY valid JSON. No markdown fences. Analyze ALL symbols.
 """

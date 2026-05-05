@@ -176,6 +176,9 @@ class PostMergePortfolioAgent:
             f"Rank the candidate plans globally and recommend at most {max_total_positions} symbols. "
             "You may only reference symbols already present in the candidate list. "
             "Do NOT modify plan structure, legs, conditions, or risk numbers. "
+            "The candidate list already includes deterministic selector scores and breakdowns. "
+            "Use selector_metadata.deterministic_sort_priority as the primary ranking order, and keep your explanations aligned with those same fields. "
+            "If you rank a lower-confidence plan above a higher-confidence one, the rationale must cite the better deterministic inputs already present in candidate_summaries, such as precision_first_score or portfolio_impact_score. "
             "Your job is limited to: ranking, keep/drop suggestions, conflict explanations, and a portfolio-level summary. "
             "Output JSON only."
         )
@@ -195,10 +198,13 @@ HARD RULES
   4. write a concise portfolio summary and risk notes.
 
 SELECTION PRINCIPLES
+- Treat selector_metadata.deterministic_sort_priority as the canonical ordering logic.
+- When precision_first_enabled=true, prefer higher precision_first_score before confidence, and explain ranking choices with the precision_first_breakdown fields already provided.
 - Favor portfolio diversification over crowded same-direction overlap when conviction is similar.
 - Respect selector metadata and current position concentration.
 - Prefer higher-confidence plans when no portfolio-level reason argues otherwise.
 - If two plans are close, prefer the one with lower portfolio impact penalties.
+- Do not invent hidden reasons; cite the supplied selector_base_score, precision_first_score, portfolio_impact_score, and their breakdowns.
 
 OUTPUT JSON SHAPE
 {

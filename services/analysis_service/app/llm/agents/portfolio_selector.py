@@ -13,6 +13,7 @@ class PlanCandidate:
     original_order: int
     quality_score: float
     chunk_id: str | None = None
+    agent_outputs: dict[str, Any] | None = None
 
 
 @dataclass(frozen=True)
@@ -42,6 +43,61 @@ class PortfolioSelector:
         "collar": 0.6,
     }
 
+    _PRECISION_FIRST_COMPLEXITY_PENALTIES = {
+        "single_leg": 0.0,
+        "vertical_spread": 0.05,
+        "covered_call": 0.12,
+        "protective_put": 0.12,
+        "collar": 0.16,
+        "calendar_spread": 0.2,
+        "diagonal_spread": 0.22,
+        "butterfly": 0.24,
+        "iron_condor": 0.28,
+        "iron_butterfly": 0.28,
+        "straddle": 0.22,
+        "strangle": 0.22,
+    }
+
+    _PRECISION_FIRST_AGENT_NAMES = ("trend", "volatility", "flow", "chain", "spread")
+
+    def build_review_inputs(
+        self,
+        *,
+        candidates: list[PlanCandidate],
+        max_total_positions: int,
+        trade_symbols: set[str],
+        current_positions: dict | None = None,
+        precision_first_enabled: bool = False,
+        allowed_strategy_types: list[str] | None = None,
+    ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+        position_context = self._build_position_context(current_positions)
+        normalized_allowed_strategy_types = self._normalize_allowed_strategy_types(allowed_strategy_types)
+        candidate_summaries = [
+            self._review_candidate_summary(
+                candidate,
+                position_context,
+                precision_first_enabled=precision_first_enabled,
+                allowed_strategy_types=normalized_allowed_strategy_types,
+            )
+            for candidate in candidates
+        ]
+        selector_metadata = {
+            "candidate_count": len(candidates),
+            "max_total_positions": max_total_positions,
+            "trade_symbols": sorted(trade_symbols),
+            "ranking_method": self._ranking_method(precision_first_enabled),
+            "precision_first_enabled": precision_first_enabled,
+            "allowed_strategy_types": normalized_allowed_strategy_types,
+            "deterministic_sort_priority": self._deterministic_sort_priority(precision_first_enabled),
+            "current_position_context": {
+                "total_positions": position_context.total_positions,
+                "direction_counts": position_context.direction_counts,
+                "counts_by_underlying": position_context.counts_by_underlying,
+                "direction_by_underlying": position_context.direction_by_underlying,
+            },
+        }
+        return candidate_summaries, selector_metadata
+
     def select(
         self,
         *,
@@ -53,10 +109,13 @@ class PortfolioSelector:
         current_positions: dict | None = None,
         previous_execution: dict | None = None,
         llm_review: dict[str, Any] | None = None,
+        precision_first_enabled: bool = False,
+        allowed_strategy_types: list[str] | None = None,
     ) -> tuple[list[SymbolPlan], dict[str, Any], dict[str, Any]]:
         position_context = self._build_position_context(current_positions)
         llm_rank_positions = self._llm_rank_positions(llm_review)
         llm_selected_symbols = self._llm_selected_symbols(llm_review)
+        normalized_allowed_strategy_types = self._normalize_allowed_strategy_types(allowed_strategy_types)
         filtered_candidates = [
             candidate for candidate in candidates
             if candidate.plan.underlying.upper() in trade_symbols
@@ -73,14 +132,35 @@ class PortfolioSelector:
         for symbol, symbol_candidates in candidates_by_symbol.items():
             ranked_candidates = sorted(
                 symbol_candidates,
-                key=lambda candidate: self._candidate_sort_key(candidate, position_context, llm_rank_positions),
+                key=lambda candidate: self._candidate_sort_key(
+                    candidate,
+                    position_context,
+                    llm_rank_positions,
+                    precision_first_enabled=precision_first_enabled,
+                    allowed_strategy_types=normalized_allowed_strategy_types,
+                ),
                 reverse=True,
             )
             winner = ranked_candidates[0]
             deduped_candidates.append(winner)
-            winner_score = self._candidate_score(winner, position_context)
+            winner_score = self._candidate_score(
+                winner,
+                position_context,
+                precision_first_enabled=precision_first_enabled,
+                allowed_strategy_types=normalized_allowed_strategy_types,
+            )
             winner_impact = self._portfolio_impact_score(winner, position_context)
             winner_breakdown = self._portfolio_impact_breakdown(winner, position_context)
+            winner_precision_score = self._precision_first_score(
+                winner,
+                precision_first_enabled=precision_first_enabled,
+                allowed_strategy_types=normalized_allowed_strategy_types,
+            )
+            winner_precision_breakdown = self._precision_first_breakdown(
+                winner,
+                precision_first_enabled=precision_first_enabled,
+                allowed_strategy_types=normalized_allowed_strategy_types,
+            )
             winner_llm_rank = llm_rank_positions.get(symbol)
 
             losers = ranked_candidates[1:]
@@ -91,6 +171,8 @@ class PortfolioSelector:
                 "selected_score": winner_score,
                 "selected_portfolio_impact_score": winner_impact,
                 "selected_portfolio_impact_breakdown": winner_breakdown,
+                "selected_precision_first_score": winner_precision_score,
+                "selected_precision_first_breakdown": winner_precision_breakdown,
                 "selected_llm_rank": winner_llm_rank,
                 "dropped_chunk_indexes": [candidate.chunk_index for candidate in losers],
                 "dropped_chunk_ids": [candidate.chunk_id for candidate in losers],
@@ -105,6 +187,8 @@ class PortfolioSelector:
                 "data_quality_score": round(winner.quality_score, 6),
                 "portfolio_impact_score": winner_impact,
                 "portfolio_impact_breakdown": winner_breakdown,
+                "precision_first_score": winner_precision_score,
+                "precision_first_breakdown": winner_precision_breakdown,
                 "llm_rank": winner_llm_rank,
                 "chunk_index": winner.chunk_index,
                 "chunk_id": winner.chunk_id,
@@ -113,7 +197,13 @@ class PortfolioSelector:
 
         ranked_plans = sorted(
             deduped_candidates,
-            key=lambda candidate: self._candidate_sort_key(candidate, position_context, llm_rank_positions),
+            key=lambda candidate: self._candidate_sort_key(
+                candidate,
+                position_context,
+                llm_rank_positions,
+                precision_first_enabled=precision_first_enabled,
+                allowed_strategy_types=normalized_allowed_strategy_types,
+            ),
             reverse=True,
         )
         limit = max(1, int(max_total_positions))
@@ -125,11 +215,26 @@ class PortfolioSelector:
                 "symbol": candidate.plan.underlying.upper(),
                 "action": "filtered",
                 "reason": "portfolio_rank_below_cutoff",
-                "score": self._candidate_score(candidate, position_context),
+                "score": self._candidate_score(
+                    candidate,
+                    position_context,
+                    precision_first_enabled=precision_first_enabled,
+                    allowed_strategy_types=normalized_allowed_strategy_types,
+                ),
                 "confidence": round(candidate.plan.confidence, 6),
                 "data_quality_score": round(candidate.quality_score, 6),
                 "portfolio_impact_score": self._portfolio_impact_score(candidate, position_context),
                 "portfolio_impact_breakdown": self._portfolio_impact_breakdown(candidate, position_context),
+                "precision_first_score": self._precision_first_score(
+                    candidate,
+                    precision_first_enabled=precision_first_enabled,
+                    allowed_strategy_types=normalized_allowed_strategy_types,
+                ),
+                "precision_first_breakdown": self._precision_first_breakdown(
+                    candidate,
+                    precision_first_enabled=precision_first_enabled,
+                    allowed_strategy_types=normalized_allowed_strategy_types,
+                ),
                 "llm_rank": llm_rank_positions.get(candidate.plan.underlying.upper()),
                 "chunk_index": candidate.chunk_index,
                 "chunk_id": candidate.chunk_id,
@@ -148,14 +253,17 @@ class PortfolioSelector:
         }
 
         metadata = {
-            "selector_version": "v1",
-            "ranking_method": "confidence_quality_portfolio_impact_weighted",
+            "selector_version": "v2",
+            "ranking_method": self._ranking_method(precision_first_enabled),
             "input_plan_count": len(candidates),
             "trade_candidate_count": len(filtered_candidates),
             "deduped_plan_count": len(deduped_candidates),
             "output_plan_count": len(selected_plans),
             "selected_symbols": selected_symbols,
             "filtered_symbols": filtered_symbols,
+            "precision_first_enabled": precision_first_enabled,
+            "allowed_strategy_types": normalized_allowed_strategy_types,
+            "deterministic_sort_priority": self._deterministic_sort_priority(precision_first_enabled),
             "current_position_count": self._position_count(current_positions),
             "current_position_context": {
                 "total_positions": position_context.total_positions,
@@ -204,12 +312,62 @@ class PortfolioSelector:
         }
         return selected_plans, final_limits, metadata
 
-    def _candidate_score(self, candidate: PlanCandidate, position_context: PositionContext) -> float:
+    def _review_candidate_summary(
+        self,
+        candidate: PlanCandidate,
+        position_context: PositionContext,
+        *,
+        precision_first_enabled: bool,
+        allowed_strategy_types: list[str],
+    ) -> dict[str, Any]:
+        portfolio_impact_breakdown = self._portfolio_impact_breakdown(candidate, position_context)
+        precision_first_breakdown = self._precision_first_breakdown(
+            candidate,
+            precision_first_enabled=precision_first_enabled,
+            allowed_strategy_types=allowed_strategy_types,
+        )
+        return {
+            "symbol": candidate.plan.underlying.upper(),
+            "strategy_type": candidate.plan.strategy_type.value,
+            "direction": candidate.plan.direction.value,
+            "confidence": round(candidate.plan.confidence, 6),
+            "data_quality_score": round(candidate.quality_score, 6),
+            "max_position_size": candidate.plan.max_position_size,
+            "max_contracts": candidate.plan.max_contracts,
+            "chunk_index": candidate.chunk_index,
+            "chunk_id": candidate.chunk_id,
+            "original_order": candidate.original_order,
+            "selector_base_score": self._candidate_score(
+                candidate,
+                position_context,
+                precision_first_enabled=precision_first_enabled,
+                allowed_strategy_types=allowed_strategy_types,
+            ),
+            "portfolio_impact_score": portfolio_impact_breakdown["portfolio_impact_score"],
+            "portfolio_impact_breakdown": portfolio_impact_breakdown,
+            "precision_first_score": precision_first_breakdown["precision_first_score"],
+            "precision_first_breakdown": precision_first_breakdown,
+        }
+
+    def _candidate_score(
+        self,
+        candidate: PlanCandidate,
+        position_context: PositionContext,
+        *,
+        precision_first_enabled: bool,
+        allowed_strategy_types: list[str],
+    ) -> float:
         portfolio_impact_score = self._portfolio_impact_score(candidate, position_context)
+        precision_first_score = self._precision_first_score(
+            candidate,
+            precision_first_enabled=precision_first_enabled,
+            allowed_strategy_types=allowed_strategy_types,
+        )
         return round(
-            candidate.plan.confidence * 0.65
+            candidate.plan.confidence * 0.5
             + candidate.quality_score * 0.15
-            + portfolio_impact_score * 0.20,
+            + portfolio_impact_score * 0.15
+            + precision_first_score * 0.20,
             6,
         )
 
@@ -218,19 +376,167 @@ class PortfolioSelector:
         candidate: PlanCandidate,
         position_context: PositionContext,
         llm_rank_positions: dict[str, int],
-    ) -> tuple[float, float, float, float, float, int]:
+        *,
+        precision_first_enabled: bool,
+        allowed_strategy_types: list[str],
+    ) -> tuple[float, float, float, float, float, float, int]:
         symbol = candidate.plan.underlying.upper()
         llm_priority = 0.0
         if symbol in llm_rank_positions:
             llm_priority = round(1.0 / (llm_rank_positions[symbol] + 1), 6)
+        precision_first_score = self._precision_first_score(
+            candidate,
+            precision_first_enabled=precision_first_enabled,
+            allowed_strategy_types=allowed_strategy_types,
+        )
         return (
+            precision_first_score,
             llm_priority,
-            self._candidate_score(candidate, position_context),
+            self._candidate_score(
+                candidate,
+                position_context,
+                precision_first_enabled=precision_first_enabled,
+                allowed_strategy_types=allowed_strategy_types,
+            ),
             round(candidate.plan.confidence, 6),
             round(candidate.quality_score, 6),
             self._portfolio_impact_score(candidate, position_context),
             -candidate.original_order,
         )
+
+    def _precision_first_score(
+        self,
+        candidate: PlanCandidate,
+        *,
+        precision_first_enabled: bool,
+        allowed_strategy_types: list[str],
+    ) -> float:
+        return self._precision_first_breakdown(
+            candidate,
+            precision_first_enabled=precision_first_enabled,
+            allowed_strategy_types=allowed_strategy_types,
+        )["precision_first_score"]
+
+    def _precision_first_breakdown(
+        self,
+        candidate: PlanCandidate,
+        *,
+        precision_first_enabled: bool,
+        allowed_strategy_types: list[str],
+    ) -> dict[str, Any]:
+        strategy_type = str(getattr(candidate.plan.strategy_type, "value", candidate.plan.strategy_type)).lower()
+        allowed_set = {item.lower() for item in allowed_strategy_types}
+
+        if not precision_first_enabled:
+            return {
+                "precision_first_score": 1.0,
+                "strategy_type": strategy_type,
+                "allowed_strategy_types": sorted(allowed_set),
+                "strategy_scope_penalty": 0.0,
+                "complexity_penalty": 0.0,
+                "trade_block_penalty": 0.0,
+                "confidence_cap_penalty": 0.0,
+                "simple_structure_penalty": 0.0,
+                "blocked_reason_penalty": 0.0,
+                "trade_blocked_agents": [],
+                "simple_structure_conflict_agents": [],
+                "confidence_caps": {},
+                "blocked_reasons": [],
+                "total_penalty": 0.0,
+            }
+
+        strategy_scope_penalty = 0.0
+        if allowed_set and strategy_type not in allowed_set:
+            strategy_scope_penalty = 0.75
+
+        complexity_penalty = self._PRECISION_FIRST_COMPLEXITY_PENALTIES.get(strategy_type, 0.24)
+        simple_structure_types = allowed_set or {"single_leg", "vertical_spread"}
+        trade_blocked_agents: list[str] = []
+        simple_structure_conflict_agents: list[str] = []
+        confidence_caps: dict[str, float] = {}
+        blocked_reasons: list[str] = []
+
+        for agent_name in self._PRECISION_FIRST_AGENT_NAMES:
+            symbol_analysis = self._symbol_agent_analysis(candidate, agent_name)
+            if not symbol_analysis:
+                continue
+
+            if symbol_analysis.get("trade_allowed") is False:
+                trade_blocked_agents.append(agent_name)
+
+            confidence_cap = symbol_analysis.get("confidence_cap")
+            if isinstance(confidence_cap, (int, float)):
+                confidence_caps[agent_name] = round(float(confidence_cap), 6)
+
+            if symbol_analysis.get("simple_structures_only") and strategy_type not in simple_structure_types:
+                simple_structure_conflict_agents.append(agent_name)
+
+            reasons = symbol_analysis.get("blocked_reasons")
+            if isinstance(reasons, list):
+                blocked_reasons.extend(
+                    str(reason).strip()
+                    for reason in reasons
+                    if str(reason).strip()
+                )
+
+        trade_block_penalty = min(0.75, len(trade_blocked_agents) * 0.35)
+
+        min_confidence_cap = min(confidence_caps.values(), default=None)
+        confidence_cap_penalty = 0.0
+        if min_confidence_cap is not None and candidate.plan.confidence > min_confidence_cap:
+            confidence_cap_penalty = min(0.25, round(candidate.plan.confidence - min_confidence_cap, 6))
+
+        simple_structure_penalty = min(0.3, len(simple_structure_conflict_agents) * 0.14)
+        unique_blocked_reasons = sorted(set(blocked_reasons))
+        blocked_reason_penalty = min(0.12, len(unique_blocked_reasons) * 0.03)
+        total_penalty = min(
+            0.98,
+            round(
+                strategy_scope_penalty
+                + complexity_penalty
+                + trade_block_penalty
+                + confidence_cap_penalty
+                + simple_structure_penalty
+                + blocked_reason_penalty,
+                6,
+            ),
+        )
+
+        return {
+            "precision_first_score": round(max(0.0, 1.0 - total_penalty), 6),
+            "strategy_type": strategy_type,
+            "allowed_strategy_types": sorted(allowed_set),
+            "strategy_scope_penalty": round(strategy_scope_penalty, 6),
+            "complexity_penalty": round(complexity_penalty, 6),
+            "trade_block_penalty": round(trade_block_penalty, 6),
+            "confidence_cap_penalty": round(confidence_cap_penalty, 6),
+            "simple_structure_penalty": round(simple_structure_penalty, 6),
+            "blocked_reason_penalty": round(blocked_reason_penalty, 6),
+            "trade_blocked_agents": trade_blocked_agents,
+            "simple_structure_conflict_agents": simple_structure_conflict_agents,
+            "confidence_caps": confidence_caps,
+            "blocked_reasons": unique_blocked_reasons,
+            "total_penalty": round(total_penalty, 6),
+        }
+
+    def _symbol_agent_analysis(self, candidate: PlanCandidate, agent_name: str) -> dict[str, Any] | None:
+        agent_outputs = candidate.agent_outputs or {}
+        agent_output = agent_outputs.get(agent_name)
+        if not isinstance(agent_output, dict):
+            return None
+
+        symbol_analyses = agent_output.get("symbols")
+        if not isinstance(symbol_analyses, list):
+            return None
+
+        symbol = candidate.plan.underlying.upper()
+        for item in symbol_analyses:
+            if not isinstance(item, dict):
+                continue
+            item_symbol = str(item.get("symbol") or "").strip().upper()
+            if item_symbol == symbol:
+                return item
+        return None
 
     def _portfolio_impact_score(self, candidate: PlanCandidate, position_context: PositionContext) -> float:
         return self._portfolio_impact_breakdown(candidate, position_context)["portfolio_impact_score"]
@@ -382,3 +688,17 @@ class PortfolioSelector:
         if not isinstance(selected_symbols, list):
             return set()
         return {str(symbol).strip().upper() for symbol in selected_symbols if str(symbol).strip()}
+
+    def _normalize_allowed_strategy_types(self, allowed_strategy_types: list[str] | None) -> list[str]:
+        return [str(item).lower() for item in (allowed_strategy_types or []) if str(item).strip()]
+
+    def _ranking_method(self, precision_first_enabled: bool) -> str:
+        if precision_first_enabled:
+            return "precision_first_confidence_quality_portfolio_impact_weighted"
+        return "confidence_quality_portfolio_impact_weighted"
+
+    def _deterministic_sort_priority(self, precision_first_enabled: bool) -> list[str]:
+        priority = ["selector_base_score", "confidence", "data_quality_score", "portfolio_impact_score", "original_order"]
+        if precision_first_enabled:
+            return ["precision_first_score", *priority]
+        return priority

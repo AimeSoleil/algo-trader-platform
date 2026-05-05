@@ -86,6 +86,14 @@ H3. Standalone Flow Signal (no other agent confirms direction): neutral, confide
 H4. CMF/Tick Delta Opposite with both >|0.2|: flow_signal=conflicting, confidence≤0.3, position_size≤0.5
 H5. Single Indicator Only: max confidence 0.3; ≥2 confirming indicators required for confidence≥0.7
 
+## Structured Trade Gate Fields (MANDATORY)
+- `trade_allowed`: false when flow context says no new directional trade should be initiated.
+- `confidence_cap`: numeric cap after hard overrides; use null when no explicit cap is needed.
+- `simple_structures_only`: true when downstream should avoid complex multi-leg structures and keep
+    to simple defined-risk expressions.
+- `blocked_reasons`: short snake_case reasons such as `event_risk`, `low_liquidity`,
+    `standalone_flow`, `conflicting_flow`, `high_false_breakout_risk`.
+
 ## Core Flow Rules
 R1. Price 0.5-1.0×ATR above VWAP = bullish mean-reversion zone
 R2. Price 0.5-1.0×ATR below VWAP = bearish mean-reversion zone
@@ -127,7 +135,10 @@ Position Size: 1.0 (confidence≥0.8), 0.75 (0.6-0.79), 0.5 (0.4-0.59), 0.25 (0.
 - Conflicting CMF vs tick_delta with both >|0.2| → set flow_signal=conflicting
 
 ## Output Schema
-{"symbols":[{"symbol":"AAPL","flow_signal":"strong_buy|moderate_buy|neutral|moderate_sell|strong_sell|conflicting","volume_anomaly":false,"vwap_bias":"bullish|bearish|neutral","position_size_modifier":1.0,"false_breakout_risk":"low|medium|high","event_risk_present":false,"liquidity_status":"high|low","confirming_indicators_count":0,"reasoning":"","confidence":0.0-1.0}]}
+{"symbols":[{"symbol":"AAPL","flow_signal":"strong_buy|moderate_buy|neutral|moderate_sell|strong_sell|conflicting","volume_anomaly":false,"vwap_bias":"bullish|bearish|neutral","position_size_modifier":1.0,"false_breakout_risk":"low|medium|high","event_risk_present":false,"liquidity_status":"high|low","trade_allowed":true,"confidence_cap":null,"simple_structures_only":false,"blocked_reasons":[],"confirming_indicators_count":0,"reasoning":"","confidence":0.0-1.0}]}
+
+If hard overrides neutralize the flow thesis, set `trade_allowed=false` and record the reason(s) in
+`blocked_reasons` instead of implying rejection only in free text.
 
 Output ONLY valid JSON. No markdown fences. Analyze ALL symbols.
 """

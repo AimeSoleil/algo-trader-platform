@@ -85,6 +85,14 @@ H3. Low Liquidity: -0.2 confidence penalty; prefer simple 2-leg strategies over 
 H4. Backwardation + DTE<7: No short vol strategies
 H5. Single-Indicator Signals: Max confidence 0.3; ≥2 confirming indicators required for ≥0.7 confidence
 
+## Structured Trade Gate Fields (MANDATORY)
+- `trade_allowed`: false only when you believe no new options position should be initiated for this symbol.
+- `confidence_cap`: numeric cap after applying hard overrides; use null when no explicit cap is needed.
+- `simple_structures_only`: true when volatility context allows only simple defined-risk structures
+    (single-leg or vertical spread) and should avoid complex multi-leg trades.
+- `blocked_reasons`: short snake_case reasons such as `event_risk`, `no_vol_edge`, `low_liquidity`,
+    `backwardation_short_vol_block`, `iv_divergence`, `single_indicator_only`.
+
 ## Regime & Strategy Rules
 R1. High Conviction Sell: IV Rank>70 + Percentile align <10pts + GARCH<IV + Contango → Iron Condor, Credit Spreads, Strangle | DTE21-45d, 16/84 delta, defined risk, stop if IV rises >10%
 R2. High Conviction Buy: IV Rank<30 + Percentile align <10pts + GARCH>IV + Squeeze → Straddle, Calendar, Debit Spreads | DTE14-30d, ATM, stop if IV drops >15%, TP 50% max gain
@@ -110,7 +118,7 @@ R6. High IV + Backwardation: Iron Butterfly ONLY, DTE>14d
 - Surface arb requires >2x bid-ask error (or fit_error/ATM_IV>0.03 if no spread data) + ≥3 liquid anomalous strikes
 
 ## Output Schema
-{"symbols":[{"symbol":"AAPL","vol_regime":"high_vol|low_vol|normal_vol|squeeze|backwardation|event_risk|high_vol_backwardation|high_vol_event_risk|low_vol_squeeze|backwardation_event_risk","iv_rank_zone":"high|low|neutral","iv_percentile_divergence":false,"hv_iv_assessment":"implied_rich|realized_exceeds|neutral","garch_divergence":false,"garch_divergence_direction":"vol_rise|vol_fall|null","surface_mispricing":false,"event_risk_present":false,"liquidity_status":"high|low","strategies":[{"strategy_type":"","direction":"long_vol|short_vol|neutral","entry_conditions":"","exit_conditions":"","mandatory_constraints":[],"reasoning":"","confidence":0.0-1.0}],"reasoning":"","confidence":0.0-1.0}],"market_vol_summary":""}
+{"symbols":[{"symbol":"AAPL","vol_regime":"high_vol|low_vol|normal_vol|squeeze|backwardation|event_risk|high_vol_backwardation|high_vol_event_risk|low_vol_squeeze|backwardation_event_risk","iv_rank_zone":"high|low|neutral","iv_percentile_divergence":false,"hv_iv_assessment":"implied_rich|realized_exceeds|neutral","garch_divergence":false,"garch_divergence_direction":"vol_rise|vol_fall|null","surface_mispricing":false,"event_risk_present":false,"liquidity_status":"high|low","trade_allowed":true,"confidence_cap":null,"simple_structures_only":false,"blocked_reasons":[],"strategies":[{"strategy_type":"","direction":"long_vol|short_vol|neutral","entry_conditions":"","exit_conditions":"","mandatory_constraints":[],"reasoning":"","confidence":0.0-1.0}],"reasoning":"","confidence":0.0-1.0}],"market_vol_summary":""}
 
 ## Compound Regime Selection
 Use a compound regime (e.g. high_vol_backwardation) when TWO conditions are simultaneously confirmed.
@@ -120,6 +128,9 @@ Use a compound regime (e.g. high_vol_backwardation) when TWO conditions are simu
 - backwardation_event_risk: term structure inverted AND earnings_proximity_days≤5 → no short vol; defined-risk long only
 
 Important: vol_regime must be a SINGLE string value from the list above. Never combine two values with a comma.
+
+If hard overrides leave no acceptable new options trade, set `trade_allowed=false`, keep `strategies=[]`,
+and record the reason(s) in `blocked_reasons` instead of implying "no trade" only in free text.
 
 Output ONLY valid JSON. No markdown fences. Analyze ALL symbols.
 """

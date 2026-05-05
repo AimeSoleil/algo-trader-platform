@@ -107,6 +107,10 @@ class TrendSymbolAnalysis(SymbolAnalysis):
     divergence_detected: bool = False
     divergence_type: str | None = None  # "rsi_macd_bullish", "rsi_macd_bearish"
     false_positive_risk: str = "medium"  # "low", "medium", "high"
+    trade_allowed: bool = True
+    confidence_cap: float | None = Field(None, ge=0.0, le=1.0)
+    simple_structures_only: bool = False
+    blocked_reasons: list[str] = Field(default_factory=list)
     strategies: list[StrategyCandidate] = Field(default_factory=list)
 
 
@@ -135,6 +139,10 @@ class VolatilitySymbolAnalysis(SymbolAnalysis):
     surface_mispricing: bool = False
     event_risk_present: bool = False
     liquidity_status: str = Field("high", description="high or low")
+    trade_allowed: bool = True
+    confidence_cap: float | None = Field(None, ge=0.0, le=1.0)
+    simple_structures_only: bool = False
+    blocked_reasons: list[str] = Field(default_factory=list)
     strategies: list[StrategyCandidate] = Field(default_factory=list)
 
 
@@ -153,6 +161,10 @@ class FlowSymbolAnalysis(SymbolAnalysis):
     false_breakout_risk: str = Field("low", description="low, medium, or high")
     event_risk_present: bool = False
     liquidity_status: str = Field("high", description="high or low")
+    trade_allowed: bool = True
+    confidence_cap: float | None = Field(None, ge=0.0, le=1.0)
+    simple_structures_only: bool = False
+    blocked_reasons: list[str] = Field(default_factory=list)
     confirming_indicators_count: int = Field(0, ge=0, description="Number of confirming flow indicators")
 
 
@@ -168,6 +180,10 @@ class ChainSymbolAnalysis(SymbolAnalysis):
     hard_block: bool = False  # bid-ask ratio > 0.20
     liquidity_tier: str = Field("L1", description="L1 (excellent) through L5 (hard block)")
     event_risk_present: bool = False
+    trade_allowed: bool = True
+    confidence_cap: float | None = Field(None, ge=0.0, le=1.0)
+    simple_structures_only: bool = False
+    blocked_reasons: list[str] = Field(default_factory=list)
     pcr_signal: str = "neutral"  # "contrarian_bullish", "contrarian_bearish", "directional_bullish", "directional_bearish", "neutral"
     gamma_pin_active: bool = False
     gamma_pin_strike: float | None = None
@@ -194,6 +210,10 @@ class SpreadSymbolAnalysis(SymbolAnalysis):
     optimal_dte: int | None = None
     liquidity_status: str = Field("adequate", description="adequate, wide, illiquid")
     event_risk_present: bool = False
+    trade_allowed: bool = True
+    confidence_cap: float | None = Field(None, ge=0.0, le=1.0)
+    simple_structures_only: bool = False
+    blocked_reasons: list[str] = Field(default_factory=list)
     constraints: list[str] = Field(default_factory=list)
 
     @field_validator("optimal_dte", mode="before")

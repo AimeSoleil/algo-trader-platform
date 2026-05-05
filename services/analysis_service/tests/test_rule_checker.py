@@ -112,6 +112,12 @@ class TestPlanRisk:
         )
         assert any(i.rule == "stop_loss_exceeds_max_loss" for i in result.issues)
 
+    def test_stop_loss_equal_max_loss_error(self):
+        result = check_blueprint(
+            _blueprint(symbol_plans=[_plan(stop_loss_amount=500.0, max_loss_per_trade=500.0)])
+        )
+        assert any(i.rule == "stop_loss_equals_max_loss" for i in result.issues)
+
     def test_risk_reward_below_one_warning(self):
         result = check_blueprint(
             _blueprint(symbol_plans=[_plan(take_profit_amount=300.0, max_loss_per_trade=500.0)])
@@ -212,6 +218,50 @@ class TestContextAwareChecks:
         warns = [i for i in result.issues if i.rule == "bid_ask_illiquid"]
         assert len(warns) == 1
         assert warns[0].severity == "warning"
+
+    def test_fully_itm_vertical_spread_error(self):
+        signals = {
+            "AAPL": {
+                "close_price": 100.0,
+                "stock_indicators": {},
+                "option_indicators": {"current_iv": 0.3},
+                "cross_asset_indicators": {},
+            }
+        }
+        result = check_blueprint(
+            _blueprint(symbol_plans=[_plan(
+                strategy_type="vertical_spread",
+                direction="bullish",
+                legs=[
+                    _leg(strike=90, option_type="call", side="buy"),
+                    _leg(strike=95, option_type="call", side="sell"),
+                ],
+            )]),
+            signal_features=signals,
+        )
+        assert any(i.rule == "vertical_spread_fully_itm" and i.severity == "error" for i in result.issues)
+
+    def test_earnings_imminent_non_event_strategy_error(self):
+        signals = {
+            "AAPL": {
+                "close_price": 100.0,
+                "stock_indicators": {},
+                "option_indicators": {"current_iv": 0.3},
+                "cross_asset_indicators": {"earnings_proximity_days": 1},
+            }
+        }
+        result = check_blueprint(
+            _blueprint(symbol_plans=[_plan(
+                strategy_type="vertical_spread",
+                direction="bullish",
+                legs=[
+                    _leg(strike=100, option_type="call", side="buy"),
+                    _leg(strike=110, option_type="call", side="sell"),
+                ],
+            )]),
+            signal_features=signals,
+        )
+        assert any(i.rule == "earnings_imminent_non_event_strategy" for i in result.issues)
 
 
 # ---------------------------------------------------------------------------
@@ -648,7 +698,7 @@ class TestSpreadEffectiveRR:
         )
         assert any(i.rule == "spread_effective_rr_reject" and i.severity == "error" for i in result.issues)
 
-    def test_effective_rr_null_high_confidence_warning(self):
+    def test_effective_rr_null_rejected(self):
         ao = _agent_outputs(
             spread=[{"symbol": "AAPL", "effective_rr": None}],
         )
@@ -666,7 +716,7 @@ class TestSpreadEffectiveRR:
             )]),
             agent_outputs=ao,
         )
-        assert any(i.rule == "spread_effective_rr_unknown" and i.severity == "warning" for i in result.issues)
+        assert any(i.rule == "spread_effective_rr_unknown" and i.severity == "error" for i in result.issues)
 
     def test_effective_rr_ok_for_single_leg(self):
         """Single leg is not a spread strategy — skip check."""
@@ -678,6 +728,174 @@ class TestSpreadEffectiveRR:
             agent_outputs=ao,
         )
         assert not any(i.rule.startswith("spread_effective_rr") for i in result.issues)
+
+
+class TestStructuredAgentTradeGates:
+    def test_trend_trade_allowed_false_error(self):
+        ao = _agent_outputs(
+            trend=[{
+                "symbol": "AAPL",
+                "trade_allowed": False,
+                "blocked_reasons": ["counter_trend_strong_adx", "divergence_reversal_warning"],
+            }],
+        )
+        result = check_blueprint(_blueprint(), agent_outputs=ao)
+        assert any(i.rule == "trend_trade_blocked" and i.severity == "error" for i in result.issues)
+
+    def test_trend_confidence_cap_error(self):
+        ao = _agent_outputs(
+            trend=[{
+                "symbol": "AAPL",
+                "confidence_cap": 0.2,
+                "blocked_reasons": ["counter_trend_strong_adx"],
+            }],
+        )
+        result = check_blueprint(
+            _blueprint(symbol_plans=[_plan(confidence=0.7)]),
+            agent_outputs=ao,
+        )
+        assert any(i.rule == "trend_confidence_cap" and i.severity == "error" for i in result.issues)
+
+    def test_trend_simple_structures_only_error(self):
+        ao = _agent_outputs(
+            trend=[{
+                "symbol": "AAPL",
+                "simple_structures_only": True,
+                "blocked_reasons": ["divergence_reversal_warning"],
+            }],
+        )
+        result = check_blueprint(
+            _blueprint(symbol_plans=[_plan(
+                strategy_type="iron_condor",
+                direction="neutral",
+                legs=[
+                    _leg(strike=140, option_type="put", side="buy"),
+                    _leg(strike=145, option_type="put", side="sell"),
+                    _leg(strike=155, option_type="call", side="sell"),
+                    _leg(strike=160, option_type="call", side="buy"),
+                ],
+            )]),
+            agent_outputs=ao,
+        )
+        assert any(i.rule == "trend_simple_structures_only" for i in result.issues)
+
+    def test_flow_trade_allowed_false_error(self):
+        ao = _agent_outputs(
+            flow=[{
+                "symbol": "AAPL",
+                "trade_allowed": False,
+                "blocked_reasons": ["standalone_flow", "high_false_breakout_risk"],
+            }],
+        )
+        result = check_blueprint(_blueprint(), agent_outputs=ao)
+        assert any(i.rule == "flow_trade_blocked" and i.severity == "error" for i in result.issues)
+
+    def test_flow_confidence_cap_error(self):
+        ao = _agent_outputs(
+            flow=[{
+                "symbol": "AAPL",
+                "confidence_cap": 0.3,
+                "blocked_reasons": ["single_indicator_only"],
+            }],
+        )
+        result = check_blueprint(
+            _blueprint(symbol_plans=[_plan(confidence=0.7)]),
+            agent_outputs=ao,
+        )
+        assert any(i.rule == "flow_confidence_cap" and i.severity == "error" for i in result.issues)
+
+    def test_chain_trade_allowed_false_error(self):
+        ao = _agent_outputs(
+            chain=[{
+                "symbol": "AAPL",
+                "trade_allowed": False,
+                "blocked_reasons": ["event_risk", "conflicting_chain_signals"],
+            }],
+        )
+        result = check_blueprint(_blueprint(), agent_outputs=ao)
+        assert any(i.rule == "chain_trade_blocked" and i.severity == "error" for i in result.issues)
+
+    def test_chain_simple_structures_only_error(self):
+        ao = _agent_outputs(
+            chain=[{
+                "symbol": "AAPL",
+                "simple_structures_only": True,
+                "blocked_reasons": ["low_liquidity"],
+            }],
+        )
+        result = check_blueprint(
+            _blueprint(symbol_plans=[_plan(
+                strategy_type="iron_condor",
+                direction="neutral",
+                legs=[
+                    _leg(strike=140, option_type="put", side="buy"),
+                    _leg(strike=145, option_type="put", side="sell"),
+                    _leg(strike=155, option_type="call", side="sell"),
+                    _leg(strike=160, option_type="call", side="buy"),
+                ],
+            )]),
+            agent_outputs=ao,
+        )
+        assert any(i.rule == "chain_simple_structures_only" for i in result.issues)
+
+    def test_volatility_trade_allowed_false_error(self):
+        ao = _agent_outputs(
+            volatility=[{
+                "symbol": "AAPL",
+                "trade_allowed": False,
+                "blocked_reasons": ["event_risk", "no_vol_edge"],
+            }],
+        )
+        result = check_blueprint(_blueprint(), agent_outputs=ao)
+        assert any(i.rule == "volatility_trade_blocked" and i.severity == "error" for i in result.issues)
+
+    def test_volatility_simple_structures_only_error(self):
+        ao = _agent_outputs(
+            volatility=[{
+                "symbol": "AAPL",
+                "simple_structures_only": True,
+                "blocked_reasons": ["low_liquidity"],
+            }],
+        )
+        result = check_blueprint(
+            _blueprint(symbol_plans=[_plan(
+                strategy_type="iron_condor",
+                direction="neutral",
+                legs=[
+                    _leg(strike=140, option_type="put", side="buy"),
+                    _leg(strike=145, option_type="put", side="sell"),
+                    _leg(strike=155, option_type="call", side="sell"),
+                    _leg(strike=160, option_type="call", side="buy"),
+                ],
+            )]),
+            agent_outputs=ao,
+        )
+        assert any(i.rule == "volatility_simple_structures_only" for i in result.issues)
+
+    def test_spread_confidence_cap_error(self):
+        ao = _agent_outputs(
+            spread=[{
+                "symbol": "AAPL",
+                "confidence_cap": 0.4,
+                "blocked_reasons": ["effective_rr_unknown"],
+            }],
+        )
+        result = check_blueprint(
+            _blueprint(symbol_plans=[_plan(
+                strategy_type="vertical_spread",
+                confidence=0.7,
+                legs=[_leg(strike=150, option_type="call", side="buy"), _leg(strike=160, option_type="call", side="sell")],
+            )]),
+            agent_outputs=ao,
+        )
+        assert any(i.rule == "spread_confidence_cap" and i.severity == "error" for i in result.issues)
+
+    def test_spread_trade_gate_ignored_for_single_leg(self):
+        ao = _agent_outputs(
+            spread=[{"symbol": "AAPL", "trade_allowed": False, "blocked_reasons": ["effective_rr_below_one"]}],
+        )
+        result = check_blueprint(_blueprint(), agent_outputs=ao)
+        assert not any(i.rule.startswith("spread_") and i.rule.endswith("trade_blocked") for i in result.issues)
 
 
 class TestEventRiskConsensus:
@@ -823,3 +1041,38 @@ class TestCrossAssetQualityGuards:
             signal_features=signals,
         )
         assert any(i.rule == "cross_asset_low_quality_position_size" for i in result.issues)
+
+
+class TestComputedPortfolioDelta:
+    def test_computed_portfolio_delta_exceeds_limit_error(self):
+        signals = {
+            "AAPL": {
+                "close_price": 100.0,
+                "stock_indicators": {},
+                "option_indicators": {"current_iv": 0.3},
+            },
+            "MSFT": {
+                "close_price": 100.0,
+                "stock_indicators": {},
+                "option_indicators": {"current_iv": 0.3},
+            },
+        }
+        result = check_blueprint(
+            _blueprint(
+                portfolio_delta_limit=0.5,
+                symbol_plans=[
+                    _plan(
+                        underlying="AAPL",
+                        strategy_type="single_leg",
+                        legs=[_leg(strike=100, option_type="call", side="buy")],
+                    ),
+                    _plan(
+                        underlying="MSFT",
+                        strategy_type="single_leg",
+                        legs=[_leg(strike=100, option_type="call", side="buy")],
+                    ),
+                ],
+            ),
+            signal_features=signals,
+        )
+        assert any(i.rule == "computed_portfolio_delta_limit" and i.severity == "error" for i in result.issues)
