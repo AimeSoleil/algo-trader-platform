@@ -32,6 +32,10 @@ def _coerce_int_like(value: Any) -> Any:
     return int(round(sum(numbers) / len(numbers)))
 
 
+def _normalize_enum_token(value: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "_", value.strip().lower()).strip("_")
+
+
 # ---------------------------------------------------------------------------
 # Shared types
 # ---------------------------------------------------------------------------
@@ -53,10 +57,14 @@ class VolRegime(str, Enum):
     NORMAL = "normal"               # IV Rank 30-70; no strong vol edge
     NORMAL_VOL = "normal_vol"       # alias kept for backward compat
     SQUEEZE = "squeeze"             # BB squeeze + IV Rank < 30; breakout imminent
+    CONTANGO = "contango"           # Back > front IV; carry-friendly term structure
     BACKWARDATION = "backwardation" # Front > back IV; elevated near-term fear
     EVENT_RISK = "event_risk"       # Earnings/catalyst ≤ 5d; confidence caps apply
     # ── Compound regimes (two simultaneous conditions) ─────────────────────
+    HIGH_VOL_CONTANGO = "high_vol_contango"           # High IV but orderly term structure; classic short-vol regime
+    LOW_VOL_CONTANGO = "low_vol_contango"             # Compressed IV + contango; calm surface, long-vol only if other signals confirm
     HIGH_VOL_BACKWARDATION = "high_vol_backwardation"   # Panic spike + inverted term; Iron Butterfly only DTE>14
+    LOW_VOL_BACKWARDATION = "low_vol_backwardation"     # Unusual low-IV inversion; defined-risk long vol only
     HIGH_VOL_EVENT_RISK = "high_vol_event_risk"         # Elevated IV + imminent catalyst; sell confidence ≤ 0.2
     LOW_VOL_SQUEEZE = "low_vol_squeeze"                 # IV compressed + BB squeeze; buy straddle/calendar before breakout
     BACKWARDATION_EVENT_RISK = "backwardation_event_risk"  # Inverted term + event; no short vol, defined-risk only
@@ -137,7 +145,28 @@ class VolatilitySymbolAnalysis(SymbolAnalysis):
     def _coerce_vol_regime(cls, v: Any) -> Any:
         if isinstance(v, str) and "," in v:
             v = v.split(",")[0].strip()
-        return v
+        if not isinstance(v, str):
+            return v
+
+        normalized = _normalize_enum_token(v)
+        if normalized in VolRegime._value2member_map_:
+            return normalized
+
+        alias_map = {
+            ("high", "vol"): VolRegime.HIGH_VOL.value,
+            ("low", "vol"): VolRegime.LOW_VOL.value,
+            ("normal", "vol"): VolRegime.NORMAL_VOL.value,
+            ("contango",): VolRegime.CONTANGO.value,
+            ("event", "risk"): VolRegime.EVENT_RISK.value,
+            ("contango", "high", "vol"): VolRegime.HIGH_VOL_CONTANGO.value,
+            ("contango", "low", "vol"): VolRegime.LOW_VOL_CONTANGO.value,
+            ("backwardation", "high", "vol"): VolRegime.HIGH_VOL_BACKWARDATION.value,
+            ("backwardation", "low", "vol"): VolRegime.LOW_VOL_BACKWARDATION.value,
+            ("event", "high", "risk", "vol"): VolRegime.HIGH_VOL_EVENT_RISK.value,
+            ("low", "squeeze", "vol"): VolRegime.LOW_VOL_SQUEEZE.value,
+            ("backwardation", "event", "risk"): VolRegime.BACKWARDATION_EVENT_RISK.value,
+        }
+        return alias_map.get(tuple(sorted(part for part in normalized.split("_") if part)), normalized)
 
     iv_percentile_divergence: bool = False
     hv_iv_assessment: str = "neutral"  # "implied_rich", "realized_exceeds", "neutral"

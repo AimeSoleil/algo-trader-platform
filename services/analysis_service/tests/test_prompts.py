@@ -257,3 +257,13 @@ def test_synthesizer_system_prompt_requires_strategy_type_leg_match():
 
     assert "strategy_type MUST strictly match the actual legs count and structure" in _SYNTHESIZER_SYSTEM_PROMPT
     assert "Never label a 4-leg position as vertical_spread" in _SYNTHESIZER_SYSTEM_PROMPT
+
+
+def test_volatility_system_prompt_lists_supported_contango_and_backwardation_regimes():
+    from services.analysis_service.app.llm.agents.volatility_agent import _SYSTEM_PROMPT
+
+    assert "high_vol_contango" in _SYSTEM_PROMPT
+    assert "low_vol_contango" in _SYSTEM_PROMPT
+    assert "high_vol_backwardation" in _SYSTEM_PROMPT
+    assert "low_vol_backwardation" in _SYSTEM_PROMPT
+    assert "Do not invent unsupported compounds beyond the listed regimes above" in _SYSTEM_PROMPT

@@ -14,7 +14,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from services.analysis_service.app.llm.agents import base_agent
-from services.analysis_service.app.llm.agents.models import TrendAnalysis
+from services.analysis_service.app.llm.agents.models import TrendAnalysis, VolRegime, VolatilityAnalysis
 
 
 class _DummyOutputModel:
@@ -169,6 +169,81 @@ def test_trend_analysis_coerces_null_iv_rank() -> None:
     })
 
     assert parsed.symbols[0].iv_rank == 0.0
+
+
+@pytest.mark.parametrize(
+    ("raw_value", "expected"),
+    [
+        ("contango", VolRegime.CONTANGO),
+        ("high_vol_contango", VolRegime.HIGH_VOL_CONTANGO),
+        ("low_vol_contango", VolRegime.LOW_VOL_CONTANGO),
+        ("high_vol_backwardation", VolRegime.HIGH_VOL_BACKWARDATION),
+        ("low_vol_backwardation", VolRegime.LOW_VOL_BACKWARDATION),
+    ],
+)
+def test_volatility_analysis_accepts_supported_regimes(raw_value: str, expected: VolRegime) -> None:
+    parsed = VolatilityAnalysis.model_validate({
+        "symbols": [
+            {
+                "symbol": "NVDA",
+                "vol_regime": raw_value,
+                "iv_rank_zone": "low",
+                "iv_percentile_divergence": False,
+                "hv_iv_assessment": "neutral",
+                "garch_divergence": False,
+                "garch_divergence_direction": None,
+                "surface_mispricing": False,
+                "event_risk_present": False,
+                "liquidity_status": "high",
+                "trade_allowed": True,
+                "confidence_cap": None,
+                "simple_structures_only": False,
+                "blocked_reasons": [],
+                "strategies": [],
+                "reasoning": "supported volatility regime should validate without degradation",
+                "confidence": 0.4,
+            }
+        ],
+        "market_vol_summary": "ok",
+    })
+
+    assert parsed.symbols[0].vol_regime == expected
+
+
+@pytest.mark.parametrize(
+    ("raw_value", "expected"),
+    [
+        ("contango high vol", VolRegime.HIGH_VOL_CONTANGO),
+        ("backwardation_low_vol", VolRegime.LOW_VOL_BACKWARDATION),
+    ],
+)
+def test_volatility_analysis_normalizes_supported_regime_token_order(raw_value: str, expected: VolRegime) -> None:
+    parsed = VolatilityAnalysis.model_validate({
+        "symbols": [
+            {
+                "symbol": "NVDA",
+                "vol_regime": raw_value,
+                "iv_rank_zone": "low",
+                "iv_percentile_divergence": False,
+                "hv_iv_assessment": "neutral",
+                "garch_divergence": False,
+                "garch_divergence_direction": None,
+                "surface_mispricing": False,
+                "event_risk_present": False,
+                "liquidity_status": "high",
+                "trade_allowed": True,
+                "confidence_cap": None,
+                "simple_structures_only": False,
+                "blocked_reasons": [],
+                "strategies": [],
+                "reasoning": "token-order variants should normalize to the canonical supported volatility regime",
+                "confidence": 0.4,
+            }
+        ],
+        "market_vol_summary": "ok",
+    })
+
+    assert parsed.symbols[0].vol_regime == expected
 
 
 @pytest.mark.asyncio
