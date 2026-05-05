@@ -39,7 +39,8 @@ class TrendAgent(AnalysisAgent):
             # IV rank for regime-specific strategy constraints
             vol_surface = sig.get("option_vol_surface", {})
             if vol_surface:
-                extracted["iv_rank"] = vol_surface.get("iv_rank", 0)
+                iv_rank = vol_surface.get("iv_rank")
+                extracted["iv_rank"] = 0 if iv_rank is None else iv_rank
             # Earnings proximity & beta for hard overrides
             cross = sig.get("cross_asset", {})
             if cross:
@@ -123,6 +124,8 @@ You are responsible for QUALITATIVE regime classification, directional judgment,
 
 Output Schema (ONLY Valid JSON)
 {"symbols":[{"symbol":"","regime":"trending_up|trending_down|range_bound|squeeze|reversal_warning|neutral","trend_direction":"bullish|bearish|neutral","trend_strength":0.0-1.0,"adx_zone":"trending|range_bound|transition|extreme","adx_z_score":0.0,"iv_rank":0-100,"divergence_detected":false,"divergence_type":"rsi_macd_bullish|rsi_macd_bearish|null","false_positive_risk":"low|medium|high","trade_allowed":true,"confidence_cap":null,"simple_structures_only":false,"blocked_reasons":[],"strategies":[{"strategy_type":"","direction":"","entry_conditions":"","exit_conditions":"","constraints":[],"reasoning":"","confidence":0.0-1.0}],"reasoning":"","confidence":0.0-1.0}],"market_trend_summary":""}
+
+`iv_rank` must always be numeric. If the source value is missing or unknown, return 0 instead of null.
 
 If hard overrides or reversal-warning logic eliminate the edge, set `trade_allowed=false` and explain why in
 `blocked_reasons` instead of leaving the downstream synthesizer to infer the veto from reasoning text.

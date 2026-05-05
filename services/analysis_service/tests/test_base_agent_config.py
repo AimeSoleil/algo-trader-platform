@@ -10,6 +10,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from services.analysis_service.app.llm.agents import base_agent
+from services.analysis_service.app.llm.agents.models import TrendAnalysis
 
 
 class _DummyOutputModel:
@@ -90,3 +91,32 @@ def test_build_user_prompt_includes_compact_output_guidance() -> None:
     assert "at most 2 short sentences" in prompt
     assert "at most 1 short sentence" in prompt
     assert "Avoid long reasoning paragraphs or chain-of-thought" in prompt
+
+
+def test_trend_analysis_coerces_null_iv_rank() -> None:
+    parsed = TrendAnalysis.model_validate({
+        "symbols": [
+            {
+                "symbol": "AAPL",
+                "regime": "neutral",
+                "trend_direction": "neutral",
+                "trend_strength": 0.2,
+                "adx_zone": "transition",
+                "adx_z_score": 0.0,
+                "iv_rank": None,
+                "divergence_detected": False,
+                "divergence_type": None,
+                "false_positive_risk": "medium",
+                "trade_allowed": True,
+                "confidence_cap": None,
+                "simple_structures_only": False,
+                "blocked_reasons": [],
+                "strategies": [],
+                "reasoning": "missing iv rank should not fail validation",
+                "confidence": 0.4,
+            }
+        ],
+        "market_trend_summary": "ok",
+    })
+
+    assert parsed.symbols[0].iv_rank == 0.0

@@ -113,6 +113,13 @@ class TrendSymbolAnalysis(SymbolAnalysis):
     blocked_reasons: list[str] = Field(default_factory=list)
     strategies: list[StrategyCandidate] = Field(default_factory=list)
 
+    @field_validator("iv_rank", mode="before")
+    @classmethod
+    def _coerce_iv_rank(cls, v: Any) -> Any:
+        if v is None or v == "":
+            return 0.0
+        return v
+
 
 class TrendAnalysis(BaseModel):
     """Full output from TrendAgent."""
