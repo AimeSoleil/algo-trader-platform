@@ -204,3 +204,40 @@ def test_normalize_blueprint_payload_clamps_global_risk_limits_to_policy_caps():
     assert stats["max_margin_usage_clamped"] == 1
     assert stats["portfolio_delta_limit_clamped"] == 1
     assert stats["portfolio_gamma_limit_clamped"] == 1
+
+
+def test_normalize_blueprint_payload_repairs_mislabeled_four_leg_vertical_spread():
+    payload = {
+        "trading_date": "2026-04-29",
+        "generated_at": "2026-04-28T03:39:57",
+        "model_provider": "closeai",
+        "model_version": "claude-sonnet-4-20250514",
+        "market_regime": "neutral",
+        "symbol_plans": [
+            {
+                "underlying": "TSLA",
+                "strategy_type": "vertical_spread",
+                "direction": "neutral",
+                "legs": [
+                    {"expiry": "2026-06-05", "strike": 240, "option_type": "put", "side": "buy", "quantity": 1},
+                    {"expiry": "2026-06-05", "strike": 245, "option_type": "put", "side": "sell", "quantity": 1},
+                    {"expiry": "2026-06-05", "strike": 255, "option_type": "call", "side": "sell", "quantity": 1},
+                    {"expiry": "2026-06-05", "strike": 260, "option_type": "call", "side": "buy", "quantity": 1},
+                ],
+                "max_loss_per_trade": 500,
+                "confidence": 0.5,
+            },
+        ],
+    }
+
+    normalized, stats = _normalize_blueprint_payload(payload, signal_date=None)
+
+    assert normalized["symbol_plans"][0]["strategy_type"] == "iron_condor"
+    assert stats["strategy_type_repaired"] == 1
+    assert stats["strategy_type_repair_samples"] == [
+        {"underlying": "TSLA", "from": "vertical_spread", "to": "iron_condor", "legs": 4},
+    ]
+
+    blueprint = LLMTradingBlueprint.model_validate(normalized)
+
+    assert blueprint.symbol_plans[0].strategy_type.value == "iron_condor"

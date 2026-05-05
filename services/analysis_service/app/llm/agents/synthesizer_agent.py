@@ -38,6 +38,21 @@ _SIDE_ALIASES = {
     "sto": "sell",
 }
 
+_EXPECTED_LEGS = {
+    "single_leg": (1, 1),
+    "vertical_spread": (2, 2),
+    "iron_condor": (4, 4),
+    "iron_butterfly": (4, 4),
+    "butterfly": (3, 4),
+    "calendar_spread": (2, 2),
+    "diagonal_spread": (2, 2),
+    "straddle": (2, 2),
+    "strangle": (2, 2),
+    "covered_call": (1, 2),
+    "protective_put": (1, 2),
+    "collar": (2, 3),
+}
+
 
 def _is_http_500_error(exc: Exception) -> bool:
     status_code = getattr(exc, "status_code", None)
@@ -130,6 +145,115 @@ def _append_dropped_sample(samples: list[Any], item: Any, limit: int = 3) -> Non
     samples.append(safe_item)
 
 
+def _strategy_legs_match(strategy_type: str, legs: list[dict[str, Any]]) -> bool:
+    rng = _EXPECTED_LEGS.get(strategy_type)
+    if rng is None:
+        return True
+    return rng[0] <= len(legs) <= rng[1]
+
+
+def _infer_strategy_type_from_legs(legs: list[dict[str, Any]]) -> str | None:
+    if not legs:
+        return None
+
+    normalized_legs = [leg for leg in legs if isinstance(leg, dict)]
+    if len(normalized_legs) != len(legs):
+        return None
+
+    n = len(normalized_legs)
+    option_types = [leg.get("option_type") for leg in normalized_legs]
+    sides = [leg.get("side") for leg in normalized_legs]
+    strikes = [leg.get("strike") for leg in normalized_legs]
+    expiries = [leg.get("expiry") for leg in normalized_legs]
+
+    if any(option_type not in {"call", "put"} for option_type in option_types):
+        return None
+    if any(side not in {"buy", "sell"} for side in sides):
+        return None
+    if any(not isinstance(strike, (int, float)) for strike in strikes):
+        return None
+
+    if n == 1:
+        return "single_leg"
+
+    if n == 2:
+        same_expiry = len(set(expiries)) == 1
+        same_option_type = len(set(option_types)) == 1
+        buy_count = sum(1 for side in sides if side == "buy")
+        sell_count = sum(1 for side in sides if side == "sell")
+        if same_option_type and buy_count == 1 and sell_count == 1:
+            if same_expiry:
+                return "vertical_spread"
+            return "calendar_spread"
+
+        if set(option_types) == {"call", "put"}:
+            call_strike = next(leg.get("strike") for leg in normalized_legs if leg.get("option_type") == "call")
+            put_strike = next(leg.get("strike") for leg in normalized_legs if leg.get("option_type") == "put")
+            if call_strike == put_strike:
+                return "straddle"
+            if call_strike > put_strike:
+                return "strangle"
+        return None
+
+    if n in {3, 4} and len(set(option_types)) == 1:
+        buy_count = sum(1 for side in sides if side == "buy")
+        sell_count = sum(1 for side in sides if side == "sell")
+        unique_strikes = sorted(set(float(strike) for strike in strikes))
+        if len(unique_strikes) == 3 and buy_count == 2 and sell_count in {1, 2}:
+            middle_strike = unique_strikes[1]
+            middle_count = sum(1 for strike in strikes if float(strike) == middle_strike)
+            if (n == 3 and middle_count == 1) or (n == 4 and middle_count == 2):
+                return "butterfly"
+
+    if n == 4 and set(option_types) == {"call", "put"}:
+        sorted_legs = sorted(normalized_legs, key=lambda leg: float(leg.get("strike", 0)))
+        put_long, put_short, call_short, call_long = sorted_legs
+        if (
+            put_long.get("option_type") == "put"
+            and put_short.get("option_type") == "put"
+            and call_short.get("option_type") == "call"
+            and call_long.get("option_type") == "call"
+            and put_long.get("side") == "buy"
+            and put_short.get("side") == "sell"
+            and call_short.get("side") == "sell"
+            and call_long.get("side") == "buy"
+        ):
+            short_strikes = sorted(
+                float(leg.get("strike", 0))
+                for leg in normalized_legs
+                if leg.get("side") == "sell"
+            )
+            if len(short_strikes) == 2 and short_strikes[0] == short_strikes[1]:
+                return "iron_butterfly"
+            return "iron_condor"
+
+    return None
+
+
+def _repair_strategy_type_from_legs(normalized_plan: dict[str, Any]) -> tuple[dict[str, Any], bool, dict[str, Any] | None]:
+    strategy_value = normalized_plan.get("strategy_type")
+    legs = normalized_plan.get("legs")
+    if not isinstance(strategy_value, str) or not isinstance(legs, list):
+        return normalized_plan, False, None
+
+    strategy_type = strategy_value.strip().lower()
+    if not strategy_type or _strategy_legs_match(strategy_type, legs):
+        return normalized_plan, False, None
+
+    inferred_strategy_type = _infer_strategy_type_from_legs(legs)
+    if inferred_strategy_type is None or inferred_strategy_type == strategy_type:
+        return normalized_plan, False, None
+
+    repaired_plan = dict(normalized_plan)
+    repaired_plan["strategy_type"] = inferred_strategy_type
+    return repaired_plan, True, {
+        "underlying": repaired_plan.get("underlying"),
+        "from": strategy_type,
+        "to": inferred_strategy_type,
+        "legs": len(legs),
+    }
+
+
 def _normalize_trigger_conditions(items: Any) -> tuple[list[dict[str, Any]], int, list[Any]]:
     if not isinstance(items, list):
         return [], 0, []
@@ -208,6 +332,8 @@ def _normalize_blueprint_payload(data: dict[str, Any], signal_date: date | None)
         "legs_expiry_normalized": 0,
         "legs_strike_normalized": 0,
         "legs_side_normalized": 0,
+        "strategy_type_repaired": 0,
+        "strategy_type_repair_samples": [],
         "symbol_plans_trimmed": 0,
         "max_daily_loss_clamped": 0,
         "max_margin_usage_clamped": 0,
@@ -259,6 +385,12 @@ def _normalize_blueprint_payload(data: dict[str, Any], signal_date: date | None)
 
                 normalized_legs.append(normalized_leg)
             normalized_plan["legs"] = normalized_legs
+
+        normalized_plan, repaired, repair_sample = _repair_strategy_type_from_legs(normalized_plan)
+        if repaired:
+            stats["strategy_type_repaired"] += 1
+            if repair_sample is not None:
+                _append_dropped_sample(stats["strategy_type_repair_samples"], repair_sample)
 
         normalized_plan["entry_conditions"], dropped, dropped_samples = _normalize_trigger_conditions(
             normalized_plan.get("entry_conditions")
@@ -650,6 +782,11 @@ HE5. It is BETTER to output fewer high-quality plans than many low-confidence on
 HE6. Precision-first default: prefer single_leg or vertical_spread. Use more complex multi-leg structures
     only when liquidity is clearly strong, event risk is absent, and a simpler defined-risk structure
     cannot express the thesis cleanly.
+HE7. strategy_type MUST strictly match the actual legs count and structure.
+    - 1 leg → single_leg only
+    - 2 legs → vertical_spread | calendar_spread | diagonal_spread | straddle | strangle only
+    - 3-4 legs → butterfly | iron_condor | iron_butterfly | collar only when the legs truly match that structure
+    Never label a 4-leg position as vertical_spread. If the legs do not clearly match the named structure, omit the symbol instead of guessing.
 
 ────────────────────────────────────────────────────────
 CONFLICT RESOLUTION (Priority 2)

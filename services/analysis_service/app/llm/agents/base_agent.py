@@ -13,12 +13,14 @@ Subclasses define the prompt, data extraction, and output model.
 from __future__ import annotations
 
 import asyncio
+from copy import deepcopy
 import json
 import random
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
+from types import UnionType
 from time import perf_counter
-from typing import Any, Protocol, TypeVar, runtime_checkable
+from typing import Any, Protocol, TypeVar, Union, get_args, get_origin, runtime_checkable
 
 from pydantic import BaseModel, ValidationError
 
@@ -29,6 +31,16 @@ from shared.utils import decode_escaped_unicode, get_logger
 from services.analysis_service.app.llm.json_utils import parse_llm_json
 
 logger = get_logger("analysis_agent")
+
+_NO_DEFAULT = object()
+_REPAIRABLE_VALIDATION_TYPES = frozenset({
+    "float_type",
+    "int_type",
+    "string_type",
+    "bool_type",
+    "list_type",
+    "dict_type",
+})
 
 
 @dataclass(frozen=True)
@@ -380,7 +392,21 @@ class AnalysisAgent(ABC):
                 # can validate against the output model.
                 if isinstance(data, list):
                     data = {"symbols": data}
-                parsed = self.output_model.model_validate(data)
+                try:
+                    parsed = self.output_model.model_validate(data)
+                except ValidationError as exc:
+                    repaired_data, repaired_fields = self._repair_validation_error_payload(data, exc)
+                    if repaired_data is None:
+                        raise
+                    parsed = self.output_model.model_validate(repaired_data)
+                    data = repaired_data
+                    logger.info(
+                        f"agent.{self.name}.parse_repaired",
+                        analysis_chunk_id=analysis_chunk_id,
+                        provider=provider.name,
+                        attempt=attempt + 1,
+                        repaired_fields=repaired_fields,
+                    )
 
                 # Guard against silent empty-symbols: if the model returned
                 # no symbols despite receiving input, the parse was probably
@@ -500,6 +526,125 @@ class AnalysisAgent(ABC):
                 ).observe(elapsed)
 
         raise last_exc or RuntimeError(f"Agent {self.name} failed after {max_attempts} attempt(s)")
+
+    def _repair_validation_error_payload(
+        self,
+        data: Any,
+        exc: ValidationError,
+    ) -> tuple[Any | None, list[str]]:
+        """Apply conservative local repairs for validation errors with field defaults.
+
+        This only repairs fields whose failing input is null/empty and whose target
+        Pydantic field already declares a concrete default or default_factory.
+        """
+        model_cls = self.output_model
+        if not isinstance(data, (dict, list)):
+            return None, []
+        if not isinstance(model_cls, type) or not issubclass(model_cls, BaseModel):
+            return None, []
+
+        repaired = deepcopy(data)
+        repaired_fields: list[str] = []
+
+        for error in exc.errors():
+            error_type = error.get("type")
+            if error_type not in _REPAIRABLE_VALIDATION_TYPES:
+                continue
+
+            if error.get("input") not in (None, ""):
+                continue
+
+            loc = error.get("loc")
+            if not isinstance(loc, tuple) or not loc:
+                continue
+
+            default = self._default_for_loc(model_cls, loc)
+            if default is _NO_DEFAULT:
+                continue
+
+            if self._set_value_at_loc(repaired, loc, default):
+                repaired_fields.append(".".join(str(part) for part in loc))
+
+        if not repaired_fields:
+            return None, []
+        return repaired, repaired_fields
+
+    def _default_for_loc(self, model_cls: type[BaseModel], loc: tuple[Any, ...]) -> Any:
+        current_type: Any = model_cls
+
+        for index, part in enumerate(loc):
+            current_type = self._unwrap_annotation(current_type)
+            if isinstance(part, str):
+                if not isinstance(current_type, type) or not issubclass(current_type, BaseModel):
+                    return _NO_DEFAULT
+                field_info = current_type.model_fields.get(part)
+                if field_info is None:
+                    return _NO_DEFAULT
+                if index == len(loc) - 1:
+                    return self._field_default(field_info)
+                current_type = field_info.annotation
+                continue
+
+            if isinstance(part, int):
+                origin = get_origin(current_type)
+                if origin not in (list, tuple, set):
+                    return _NO_DEFAULT
+                args = get_args(current_type)
+                if not args:
+                    return _NO_DEFAULT
+                current_type = args[0]
+                continue
+
+            return _NO_DEFAULT
+
+        return _NO_DEFAULT
+
+    def _unwrap_annotation(self, annotation: Any) -> Any:
+        origin = get_origin(annotation)
+        if origin is None:
+            return annotation
+
+        if origin in (Union, UnionType):
+            args = [arg for arg in get_args(annotation) if arg is not type(None)]
+            if len(args) == 1:
+                return self._unwrap_annotation(args[0])
+        return annotation
+
+    def _field_default(self, field_info: Any) -> Any:
+        default_factory = getattr(field_info, "default_factory", None)
+        if default_factory is not None:
+            return default_factory()
+        if field_info.is_required():
+            return _NO_DEFAULT
+        return field_info.default
+
+    def _set_value_at_loc(self, payload: Any, loc: tuple[Any, ...], value: Any) -> bool:
+        current = payload
+        for part in loc[:-1]:
+            if isinstance(part, str):
+                if not isinstance(current, dict) or part not in current:
+                    return False
+                current = current[part]
+                continue
+            if isinstance(part, int):
+                if not isinstance(current, list) or part >= len(current):
+                    return False
+                current = current[part]
+                continue
+            return False
+
+        last = loc[-1]
+        if isinstance(last, str):
+            if not isinstance(current, dict):
+                return False
+            current[last] = value
+            return True
+        if isinstance(last, int):
+            if not isinstance(current, list) or last >= len(current):
+                return False
+            current[last] = value
+            return True
+        return False
 
 
     def _default_provider(self) -> AgentLLMProvider:

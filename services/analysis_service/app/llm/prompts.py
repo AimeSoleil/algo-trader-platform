@@ -133,10 +133,21 @@ def _serialize_signals(features: list[SignalFeatures]) -> str:
 
 
 def _prune_defaults(d: dict[str, Any]) -> dict[str, Any]:
-    """Remove only empty values while preserving meaningful numeric zeros."""
+    """Remove placeholder defaults while preserving a small set of meaningful zeros."""
+    meaningful_zero_keys = {"rsi_divergence", "macd_hist_divergence", "earnings_proximity_days"}
+
     return {
         k: v for k, v in d.items()
-        if v is not None and v != {} and v != "" and v != []
+        if v is not None
+        and v != {}
+        and v != ""
+        and v != []
+        and not (
+            isinstance(v, (int, float))
+            and not isinstance(v, bool)
+            and v == 0
+            and k not in meaningful_zero_keys
+        )
     }
 
 

@@ -1,9 +1,13 @@
 from __future__ import annotations
 
+import json
 import sys
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
+
+from pydantic import BaseModel, Field
+import pytest
 
 ROOT = Path(__file__).resolve().parents[3]
 if str(ROOT) not in sys.path:
@@ -34,6 +38,51 @@ class _DummyAgent(base_agent.AnalysisAgent):
 
     def extract_signal_data(self, signals: list[dict[str, Any]]) -> list[dict[str, Any]]:
         return signals
+
+
+class _RepairSymbol(BaseModel):
+    symbol: str
+    iv_rank: float = 0.0
+
+
+class _RepairOutput(BaseModel):
+    symbols: list[_RepairSymbol] = Field(default_factory=list)
+
+
+class _RepairAgent(base_agent.AnalysisAgent):
+    @property
+    def name(self) -> str:
+        return "repair"
+
+    @property
+    def system_prompt(self) -> str:
+        return "system"
+
+    @property
+    def output_model(self):
+        return _RepairOutput
+
+    def extract_signal_data(self, signals: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        return signals
+
+
+class _RepairProvider:
+    name = "copilot"
+
+    def __init__(self, content: str) -> None:
+        self.content = content
+        self.calls = 0
+
+    async def generate(self, **kwargs) -> base_agent.LLMResult:
+        self.calls += 1
+        return base_agent.LLMResult(
+            content=self.content,
+            raw_content=self.content,
+            input_tokens=10,
+            output_tokens=10,
+            total_tokens=20,
+            model="test-model",
+        )
 
 
 def test_resolve_generation_config_for_closeai(monkeypatch) -> None:
@@ -120,3 +169,33 @@ def test_trend_analysis_coerces_null_iv_rank() -> None:
     })
 
     assert parsed.symbols[0].iv_rank == 0.0
+
+
+@pytest.mark.asyncio
+async def test_analyze_repairs_null_numeric_field_without_provider_retry(monkeypatch) -> None:
+    mock_settings = SimpleNamespace(
+        analysis_service=SimpleNamespace(
+            llm=SimpleNamespace(
+                max_retries=0,
+                backoff_base_seconds=0,
+                backoff_max_seconds=0,
+                openai=SimpleNamespace(temperature=0.11, max_tokens=1111),
+                qiniu=SimpleNamespace(temperature=0.22, max_tokens=2222),
+                closeai=SimpleNamespace(temperature=0.33, max_tokens=3333),
+                output_budget_ratio=0.8,
+                output_truncation_threshold_ratio=0.95,
+            )
+        )
+    )
+    monkeypatch.setattr(base_agent, "get_settings", lambda: mock_settings)
+
+    agent = _RepairAgent()
+    provider = _RepairProvider(json.dumps({"symbols": [{"symbol": "AAPL", "iv_rank": None}]}))
+
+    parsed = await agent.analyze(
+        [{"symbol": "AAPL", "price": 100}],
+        provider=provider,
+    )
+
+    assert parsed.symbols[0].iv_rank == 0.0
+    assert provider.calls == 1

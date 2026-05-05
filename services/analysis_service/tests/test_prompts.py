@@ -106,6 +106,21 @@ class TestCrossAssetSerialization:
                     "rsi_divergence", "macd_hist_divergence",
                 ), f"Zero-value field {key}={val} should have been pruned"
 
+    def test_same_day_earnings_zero_is_preserved(self):
+        from services.analysis_service.app.llm.prompts import _serialize_one_signal
+
+        sf = _make_signal_features(
+            cross_asset_indicators=CrossAssetIndicators(earnings_proximity_days=0),
+        )
+
+        text = _serialize_one_signal(sf)
+        lines = text.split("\n", 1)
+        assert len(lines) == 2
+        data = json.loads(lines[1])
+
+        cross_asset = data.get("cross_asset", {})
+        assert cross_asset.get("earnings_proximity_days") == 0
+
     def test_header_contains_symbol(self):
         from services.analysis_service.app.llm.prompts import _serialize_one_signal
 
@@ -235,3 +250,10 @@ class TestDegradedSectionExclusion:
 
         # Partial degradation should NOT exclude sections
         assert "stock_trend" in data
+
+
+def test_synthesizer_system_prompt_requires_strategy_type_leg_match():
+    from services.analysis_service.app.llm.agents.synthesizer_agent import _SYNTHESIZER_SYSTEM_PROMPT
+
+    assert "strategy_type MUST strictly match the actual legs count and structure" in _SYNTHESIZER_SYSTEM_PROMPT
+    assert "Never label a 4-leg position as vertical_spread" in _SYNTHESIZER_SYSTEM_PROMPT
