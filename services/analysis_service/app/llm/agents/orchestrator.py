@@ -21,7 +21,7 @@ from time import perf_counter
 from typing import Any
 
 from shared.config import get_settings
-from shared.data_quality import should_circuit_break_analysis
+from shared.data_quality import DataQualityConfig, OPTION_MIN_ROWS, should_circuit_break_analysis
 from shared.metrics import llm_request_duration
 from shared.models.blueprint import LLMTradingBlueprint
 from shared.redis_pool import get_redis
@@ -138,6 +138,7 @@ class AgentOrchestrator:
 
         # ── Validate signal features (D6) ──
         signal_features = self._validate_signal_features(signal_features)
+        source_signal_features = list(signal_features)
 
         # ── Resolve provider (lazy-create on first call) ──
         provider = self._provider
@@ -148,6 +149,9 @@ class AgentOrchestrator:
         settings = get_settings()
         chunk_size = settings.analysis_service.llm.orchestrator_chunk_size
         max_parallel = settings.analysis_service.llm.orchestrator_max_parallel
+        precision_first_cfg = getattr(settings.analysis_service.llm, "precision_first", None)
+        precision_first_enabled = bool(getattr(precision_first_cfg, "enabled", False))
+        allowed_strategy_types = list(getattr(precision_first_cfg, "allowed_strategy_types", []) or [])
         trade_benchmark_syms = set(
             s.upper() for s in settings.common.watchlist.for_trade_benchmark
         )
@@ -163,8 +167,9 @@ class AgentOrchestrator:
         )
 
         # ── Split: trade targets vs benchmark ──
-        # Benchmark features are always injected into every chunk for
-        # cross-asset context, but only trade symbols get plans.
+        # Benchmark features no longer enter every chunk as full signal rows.
+        # They are compressed once into a market snapshot and passed through
+        # agent context instead, while only trade symbols remain in chunk data.
         benchmark_features = [
             sf for sf in signal_features
             if sf.symbol.upper() in trade_benchmark_syms
@@ -198,22 +203,69 @@ class AgentOrchestrator:
                 or not should_circuit_break_analysis(sf.data_quality.degraded_indicators)
             ]
 
+        trade_features, pre_synthesis_filter = self._apply_pre_synthesis_candidate_filter(
+            trade_features,
+            settings=settings,
+            precision_first_enabled=precision_first_enabled,
+            allowed_strategy_types=allowed_strategy_types,
+        )
+        if pre_synthesis_filter["dropped_symbol_count"]:
+            logger.info(
+                "orchestrator.pre_synthesis_filter",
+                kept_symbols=pre_synthesis_filter["kept_symbol_count"],
+                dropped_symbols=pre_synthesis_filter["dropped_symbols"],
+            )
+
+        trade_features, pre_synthesis_triage = self._apply_pre_synthesis_coarse_ranking(
+            trade_features,
+            settings=settings,
+            precision_first_enabled=precision_first_enabled,
+            allowed_strategy_types=allowed_strategy_types,
+        )
+        if pre_synthesis_triage["monitor_symbol_count"]:
+            logger.info(
+                "orchestrator.pre_synthesis_triage",
+                escalate_symbols=pre_synthesis_triage["escalate_symbols"],
+                monitor_symbols=pre_synthesis_triage["monitor_symbols"],
+                target_shortlist_size=pre_synthesis_triage["target_shortlist_size"],
+            )
+
+        active_trade_symbols = {sf.symbol.upper() for sf in trade_features}
+        signal_features = [
+            sf for sf in signal_features
+            if sf.symbol.upper() in trade_benchmark_syms
+            or sf.symbol.upper() in active_trade_symbols
+        ]
+
         if not trade_features:
-            logger.warning("orchestrator.no_trade_features", reason="all trade symbols circuit-broken or empty")
-            # Return an empty blueprint
-            from shared.models.blueprint import LLMTradingBlueprint
-            return LLMTradingBlueprint(symbol_plans=[])
+            logger.warning(
+                "orchestrator.no_trade_features",
+                reason="all trade symbols filtered before LLM analysis",
+            )
+            return self._build_empty_blueprint(
+                signal_features=source_signal_features,
+                signal_date=signal_date,
+                provider_name=provider.name,
+                model_version=self._configured_model_version(settings, provider.name),
+                reasoning_context={
+                    "pipeline": "agentic_empty",
+                    "provider": provider.name,
+                    "pre_synthesis_filter": pre_synthesis_filter,
+                    "pre_synthesis_triage": pre_synthesis_triage,
+                },
+            )
 
         # ── Decide: single pass vs chunked ──
         usage_tracker = LLMUsageTracker()
 
         # Compute trade symbol names for the synthesizer prompt
         trade_symbol_names = [sf.symbol for sf in trade_features]
+        market_snapshot = self._build_market_snapshot(benchmark_features)
 
         if len(trade_features) <= chunk_size:
             # Small enough — run everything in one pass (no chunking overhead)
             blueprint = await self._generate_single_pass(
-                signal_features=signal_features,
+                signal_features=trade_features,
                 current_positions=current_positions,
                 previous_execution=previous_execution,
                 provider=provider,
@@ -221,28 +273,20 @@ class AgentOrchestrator:
                 analysis_chunk_id=f"single-{uuid.uuid4().hex[:8]}",
                 usage_tracker=usage_tracker,
                 trade_symbols=trade_symbol_names,
+                market_snapshot=market_snapshot,
             )
         else:
-            # Chunk trade symbols; inject ALL benchmark symbols into each chunk
-            # for cross-asset context.  Dedup in case a symbol is both trade
-            # and benchmark (e.g. SPY, QQQ, IWM).
+            # Chunk trade symbols only; benchmark context is shared as one
+            # market snapshot instead of being re-serialized into every chunk.
             chunks: list[list[SignalFeatures]] = []
             for i in range(0, len(trade_features), chunk_size):
                 trade_slice = trade_features[i : i + chunk_size]
-                # Benchmark first, then trade symbols not already in benchmark
-                seen: set[str] = set()
-                deduped_chunk: list[SignalFeatures] = []
-                for sf in benchmark_features + trade_slice:
-                    key = sf.symbol.upper()
-                    if key not in seen:
-                        seen.add(key)
-                        deduped_chunk.append(sf)
-                chunks.append(deduped_chunk)
+                chunks.append(trade_slice)
 
             logger.info(
                 "orchestrator.chunking",
                 total_symbols=len(signal_features),
-                benchmark_symbols=[sf.symbol for sf in benchmark_features],
+                benchmark_symbols=(market_snapshot or {}).get("symbols", []),
                 trade_symbols=len(trade_features),
                 chunks=len(chunks),
                 chunk_size=chunk_size,
@@ -261,10 +305,6 @@ class AgentOrchestrator:
                     sf.symbol for sf in chunk_features
                     if sf.symbol.upper() in trade_syms
                 ]
-                benchmark_syms_in_chunk = [
-                    sf.symbol for sf in chunk_features
-                    if sf.symbol.upper() in trade_benchmark_syms
-                ]
                 async with sem:
                     logger.info(
                         "orchestrator.chunk_started",
@@ -272,7 +312,7 @@ class AgentOrchestrator:
                         chunk=idx,
                         symbols=len(chunk_features),
                         trade_symbols=trade_syms_in_chunk,
-                        benchmark_symbols=benchmark_syms_in_chunk,
+                        benchmark_symbols=(market_snapshot or {}).get("symbols", []),
                     )
                     return await self._generate_single_pass(
                         signal_features=chunk_features,
@@ -284,6 +324,7 @@ class AgentOrchestrator:
                         analysis_chunk_id=analysis_chunk_id,
                         usage_tracker=chunk_tracker,
                         trade_symbols=trade_syms_in_chunk,
+                        market_snapshot=market_snapshot,
                     )
 
             chunk_blueprints = await asyncio.gather(
@@ -322,10 +363,6 @@ class AgentOrchestrator:
                         agent_outputs=agent_outputs if isinstance(agent_outputs, dict) else None,
                     ))
                     original_order += 1
-
-            precision_first_cfg = getattr(settings.analysis_service.llm, "precision_first", None)
-            precision_first_enabled = bool(getattr(precision_first_cfg, "enabled", False))
-            allowed_strategy_types = list(getattr(precision_first_cfg, "allowed_strategy_types", []) or [])
 
             llm_post_merge_review: dict[str, Any] | None = None
             llm_post_merge_metadata: dict[str, Any] = {"status": "skipped", "reason": "provider_missing_generate"}
@@ -425,6 +462,11 @@ class AgentOrchestrator:
             p for p in blueprint.symbol_plans
             if p.underlying.upper() in trade_syms
         ]
+        blueprint.reasoning_context = {
+            **(blueprint.reasoning_context or {}),
+            "pre_synthesis_filter": pre_synthesis_filter,
+            "pre_synthesis_triage": pre_synthesis_triage,
+        }
 
         elapsed_ms = round((perf_counter() - started) * 1000, 2)
 
@@ -456,6 +498,7 @@ class AgentOrchestrator:
         analysis_chunk_id: str,
         usage_tracker: LLMUsageTracker | None = None,
         trade_symbols: list[str] | None = None,
+        market_snapshot: dict[str, Any] | None = None,
     ) -> LLMTradingBlueprint:
         """Run the full specialist → synthesizer → critic pipeline on one set of signals."""
         # ── Step 0: Serialize signals once ──
@@ -477,6 +520,7 @@ class AgentOrchestrator:
             analysis_chunk_id=analysis_chunk_id,
             agents=6,
             symbols=len(signal_features),
+            market_snapshot_symbols=len((market_snapshot or {}).get("symbols", [])),
             is_chunk=is_chunk,
         )
         specialists_t0 = perf_counter()
@@ -485,6 +529,7 @@ class AgentOrchestrator:
             provider=provider,
             usage_tracker=usage_tracker,
             analysis_chunk_id=analysis_chunk_id,
+            market_snapshot=market_snapshot,
         )
         logger.info(
             "orchestrator.phase_completed",
@@ -666,6 +711,7 @@ class AgentOrchestrator:
             "provider": provider.name,
             "analysis_chunk_id": analysis_chunk_id,
             "signals_summary": signals_summary,
+            "market_snapshot": market_snapshot,
             "agent_outputs": agent_outputs,
             "critic_history": critic_history,
         }
@@ -707,6 +753,408 @@ class AgentOrchestrator:
             )
 
         return valid
+
+    def _apply_pre_synthesis_candidate_filter(
+        self,
+        trade_features: list[SignalFeatures],
+        *,
+        settings: Any,
+        precision_first_enabled: bool,
+        allowed_strategy_types: list[str],
+    ) -> tuple[list[SignalFeatures], dict[str, Any]]:
+        """Drop symbols that already fail hard deterministic gates before LLM fan-out."""
+        dq_cfg = DataQualityConfig.from_settings(settings)
+        kept: list[SignalFeatures] = []
+        dropped: list[dict[str, Any]] = []
+
+        for sf in trade_features:
+            reasons, eligible_strategy_types = self._pre_synthesis_filter_reasons(
+                sf,
+                dq_cfg=dq_cfg,
+                precision_first_enabled=precision_first_enabled,
+                allowed_strategy_types=allowed_strategy_types,
+            )
+            if reasons:
+                dropped.append({
+                    "symbol": sf.symbol,
+                    "reasons": reasons,
+                    "eligible_strategy_types": eligible_strategy_types,
+                })
+                continue
+            kept.append(sf)
+
+        return kept, {
+            "precision_first_enabled": precision_first_enabled,
+            "allowed_strategy_types": allowed_strategy_types,
+            "input_symbol_count": len(trade_features),
+            "kept_symbol_count": len(kept),
+            "dropped_symbol_count": len(dropped),
+            "dropped_symbols": dropped,
+        }
+
+    def _apply_pre_synthesis_coarse_ranking(
+        self,
+        trade_features: list[SignalFeatures],
+        *,
+        settings: Any,
+        precision_first_enabled: bool,
+        allowed_strategy_types: list[str],
+    ) -> tuple[list[SignalFeatures], dict[str, Any]]:
+        """Rank surviving trade symbols and split them into monitor vs escalate."""
+        target_shortlist_size, coarse_weights = self._pre_synthesis_coarse_ranking_config(settings)
+        if not trade_features:
+            return [], {
+                "target_shortlist_size": target_shortlist_size,
+                "shortlist_limit": 0,
+                "input_symbol_count": 0,
+                "escalate_symbol_count": 0,
+                "monitor_symbol_count": 0,
+                "escalate_symbols": [],
+                "monitor_symbols": [],
+                "ranked_symbols": [],
+                "weights": coarse_weights,
+            }
+
+        dq_cfg = DataQualityConfig.from_settings(settings)
+        ranked_entries: list[dict[str, Any]] = []
+        for sf in trade_features:
+            ranked_entries.append({
+                "feature": sf,
+                **self._coarse_rank_signal(
+                    sf,
+                    dq_cfg=dq_cfg,
+                    precision_first_enabled=precision_first_enabled,
+                    allowed_strategy_types=allowed_strategy_types,
+                    weights=coarse_weights,
+                ),
+            })
+
+        ranked_entries.sort(
+            key=lambda entry: (
+                -entry["coarse_score"],
+                -entry["components"]["data_quality_score"],
+                -entry["components"]["eligible_strategy_count"],
+                -entry["components"]["option_coverage_score"],
+                -entry["components"]["liquidity_score"],
+                entry["symbol"],
+            )
+        )
+
+        shortlist_limit = min(len(ranked_entries), target_shortlist_size)
+        escalate_entries = ranked_entries[:shortlist_limit]
+        monitor_entries = ranked_entries[shortlist_limit:]
+        ranked_symbols: list[dict[str, Any]] = []
+
+        for rank, entry in enumerate(ranked_entries, start=1):
+            ranked_symbols.append({
+                "rank": rank,
+                "symbol": entry["symbol"],
+                "action": "escalate" if rank <= shortlist_limit else "monitor",
+                "coarse_score": entry["coarse_score"],
+                "eligible_strategy_types": entry["eligible_strategy_types"],
+                "components": entry["components"],
+                "decision_reason": self._coarse_ranking_decision_reason(
+                    entry,
+                    rank=rank,
+                    shortlist_limit=shortlist_limit,
+                ),
+            })
+
+        return [entry["feature"] for entry in escalate_entries], {
+            "target_shortlist_size": target_shortlist_size,
+            "shortlist_limit": shortlist_limit,
+            "input_symbol_count": len(trade_features),
+            "escalate_symbol_count": len(escalate_entries),
+            "monitor_symbol_count": len(monitor_entries),
+            "escalate_symbols": [entry["symbol"] for entry in escalate_entries],
+            "monitor_symbols": [entry["symbol"] for entry in monitor_entries],
+            "ranked_symbols": ranked_symbols,
+            "weights": coarse_weights,
+        }
+
+    def _coarse_rank_signal(
+        self,
+        signal_feature: SignalFeatures,
+        *,
+        dq_cfg: DataQualityConfig,
+        precision_first_enabled: bool,
+        allowed_strategy_types: list[str],
+        weights: dict[str, float],
+    ) -> dict[str, Any]:
+        """Build a deterministic coarse ranking score for one symbol."""
+        eligible_strategy_types = self._eligible_precision_first_strategy_types(
+            signal_feature,
+            allowed_strategy_types,
+        )
+        liquidity_hard_threshold = self._pre_synthesis_bid_ask_hard_threshold(
+            allowed_strategy_types if precision_first_enabled else []
+        )
+        option_row_score = min(
+            signal_feature.data_quality.option_row_count / max(1, dq_cfg.option_full_rows),
+            1.0,
+        )
+        liquidity_score = max(
+            0.0,
+            1.0 - (signal_feature.option_indicators.bid_ask_spread_ratio / liquidity_hard_threshold),
+        )
+        strategy_score = 1.0
+        if precision_first_enabled and allowed_strategy_types:
+            strategy_score = len(eligible_strategy_types) / max(1, len(allowed_strategy_types))
+        earnings_score = self._coarse_ranking_earnings_score(
+            signal_feature.cross_asset_indicators.earnings_proximity_days,
+        )
+        weight_sum = sum(max(0.0, value) for value in weights.values()) or 1.0
+        coarse_score = round(
+            (
+                weights["data_quality"] * signal_feature.data_quality.score
+                + weights["option_coverage"] * option_row_score
+                + weights["liquidity"] * liquidity_score
+                + weights["strategy_eligibility"] * strategy_score
+                + weights["earnings_buffer"] * earnings_score
+            ) / weight_sum,
+            6,
+        )
+
+        return {
+            "symbol": signal_feature.symbol.upper(),
+            "coarse_score": coarse_score,
+            "eligible_strategy_types": eligible_strategy_types,
+            "components": {
+                "data_quality_score": round(signal_feature.data_quality.score, 6),
+                "option_coverage_score": round(option_row_score, 6),
+                "liquidity_score": round(liquidity_score, 6),
+                "strategy_eligibility_score": round(strategy_score, 6),
+                "earnings_score": round(earnings_score, 6),
+                "eligible_strategy_count": len(eligible_strategy_types),
+                "option_row_count": signal_feature.data_quality.option_row_count,
+                "bid_ask_spread_ratio": round(signal_feature.option_indicators.bid_ask_spread_ratio, 6),
+                "earnings_proximity_days": signal_feature.cross_asset_indicators.earnings_proximity_days,
+            },
+        }
+
+    def _pre_synthesis_filter_reasons(
+        self,
+        signal_feature: SignalFeatures,
+        *,
+        dq_cfg: DataQualityConfig,
+        precision_first_enabled: bool,
+        allowed_strategy_types: list[str],
+    ) -> tuple[list[dict[str, str]], list[str]]:
+        """Return hard pre-synthesis drop reasons for one symbol."""
+        reasons: list[dict[str, str]] = []
+        data_quality = signal_feature.data_quality
+        option_indicators = signal_feature.option_indicators
+        earnings_days = signal_feature.cross_asset_indicators.earnings_proximity_days
+
+        if data_quality.score < dq_cfg.skip_threshold:
+            reasons.append({
+                "rule": "data_quality_skip_threshold",
+                "description": (
+                    f"data_quality.score={data_quality.score:.4f} < {dq_cfg.skip_threshold:.2f}"
+                ),
+            })
+
+        if data_quality.option_row_count < OPTION_MIN_ROWS:
+            reasons.append({
+                "rule": "insufficient_option_rows",
+                "description": (
+                    f"option_row_count={data_quality.option_row_count} < {OPTION_MIN_ROWS}"
+                ),
+            })
+
+        bid_ask_hard_threshold = self._pre_synthesis_bid_ask_hard_threshold(
+            allowed_strategy_types if precision_first_enabled else []
+        )
+        if option_indicators.bid_ask_spread_ratio > bid_ask_hard_threshold:
+            reasons.append({
+                "rule": "bid_ask_hard_block",
+                "description": (
+                    "bid_ask_spread_ratio="
+                    f"{option_indicators.bid_ask_spread_ratio:.4f} > {bid_ask_hard_threshold:.2f}"
+                ),
+            })
+
+        eligible_strategy_types = self._eligible_precision_first_strategy_types(
+            signal_feature,
+            allowed_strategy_types,
+        )
+        if precision_first_enabled and allowed_strategy_types and not eligible_strategy_types:
+            earnings_desc = "unknown" if earnings_days is None else str(earnings_days)
+            reasons.append({
+                "rule": "precision_first_no_eligible_strategy",
+                "description": (
+                    "no hard-eligible precision-first strategy remains for "
+                    f"earnings_proximity_days={earnings_desc} and "
+                    f"term_structure_slope={signal_feature.option_indicators.term_structure_slope:.4f}"
+                ),
+            })
+
+        return reasons, eligible_strategy_types
+
+    def _eligible_precision_first_strategy_types(
+        self,
+        signal_feature: SignalFeatures,
+        allowed_strategy_types: list[str],
+    ) -> list[str]:
+        """Keep only precision-first strategies that pass symbol-level hard context gates."""
+        earnings_days = signal_feature.cross_asset_indicators.earnings_proximity_days
+        slope = signal_feature.option_indicators.term_structure_slope
+        eligible: list[str] = []
+
+        for strategy_type in allowed_strategy_types:
+            normalized = str(strategy_type).lower()
+
+            if normalized == "calendar_spread":
+                if slope <= 0.0:
+                    continue
+                if isinstance(earnings_days, int) and earnings_days <= 5:
+                    continue
+            elif normalized in {"single_leg", "vertical_spread", "iron_condor"}:
+                if isinstance(earnings_days, int) and earnings_days <= 1:
+                    continue
+            elif normalized in {"butterfly", "iron_butterfly"}:
+                if isinstance(earnings_days, int) and earnings_days <= 3:
+                    continue
+
+            eligible.append(normalized)
+
+        return eligible
+
+    def _pre_synthesis_coarse_ranking_config(self, settings: Any) -> tuple[int, dict[str, float]]:
+        """Resolve Stage-A shortlist size and score weights from config with safe fallbacks."""
+        default_shortlist_size = LLMTradingBlueprint.model_fields["max_total_positions"].default
+        coarse_ranking_cfg = getattr(settings.analysis_service.llm, "coarse_ranking", None)
+        shortlist_size_value = getattr(coarse_ranking_cfg, "shortlist_size", default_shortlist_size)
+        try:
+            shortlist_size = max(1, int(shortlist_size_value))
+        except (TypeError, ValueError):
+            shortlist_size = 5
+
+        weights_cfg = getattr(coarse_ranking_cfg, "weights", None)
+        return shortlist_size, {
+            "data_quality": float(getattr(weights_cfg, "data_quality", 0.4)),
+            "option_coverage": float(getattr(weights_cfg, "option_coverage", 0.2)),
+            "liquidity": float(getattr(weights_cfg, "liquidity", 0.2)),
+            "strategy_eligibility": float(getattr(weights_cfg, "strategy_eligibility", 0.1)),
+            "earnings_buffer": float(getattr(weights_cfg, "earnings_buffer", 0.1)),
+        }
+
+    def _coarse_ranking_decision_reason(
+        self,
+        entry: dict[str, Any],
+        *,
+        rank: int,
+        shortlist_limit: int,
+    ) -> str:
+        """Build a concise human-readable explanation for triage decisions."""
+        if rank <= shortlist_limit:
+            return f"rank {rank} inside shortlist cutoff {shortlist_limit}"
+
+        weakest_components = sorted(
+            (
+                ("data_quality", entry["components"]["data_quality_score"]),
+                ("option_coverage", entry["components"]["option_coverage_score"]),
+                ("liquidity", entry["components"]["liquidity_score"]),
+                ("strategy_eligibility", entry["components"]["strategy_eligibility_score"]),
+                ("earnings_buffer", entry["components"]["earnings_score"]),
+            ),
+            key=lambda item: item[1],
+        )[:2]
+        weakest_text = ", ".join(f"{label}={value:.2f}" for label, value in weakest_components)
+        return f"rank {rank} below shortlist cutoff {shortlist_limit}; weaker {weakest_text}"
+
+    def _coarse_ranking_earnings_score(self, earnings_days: int | None) -> float:
+        """Reward cleaner earnings buffers without hard-dropping non-event names."""
+        if earnings_days is None:
+            return 0.75
+        if earnings_days <= 1:
+            return 0.0
+        if earnings_days <= 3:
+            return 0.35
+        if earnings_days <= 5:
+            return 0.6
+        return 1.0
+
+    def _pre_synthesis_bid_ask_hard_threshold(self, allowed_strategy_types: list[str]) -> float:
+        """Mirror deterministic liquidity hard blocks conservatively at symbol level."""
+        normalized = {str(strategy_type).lower() for strategy_type in allowed_strategy_types}
+        if normalized.intersection({"iron_condor", "calendar_spread"}):
+            return 0.30
+        return 0.25
+
+    def _configured_model_version(self, settings: Any, provider_name: str) -> str:
+        """Return the configured model name for the active provider."""
+        provider_settings = getattr(settings.analysis_service.llm, provider_name, None)
+        model_name = getattr(provider_settings, "model", "")
+        return model_name or "unknown"
+
+    def _build_empty_blueprint(
+        self,
+        *,
+        signal_features: list[SignalFeatures],
+        signal_date: date | None,
+        provider_name: str,
+        model_version: str,
+        reasoning_context: dict[str, Any] | None = None,
+    ) -> LLMTradingBlueprint:
+        """Build a valid empty blueprint when no symbol survives pre-LLM gating."""
+        if not signal_features:
+            raise ValueError("signal_features must not be empty when building an empty blueprint")
+
+        return LLMTradingBlueprint(
+            trading_date=signal_date or signal_features[0].date,
+            generated_at=max(sf.computed_at for sf in signal_features),
+            model_provider=provider_name,
+            model_version=model_version,
+            market_regime="neutral",
+            symbol_plans=[],
+            reasoning_context=reasoning_context,
+        )
+
+    _MARKET_SNAPSHOT_SECTION_KEYS = {
+        "price": ("close_price", "daily_return", "volume", "volatility_regime"),
+        "stock_trend": ("trend", "trend_strength", "rsi_14", "adx_14"),
+        "option_vol_surface": ("iv_rank", "iv_percentile", "term_structure_slope"),
+        "cross_asset": ("vix_level", "vix_percentile_52w"),
+    }
+
+    def _build_market_snapshot(
+        self,
+        benchmark_features: list[SignalFeatures],
+    ) -> dict[str, Any] | None:
+        """Compress benchmark signals into one shared market snapshot."""
+        if not benchmark_features:
+            return None
+
+        serialized = self._serialize_signals(benchmark_features)
+        benchmarks: list[dict[str, Any]] = []
+
+        for sig in serialized:
+            if not isinstance(sig, dict):
+                continue
+
+            entry: dict[str, Any] = {"symbol": sig.get("symbol", "UNKNOWN")}
+            for section, keys in self._MARKET_SNAPSHOT_SECTION_KEYS.items():
+                raw = sig.get(section)
+                if not isinstance(raw, dict):
+                    continue
+                compact = {
+                    key: raw[key]
+                    for key in keys
+                    if key in raw and raw[key] not in (None, "", [], {})
+                }
+                if compact:
+                    entry[section] = compact
+
+            benchmarks.append(entry)
+
+        if not benchmarks:
+            return None
+
+        return {
+            "symbols": [item["symbol"] for item in benchmarks],
+            "benchmarks": benchmarks,
+        }
 
     # Keys preserved for benchmark-only symbols (compact cross-asset context)
     _BENCHMARK_KEEP_KEYS = frozenset({
@@ -1089,6 +1537,7 @@ class AgentOrchestrator:
         provider: AgentLLMProvider,
         usage_tracker: LLMUsageTracker | None = None,
         analysis_chunk_id: str,
+        market_snapshot: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """Run all 6 specialist agents in parallel, collecting results.
 
@@ -1125,8 +1574,10 @@ class AgentOrchestrator:
                     provider=provider.name,
                     model_override=model_override,
                 )
+                context = {"market_snapshot": market_snapshot} if market_snapshot else None
                 result = await agent.analyze(
                     serialized_signals,
+                    context=context,
                     provider=provider,
                     usage_tracker=usage_tracker,
                     model=model_override,

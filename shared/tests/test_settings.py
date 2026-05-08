@@ -75,3 +75,31 @@ analysis_service:
 
     assert settings.analysis_service.llm.precision_first.enabled is True
     assert settings.analysis_service.llm.precision_first.allowed_strategy_types == ["single_leg", "vertical_spread", "iron_condor", "calendar_spread"]
+
+
+def test_coarse_ranking_settings_load_from_yaml(tmp_path: Path) -> None:
+    yaml_path = tmp_path / "config.yaml"
+    yaml_path.write_text(
+        """
+analysis_service:
+  llm:
+    coarse_ranking:
+      shortlist_size: 7
+      weights:
+        data_quality: 0.25
+        option_coverage: 0.15
+        liquidity: 0.35
+        strategy_eligibility: 0.15
+        earnings_buffer: 0.10
+""".strip(),
+        encoding="utf-8",
+    )
+
+    settings = Settings.from_yaml(yaml_path)
+
+    assert settings.analysis_service.llm.coarse_ranking.shortlist_size == 7
+    assert settings.analysis_service.llm.coarse_ranking.weights.data_quality == 0.25
+    assert settings.analysis_service.llm.coarse_ranking.weights.option_coverage == 0.15
+    assert settings.analysis_service.llm.coarse_ranking.weights.liquidity == 0.35
+    assert settings.analysis_service.llm.coarse_ranking.weights.strategy_eligibility == 0.15
+    assert settings.analysis_service.llm.coarse_ranking.weights.earnings_buffer == 0.10

@@ -14,55 +14,69 @@ common:
 
   watchlist:
     for_trade:
-      # ── ETFs (3) ──
-      - "SPY"
-      - "QQQ"
-      - "IWM"
-      # ── Tech / Growth (10) ──
-      - "AAPL"
-      - "MSFT"
-      - "NVDA"
-      - "TSLA"
-      - "AMZN"
-      - "META"
-      - "GOOGL"
-      - "AMD"
-      - "NFLX"
-      - "AVGO"
-      # ── AI / Defense (1) ──
-      - "PLTR"
-      # ── Financials (2) ──
-      - "JPM"
-      - "GS"
-      # ── Payments (1) ──
-      - "V"
-      # ── Healthcare / Pharma (2) ──
-      - "UNH"
-      - "LLY"
-      # ── Energy (1) ──
-      - "XOM"
-      # ── Consumer / Industrials (3) ──
-      - "COST"
-      - "CAT"
-      - "UBER"
-      # ── Crypto (2) ──
-      - "COIN"
-      - "IBIT"
+      # ── ETFs ──
+      - "SPY"                          # S&P 500 ETF | Ultra-liquid global macro benchmark, ideal for all options strategies (covered calls, spreads, hedging)
+      - "QQQ"                          # Nasdaq 100 ETF | Tech/growth benchmark, high volatility, perfect for directional/volatility spreads
+      - "IWM"                          # Russell 2000 ETF | Small-cap benchmark, high volatility, ideal for aggressive growth/volatility strategies
+      # ── Tech / Growth ──
+      - "AAPL"                         # Apple Inc. | Ultra-liquid blue-chip tech, low volatility, gold standard for covered calls/LEAPS
+      - "MSFT"                         # Microsoft Corp. | AI/cloud leader, top 3 single-stock options volume, consistent institutional order flow
+      - "TSLA"                         # Tesla Inc. | EV/AI leader, extreme retail/institutional flow, wide strike range for low-cost directional plays
+      - "AMZN"                         # Amazon.com Inc. | E-commerce/cloud leader, high liquidity, sensitive to consumer spending trends
+      - "META"                         # Meta Platforms Inc. | Social/AI leader, high volatility, industry-leading weekly options liquidity
+      - "GOOGL"                        # Alphabet Inc. (Google) | Search/AI/cloud leader, low-volatility growth, perfect for consistent income strategies
+      - "AMD"                          # Advanced Micro Devices | AI/PC chip competitor to NVDA, high speculative volume, liquid weekly expirations
+      - "NFLX"                         # Netflix Inc. | Streaming leader, extreme catalyst-driven earnings volatility, strong monthly options flow
+      - "ORCL"                         # Oracle Corp. | Enterprise AI/software leader, low-volatility growth, ideal for covered calls
+      - "INTC"                         # Intel Corp. | Semiconductor turnaround play, high speculative volume, wide strike range for low-cost plays
+      # ── AI Infra / AI Datacenter ── (Full Stack: Compute → Memory → Interconnect → Storage → Power Electronics)
+      # ── Core AI Compute & Networking ──
+      - "NVDA"                         # NVIDIA Corp. | Global leader in AI GPUs/accelerators, backbone of modern AI datacenters, highest single-stock options volume in tech
+      - "AVGO"                         # Broadcom Inc. | Leader in AI datacenter networking chips/ASICs, high-speed interconnect for AI clusters, low-volatility growth, consistent institutional flow
+      - "SMCI"                         # Super Micro Computer | Leader in AI rack-scale servers & liquid cooling for datacenters, top 50 single-stock options volume, extreme institutional/retail flow
+      # ── DRAM / AI High-Bandwidth Memory ──
+      - "MU"                           # Micron Technology | US-listed global DRAM/HBM leader, core AI datacenter high-bandwidth memory supplier, top 40 single-stock options volume
+      # ── 光通讯 / Optical Communications (AI Interconnect Backbone) ──
+      - "LITE"                         # Lumentum Holdings | Global optical chip & module leader, 50%+ global share of high-end EML lasers for 800G/1.6T AI datacenter optics
+      # ── Electronic Power / 电子电力 (AI Datacenter Power Lifeline) ──
+      - "GEV"                          # GE Vernova | AI datacenter grid/power generation equipment leader, gas turbine/HVDC system global top 3, 2026 AI-driven breakout growth, high-liquidity options
+      # ── SaaS ──
+      - "ADBE"                         # Adobe Inc. | Creative/marketing SaaS leader (Creative Cloud/Experience Cloud), top 50 single-stock options volume
+      # ── AI / Defense ──
+      - "PLTR"                         # Palantir Technologies | AI/defense software leader, high retail/institutional flow, volatile thematic play
+      # ── Robotics / 机器人龙头 ── NEW DEDICATED SECTION
+      - "SYM"                         # Symbotic Inc. | Warehouse robotics leader, critical supplier to top retailers (WMT, TGT), high growth/volatility, emerging options liquidity
+      # ── Space / Aerospace 商业航天 ── NEW DEDICATED SECTION (Incl. LUNR/RKLB)
+      - "RKLB"                         # Rocket Lab USA | 全球商业火箭发射龙头，除SpaceX外唯一实现高频稳定发射的美股标的，NASA/国防核心供应商，美股航天板块期权成交量TOP3，高弹性成长标的
+      # ── Nuclear Energy / AI Datacenter Power 核能电力 ──
+      - "OKLO"                         # Oklo Inc | 4th-gen SMR small modular reactor leader, exclusive power supply partnerships with NVIDIA/Meta for distributed AI datacenters, options volume surged 6x in 2026
+      # ── Payments ──
+      - "V"                            # Visa Inc. | Global payments leader, ultra-liquid, low-volatility growth, ideal for consistent covered calls
+      # ── Healthcare / Pharma ──
+      - "LLY"                          # Eli Lilly and Company | Biopharma leader, strong diabetes/obesity franchise, high-volatility growth play, top 50 single-stock options volume
+      # ── Energy ──
+      - "XOM"                          # ExxonMobil | Largest US integrated oil, ultra-liquid, ideal for commodity-focused/income strategies
+      # ── Consumer / Industrials ──
+      - "WMT"                          # Walmart Inc. | Top consumer staple defensive play, top 10 single-stock options volume, low correlation to growth swings
+      # ── AI算力运营 / 算力房东 ── (GPU Compute Operators, Not Traditional Real Estate REITs)
+      - "CRWV"                         # CoreWeave | 北美AI算力租赁绝对龙头，英伟达持股7%，与Meta/OpenAI签订超600亿美元算力长单，美股前50期权流动性，机构持仓集中度极高
+      # ── Crypto ──
+      - "COIN"                         # Coinbase Global | Crypto exchange leader, high volatility, leveraged BTC/ETH price exposure
     for_trade_benchmark:
-      - "SPY"                          # Broad Market
-      - "QQQ"                          # Tech / Growth
-      - "IWM"                          # Small Cap / Breadth
-      - "DIA"                          # Blue Chip / Value
+      - "SPY"                          # Broad Market Benchmark
+      - "QQQ"                          # Tech / Growth Benchmark
+      - "IWM"                          # Small Cap / Breadth Benchmark
+      - "DIA"                          # Blue Chip / Value Benchmark (Dow Jones Industrial Average)
     for_signal_benchmark:
-      - "SPY"                          # Broad Market
-      - "QQQ"                          # Tech / Growth
-      - "IWM"                          # Small Cap / Domestic
-      - "TLT"                          # 20Y+ Treasury / Rates
-      - "^VIX"                         # Equity Volatility
-      - "GLD"                          # Safe Haven / Inflation
-      - "HYG"                          # Credit Stress / High Yield
-      - "XLE"                          # Energy / Commodity Inflation
-      - "IBIT"                         # BTC / Crypto Sentiment
+      - "SPY"                          # Broad Market Risk-On/Risk-Off Signal
+      - "QQQ"                          # Tech / Growth Sentiment Signal
+      - "IWM"                          # Small Cap / Domestic Economic Health Signal
+      - "TLT"                          # 20Y+ Treasury / Interest Rate Expectations Signal
+      - "^VIX"                         # Equity Volatility (Market Fear Gauge)
+      - "GLD"                          # Safe Haven / Inflation Hedge Sentiment Signal
+      - "HYG"                          # Credit Stress / High-Yield Bond Market Health Signal
+      - "XLE"                          # Energy / Commodity Inflation Signal
+      - "IBIT"                         # BTC / Crypto Sentiment Signal
 
   data_quality:                    # Signal Service and Trade Service 共用数据质量评分参数
     # ── 评分权重（三项之和 = 1.0）──
@@ -211,8 +225,8 @@ data_service:
       post_market_time: "17:00"            # 统一盘后流水线：options 聚合 → stock 采集 → signals → blueprint
       refresh_earnings_time: "16:50"       # 刷新 earnings cache（pipeline 开始前）
     pipeline:
-      chunk_size: 5                         # 每个 chunked stage 的 symbol 分块大小
-      stop_after: "generate_daily_blueprint"  # 流水线执行到此步为止（含），后续步骤跳过
+      chunk_size: 5                         # 每个 chunked stage 的 symbol 分块大小; 过大可能导致单次AGENT任务context过大，过小可能增加总调度开销；
+      stop_after: "compute_daily_signals"  # 流水线执行到此步为止（含），后续步骤跳过
       coordination_timeout_minutes: 60      # 两条流水线协调超时（分钟）
 
 
@@ -295,15 +309,24 @@ analysis_service:
         - "vertical_spread"
         - "iron_condor"
         - "calendar_spread"
+    coarse_ranking:
+      shortlist_size: 5                 # Stage-A shortlist cap before full specialist fan-out
+      weights:
+        data_quality: 0.4               # Prefer complete, clean signal inputs
+        option_coverage: 0.2            # Prefer deeper chain coverage / daily options signal support
+        liquidity: 0.2                  # Prefer tighter aggregate bid/ask environments
+        strategy_eligibility: 0.1       # Prefer names with more precision-first structures still available
+        earnings_buffer: 0.1            # Prefer cleaner earnings distance when other factors are close
     cache_enabled: true
     cache_ttl: 3600
     skill_dir: ""
     output_budget_ratio: 0.8               # 实际请求 completion token 预算 = provider max_tokens 的 80%
     output_truncation_threshold_ratio: 0.95  # 若输出达到请求预算的 95%，视为接近截断并触发保护
-    max_critic_revisions: 1               # Synthesizer↔Critic revision rounds
+    max_critic_revisions: 0               # 30+ symbols 容错档：关闭 revision 循环，减少失败面
     orchestrator_chunk_size: 5            # max non-benchmark symbols per LLM chunk
-    orchestrator_max_parallel: 3          # max parallel chunk pipelines
+    orchestrator_max_parallel: 2          # 30+ symbols 容错档：降低 chunk 并行，压低 provider 峰值
     specialist_parallel_limit: 2          # max parallel specialists (pipeline-level gate)
+    max_retries: 0                        # 30+ symbols 容错档：为瞬时 provider / parse 失败保留一次重试
 
 
 # ── Trade Service — 交易执行与风控 ──────────────────────────

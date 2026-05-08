@@ -184,6 +184,53 @@ def _is_blueprint_soft_blocked(blueprint: LLMTradingBlueprint) -> bool:
     return bool(validation.get("error_count", 0) > 0 or not blueprint.symbol_plans)
 
 
+def _summarize_pre_synthesis_outcome(blueprint: LLMTradingBlueprint) -> dict[str, object]:
+    """Extract a stable pre-synthesis summary for daily artifact outputs."""
+    reasoning_context = blueprint.reasoning_context or {}
+    filter_summary = reasoning_context.get("pre_synthesis_filter", {}) or {}
+    triage_summary = reasoning_context.get("pre_synthesis_triage", {}) or {}
+    monitor_symbols: list[dict[str, object]] = []
+
+    for item in triage_summary.get("ranked_symbols", []) or []:
+        if item.get("action") != "monitor":
+            continue
+        monitor_symbols.append({
+            "symbol": item.get("symbol", "UNKNOWN"),
+            "rank": item.get("rank"),
+            "coarse_score": item.get("coarse_score"),
+            "reason": item.get("decision_reason", "ranked below shortlist cutoff"),
+        })
+
+    return {
+        "dropped_symbol_count": int(filter_summary.get("dropped_symbol_count", 0) or 0),
+        "escalate_symbol_count": int(triage_summary.get("escalate_symbol_count", 0) or 0),
+        "monitor_symbol_count": int(triage_summary.get("monitor_symbol_count", 0) or 0),
+        "target_shortlist_size": int(triage_summary.get("target_shortlist_size", 0) or 0),
+        "escalate_symbols": list(triage_summary.get("escalate_symbols", []) or []),
+        "monitor_symbols": monitor_symbols,
+    }
+
+
+def _format_pre_synthesis_summary_text(summary: dict[str, object]) -> str:
+    """Format monitor-symbol explanations for user-facing daily summaries."""
+    monitor_symbols = summary.get("monitor_symbols", []) or []
+    if not monitor_symbols:
+        return ""
+
+    details = "; ".join(
+        f"{item['symbol']} ({item['reason']})"
+        for item in monitor_symbols
+        if isinstance(item, dict) and item.get("symbol") and item.get("reason")
+    )
+    if not details:
+        return ""
+
+    return (
+        "Pre-synthesis triage monitor symbols: "
+        f"{details}."
+    )
+
+
 # ── Common pipeline (steps 2-4) ───────────────────────────────
 
 
@@ -416,12 +463,16 @@ def generate_daily_blueprint(self, trading_date: str | None = None, prev_result=
                         title="✅ Daily Pipeline Completed",
                         message=f"Blueprint generated for {resolved_trading_date}. "
                                 f"{result.get('plans_count', 0)} symbol plans, "
-                                f"provider: {result.get('provider', 'unknown')}.",
+                                f"provider: {result.get('provider', 'unknown')}."
+                                f" {result.get('pre_synthesis_summary_text', '')}".strip(),
                         severity=Severity.INFO,
                         payload={
                             "trading_date": str(resolved_trading_date),
                             "blueprint_id": str(result.get("blueprint_id", "")),
                             "plans_count": str(result.get("plans_count", 0)),
+                            "monitor_symbol_count": str(
+                                (result.get("pre_synthesis_summary") or {}).get("monitor_symbol_count", 0)
+                            ),
                         },
                     ))
                 except Exception as notify_exc:
@@ -570,6 +621,7 @@ async def _generate_blueprint_async(trading_date_str: str | None = None) -> dict
         status=blueprint_status,
         soft_blocked=soft_blocked,
     )
+    pre_synthesis_summary = _summarize_pre_synthesis_outcome(blueprint)
     return {
         "trading_date": str(blueprint.trading_date),
         "blueprint_id": blueprint.id,
@@ -577,6 +629,8 @@ async def _generate_blueprint_async(trading_date_str: str | None = None) -> dict
         "provider": blueprint.model_provider,
         "status": blueprint_status,
         "soft_blocked": soft_blocked,
+        "pre_synthesis_summary": pre_synthesis_summary,
+        "pre_synthesis_summary_text": _format_pre_synthesis_summary_text(pre_synthesis_summary),
         "deterministic_validation": (
             (blueprint.reasoning_context or {}).get("deterministic_validation")
         ),

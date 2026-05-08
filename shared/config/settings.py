@@ -436,6 +436,23 @@ class PrecisionFirstSettings(BaseSettings):
         default_factory=lambda: ["single_leg", "vertical_spread", "iron_condor", "calendar_spread"],
     )
 
+
+class CoarseRankingWeightsSettings(BaseSettings):
+    """Weights for deterministic pre-synthesis coarse ranking."""
+
+    data_quality: float = Field(default=0.4, ge=0.0)
+    option_coverage: float = Field(default=0.2, ge=0.0)
+    liquidity: float = Field(default=0.2, ge=0.0)
+    strategy_eligibility: float = Field(default=0.1, ge=0.0)
+    earnings_buffer: float = Field(default=0.1, ge=0.0)
+
+
+class CoarseRankingSettings(BaseSettings):
+    """Stage-A deterministic shortlist controls before full agentic analysis."""
+
+    shortlist_size: int = Field(default=5, ge=1)
+    weights: CoarseRankingWeightsSettings = Field(default_factory=CoarseRankingWeightsSettings)
+
 class LLMSettings(BaseSettings):
     provider: str = "copilot"
 
@@ -447,6 +464,7 @@ class LLMSettings(BaseSettings):
     # ── Per-agent model overrides ──
     agent_models_override: AgentModelsSettings = Field(default_factory=AgentModelsSettings)
     precision_first: PrecisionFirstSettings = Field(default_factory=PrecisionFirstSettings)
+    coarse_ranking: CoarseRankingSettings = Field(default_factory=CoarseRankingSettings)
 
     # ── Common ──
     cache_enabled: bool = True

@@ -802,7 +802,7 @@ echo "$$" > "$MANAGER_PID_FILE"
 for queue in "${ACTIVE_WORKERS[@]}"; do
   # analysis worker: force prefetch=1 (one LLM call at a time)
   extra_args=""
-  [[ "$queue" == "analysis" ]] && extra_args="--prefetch-multiplier=1"
+  [[ "$queue" == "analysis" ]] && extra_args="--prefetch-multiplier=1 -c 1"
 
   run_with_restart "$queue" \
     $CELERY_CMD worker -Q "$queue" -n "${queue}@${WORKER_HOST}" $extra_args \

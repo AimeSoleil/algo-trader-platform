@@ -16,7 +16,13 @@ from services.analysis_service.app.llm.agents.models import PostMergeConflictExp
 from services.analysis_service.app.llm.agents.orchestrator import AgentOrchestrator
 
 
-def _make_sf(symbol: str) -> SignalFeatures:
+def _make_sf(
+    symbol: str,
+    *,
+    option_indicators: OptionIndicators | None = None,
+    cross_asset_indicators: CrossAssetIndicators | None = None,
+    data_quality: DataQuality | None = None,
+) -> SignalFeatures:
     return SignalFeatures(
         symbol=symbol,
         date="2026-04-29",
@@ -26,9 +32,9 @@ def _make_sf(symbol: str) -> SignalFeatures:
         volume=1_000_000,
         volatility_regime="normal",
         stock_indicators=StockIndicators(),
-        option_indicators=OptionIndicators(),
-        cross_asset_indicators=CrossAssetIndicators(),
-        data_quality=DataQuality(),
+        option_indicators=option_indicators or OptionIndicators(),
+        cross_asset_indicators=cross_asset_indicators or CrossAssetIndicators(),
+        data_quality=data_quality or DataQuality(score=1.0, stock_bar_count=260, option_row_count=200),
     )
 
 
@@ -692,3 +698,407 @@ async def test_chunked_merge_precision_first_prefers_fewer_gate_conflicts(monkey
     assert decisions["AAPL"]["precision_first_score"] > decisions["MSFT"]["precision_first_score"]
     assert decisions["MSFT"]["precision_first_breakdown"]["trade_blocked_agents"] == ["trend"]
     assert decisions["MSFT"]["precision_first_breakdown"]["confidence_caps"]["trend"] == 0.6
+
+
+@pytest.mark.asyncio
+async def test_chunked_generate_uses_market_snapshot_instead_of_benchmark_chunk_injection(monkeypatch):
+    settings = SimpleNamespace(
+        analysis_service=SimpleNamespace(
+            llm=SimpleNamespace(
+                orchestrator_chunk_size=2,
+                orchestrator_max_parallel=2,
+            )
+        ),
+        trade_service=SimpleNamespace(
+            risk=SimpleNamespace(
+                blueprint_limits=SimpleNamespace(
+                    max_daily_loss=2_000.0,
+                    max_margin_usage=0.5,
+                    portfolio_delta_limit=0.5,
+                    portfolio_gamma_limit=0.1,
+                )
+            )
+        ),
+        common=SimpleNamespace(
+            watchlist=SimpleNamespace(
+                for_trade=["AAPL", "MSFT", "NVDA"],
+                for_trade_benchmark=["SPY", "QQQ"],
+            )
+        ),
+    )
+
+    monkeypatch.setattr(
+        "services.analysis_service.app.llm.agents.orchestrator.get_settings",
+        lambda: settings,
+    )
+
+    orchestrator = AgentOrchestrator(provider=_Provider())
+    captured_calls: list[dict[str, object]] = []
+
+    async def _fake_generate_single_pass(self, **kwargs):
+        captured_calls.append(
+            {
+                "signal_symbols": [sf.symbol for sf in kwargs["signal_features"]],
+                "trade_symbols": kwargs["trade_symbols"],
+                "market_snapshot": kwargs["market_snapshot"],
+            }
+        )
+        return _make_blueprint(
+            [(symbol, 0.6) for symbol in kwargs["trade_symbols"]],
+            max_total_positions=3,
+            analysis_chunk_id=f"chunk-{len(captured_calls) - 1}",
+        )
+
+    monkeypatch.setattr(AgentOrchestrator, "_generate_single_pass", _fake_generate_single_pass)
+
+    blueprint = await orchestrator.generate([
+        _make_sf("AAPL"),
+        _make_sf("MSFT"),
+        _make_sf("NVDA"),
+        _make_sf("SPY"),
+        _make_sf("QQQ"),
+    ])
+
+    assert len(captured_calls) == 2
+    assert captured_calls[0]["signal_symbols"] == ["AAPL", "MSFT"]
+    assert captured_calls[1]["signal_symbols"] == ["NVDA"]
+    market_snapshot = captured_calls[0]["market_snapshot"]
+    assert market_snapshot is not None
+    assert market_snapshot["symbols"] == ["SPY", "QQQ"]
+    assert captured_calls[1]["market_snapshot"] == market_snapshot
+    assert [plan.underlying for plan in blueprint.symbol_plans] == ["AAPL", "MSFT", "NVDA"]
+
+
+@pytest.mark.asyncio
+async def test_pre_synthesis_filter_skips_low_quality_and_hard_block_liquidity(monkeypatch):
+    settings = SimpleNamespace(
+        analysis_service=SimpleNamespace(
+            llm=SimpleNamespace(
+                orchestrator_chunk_size=5,
+                orchestrator_max_parallel=2,
+            )
+        ),
+        trade_service=SimpleNamespace(
+            risk=SimpleNamespace(
+                blueprint_limits=SimpleNamespace(
+                    max_daily_loss=2_000.0,
+                    max_margin_usage=0.5,
+                    portfolio_delta_limit=0.5,
+                    portfolio_gamma_limit=0.1,
+                )
+            )
+        ),
+        common=SimpleNamespace(
+            watchlist=SimpleNamespace(
+                for_trade=["AAPL", "MSFT", "NVDA"],
+                for_trade_benchmark=[],
+            )
+        ),
+    )
+
+    monkeypatch.setattr(
+        "services.analysis_service.app.llm.agents.orchestrator.get_settings",
+        lambda: settings,
+    )
+
+    orchestrator = AgentOrchestrator(provider=_Provider())
+    captured_call: dict[str, object] = {}
+
+    async def _fake_generate_single_pass(self, **kwargs):
+        captured_call["trade_symbols"] = kwargs["trade_symbols"]
+        return _make_blueprint(
+            [(symbol, 0.6) for symbol in kwargs["trade_symbols"]],
+            max_total_positions=3,
+            analysis_chunk_id="single-0",
+        )
+
+    monkeypatch.setattr(AgentOrchestrator, "_generate_single_pass", _fake_generate_single_pass)
+
+    blueprint = await orchestrator.generate([
+        _make_sf("AAPL"),
+        _make_sf("MSFT", data_quality=DataQuality(score=0.2, stock_bar_count=260, option_row_count=10)),
+        _make_sf(
+            "NVDA",
+            option_indicators=OptionIndicators(bid_ask_spread_ratio=0.31),
+            data_quality=DataQuality(score=1.0, stock_bar_count=260, option_row_count=200),
+        ),
+    ])
+
+    assert captured_call["trade_symbols"] == ["AAPL"]
+    pre_synthesis_filter = blueprint.reasoning_context["pre_synthesis_filter"]
+    assert pre_synthesis_filter["kept_symbol_count"] == 1
+    dropped = {
+        item["symbol"]: {reason["rule"] for reason in item["reasons"]}
+        for item in pre_synthesis_filter["dropped_symbols"]
+    }
+    assert dropped["MSFT"] == {"data_quality_skip_threshold", "insufficient_option_rows"}
+    assert dropped["NVDA"] == {"bid_ask_hard_block"}
+
+
+@pytest.mark.asyncio
+async def test_pre_synthesis_filter_drops_symbol_with_no_precision_first_strategy_left(monkeypatch):
+    settings = SimpleNamespace(
+        analysis_service=SimpleNamespace(
+            llm=SimpleNamespace(
+                orchestrator_chunk_size=5,
+                orchestrator_max_parallel=2,
+                precision_first=SimpleNamespace(
+                    enabled=True,
+                    allowed_strategy_types=["single_leg", "vertical_spread", "iron_condor", "calendar_spread"],
+                ),
+            )
+        ),
+        trade_service=SimpleNamespace(
+            risk=SimpleNamespace(
+                blueprint_limits=SimpleNamespace(
+                    max_daily_loss=2_000.0,
+                    max_margin_usage=0.5,
+                    portfolio_delta_limit=0.5,
+                    portfolio_gamma_limit=0.1,
+                )
+            )
+        ),
+        common=SimpleNamespace(
+            watchlist=SimpleNamespace(
+                for_trade=["AAPL", "MSFT"],
+                for_trade_benchmark=[],
+            )
+        ),
+    )
+
+    monkeypatch.setattr(
+        "services.analysis_service.app.llm.agents.orchestrator.get_settings",
+        lambda: settings,
+    )
+
+    orchestrator = AgentOrchestrator(provider=_Provider())
+    captured_call: dict[str, object] = {}
+
+    async def _fake_generate_single_pass(self, **kwargs):
+        captured_call["trade_symbols"] = kwargs["trade_symbols"]
+        return _make_blueprint(
+            [(symbol, 0.6) for symbol in kwargs["trade_symbols"]],
+            max_total_positions=2,
+            analysis_chunk_id="single-0",
+        )
+
+    monkeypatch.setattr(AgentOrchestrator, "_generate_single_pass", _fake_generate_single_pass)
+
+    blueprint = await orchestrator.generate([
+        _make_sf(
+            "AAPL",
+            cross_asset_indicators=CrossAssetIndicators(earnings_proximity_days=1),
+        ),
+        _make_sf("MSFT"),
+    ])
+
+    assert captured_call["trade_symbols"] == ["MSFT"]
+    pre_synthesis_filter = blueprint.reasoning_context["pre_synthesis_filter"]
+    dropped = {item["symbol"]: item for item in pre_synthesis_filter["dropped_symbols"]}
+    assert dropped["AAPL"]["eligible_strategy_types"] == []
+    assert {reason["rule"] for reason in dropped["AAPL"]["reasons"]} == {"precision_first_no_eligible_strategy"}
+
+
+@pytest.mark.asyncio
+async def test_pre_synthesis_coarse_ranking_shortlists_top_symbols_and_monitors_rest(monkeypatch):
+    settings = SimpleNamespace(
+        analysis_service=SimpleNamespace(
+            llm=SimpleNamespace(
+                orchestrator_chunk_size=10,
+                orchestrator_max_parallel=2,
+            )
+        ),
+        trade_service=SimpleNamespace(
+            risk=SimpleNamespace(
+                blueprint_limits=SimpleNamespace(
+                    max_daily_loss=2_000.0,
+                    max_margin_usage=0.5,
+                    portfolio_delta_limit=0.5,
+                    portfolio_gamma_limit=0.1,
+                )
+            )
+        ),
+        common=SimpleNamespace(
+            watchlist=SimpleNamespace(
+                for_trade=["AAPL", "MSFT", "NVDA", "TSLA", "AMZN", "META"],
+                for_trade_benchmark=[],
+            )
+        ),
+    )
+
+    monkeypatch.setattr(
+        "services.analysis_service.app.llm.agents.orchestrator.get_settings",
+        lambda: settings,
+    )
+
+    orchestrator = AgentOrchestrator(provider=_Provider())
+    captured_call: dict[str, object] = {}
+
+    async def _fake_generate_single_pass(self, **kwargs):
+        captured_call["trade_symbols"] = kwargs["trade_symbols"]
+        return _make_blueprint(
+            [(symbol, 0.6) for symbol in kwargs["trade_symbols"]],
+            max_total_positions=5,
+            analysis_chunk_id="single-0",
+        )
+
+    monkeypatch.setattr(AgentOrchestrator, "_generate_single_pass", _fake_generate_single_pass)
+
+    blueprint = await orchestrator.generate([
+        _make_sf("AAPL", data_quality=DataQuality(score=1.0, stock_bar_count=260, option_row_count=200)),
+        _make_sf("MSFT", data_quality=DataQuality(score=0.95, stock_bar_count=260, option_row_count=180)),
+        _make_sf("NVDA", data_quality=DataQuality(score=0.90, stock_bar_count=260, option_row_count=160)),
+        _make_sf("TSLA", data_quality=DataQuality(score=0.85, stock_bar_count=260, option_row_count=140)),
+        _make_sf("AMZN", data_quality=DataQuality(score=0.80, stock_bar_count=260, option_row_count=120)),
+        _make_sf(
+            "META",
+            option_indicators=OptionIndicators(bid_ask_spread_ratio=0.18),
+            data_quality=DataQuality(score=0.45, stock_bar_count=260, option_row_count=40),
+        ),
+    ])
+
+    assert captured_call["trade_symbols"] == ["AAPL", "MSFT", "NVDA", "TSLA", "AMZN"]
+    triage = blueprint.reasoning_context["pre_synthesis_triage"]
+    assert triage["target_shortlist_size"] == 5
+    assert triage["shortlist_limit"] == 5
+    assert triage["escalate_symbols"] == ["AAPL", "MSFT", "NVDA", "TSLA", "AMZN"]
+    assert triage["monitor_symbols"] == ["META"]
+    assert triage["monitor_symbol_count"] == 1
+    assert triage["ranked_symbols"][0]["action"] == "escalate"
+    assert triage["ranked_symbols"][-1]["symbol"] == "META"
+    assert triage["ranked_symbols"][-1]["action"] == "monitor"
+    assert "below shortlist cutoff 5" in triage["ranked_symbols"][-1]["decision_reason"]
+
+
+@pytest.mark.asyncio
+async def test_pre_synthesis_coarse_ranking_uses_configured_shortlist_size_and_weights(monkeypatch):
+    settings = SimpleNamespace(
+        analysis_service=SimpleNamespace(
+            llm=SimpleNamespace(
+                orchestrator_chunk_size=10,
+                orchestrator_max_parallel=2,
+                coarse_ranking=SimpleNamespace(
+                    shortlist_size=1,
+                    weights=SimpleNamespace(
+                        data_quality=0.1,
+                        option_coverage=0.1,
+                        liquidity=0.6,
+                        strategy_eligibility=0.1,
+                        earnings_buffer=0.1,
+                    ),
+                ),
+            )
+        ),
+        trade_service=SimpleNamespace(
+            risk=SimpleNamespace(
+                blueprint_limits=SimpleNamespace(
+                    max_daily_loss=2_000.0,
+                    max_margin_usage=0.5,
+                    portfolio_delta_limit=0.5,
+                    portfolio_gamma_limit=0.1,
+                )
+            )
+        ),
+        common=SimpleNamespace(
+            watchlist=SimpleNamespace(
+                for_trade=["AAPL", "MSFT"],
+                for_trade_benchmark=[],
+            )
+        ),
+    )
+
+    monkeypatch.setattr(
+        "services.analysis_service.app.llm.agents.orchestrator.get_settings",
+        lambda: settings,
+    )
+
+    orchestrator = AgentOrchestrator(provider=_Provider())
+    captured_call: dict[str, object] = {}
+
+    async def _fake_generate_single_pass(self, **kwargs):
+        captured_call["trade_symbols"] = kwargs["trade_symbols"]
+        return _make_blueprint(
+            [(symbol, 0.6) for symbol in kwargs["trade_symbols"]],
+            max_total_positions=1,
+            analysis_chunk_id="single-0",
+        )
+
+    monkeypatch.setattr(AgentOrchestrator, "_generate_single_pass", _fake_generate_single_pass)
+
+    blueprint = await orchestrator.generate([
+        _make_sf(
+            "AAPL",
+            option_indicators=OptionIndicators(bid_ask_spread_ratio=0.15),
+            data_quality=DataQuality(score=1.0, stock_bar_count=260, option_row_count=200),
+        ),
+        _make_sf(
+            "MSFT",
+            option_indicators=OptionIndicators(bid_ask_spread_ratio=0.0),
+            data_quality=DataQuality(score=0.5, stock_bar_count=260, option_row_count=200),
+        ),
+    ])
+
+    assert captured_call["trade_symbols"] == ["MSFT"]
+    triage = blueprint.reasoning_context["pre_synthesis_triage"]
+    assert triage["target_shortlist_size"] == 1
+    assert triage["weights"] == {
+        "data_quality": 0.1,
+        "option_coverage": 0.1,
+        "liquidity": 0.6,
+        "strategy_eligibility": 0.1,
+        "earnings_buffer": 0.1,
+    }
+    assert triage["escalate_symbols"] == ["MSFT"]
+    assert triage["monitor_symbols"] == ["AAPL"]
+
+
+@pytest.mark.asyncio
+async def test_pre_synthesis_filter_returns_valid_empty_blueprint_when_everything_is_dropped(monkeypatch):
+    settings = SimpleNamespace(
+        analysis_service=SimpleNamespace(
+            llm=SimpleNamespace(
+                orchestrator_chunk_size=5,
+                orchestrator_max_parallel=2,
+            )
+        ),
+        trade_service=SimpleNamespace(
+            risk=SimpleNamespace(
+                blueprint_limits=SimpleNamespace(
+                    max_daily_loss=2_000.0,
+                    max_margin_usage=0.5,
+                    portfolio_delta_limit=0.5,
+                    portfolio_gamma_limit=0.1,
+                )
+            )
+        ),
+        common=SimpleNamespace(
+            watchlist=SimpleNamespace(
+                for_trade=["AAPL"],
+                for_trade_benchmark=[],
+            )
+        ),
+    )
+
+    monkeypatch.setattr(
+        "services.analysis_service.app.llm.agents.orchestrator.get_settings",
+        lambda: settings,
+    )
+
+    orchestrator = AgentOrchestrator(provider=_Provider())
+
+    async def _unexpected_generate_single_pass(self, **kwargs):
+        raise AssertionError("_generate_single_pass should not be called when all symbols are filtered")
+
+    monkeypatch.setattr(AgentOrchestrator, "_generate_single_pass", _unexpected_generate_single_pass)
+
+    blueprint = await orchestrator.generate([
+        _make_sf("AAPL", data_quality=DataQuality(score=0.2, stock_bar_count=260, option_row_count=10)),
+    ])
+
+    assert blueprint.symbol_plans == []
+    assert str(blueprint.trading_date) == "2026-04-29"
+    assert blueprint.model_provider == "test"
+    assert blueprint.model_version == "unknown"
+    assert blueprint.reasoning_context["pipeline"] == "agentic_empty"
+    assert blueprint.reasoning_context["pre_synthesis_filter"]["dropped_symbol_count"] == 1
+    assert blueprint.reasoning_context["pre_synthesis_triage"]["escalate_symbol_count"] == 0

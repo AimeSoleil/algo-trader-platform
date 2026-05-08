@@ -7,7 +7,9 @@ from shared.models.blueprint import Direction, LLMTradingBlueprint, OptionLeg, S
 import services.analysis_service.app.tasks.blueprint as blueprint_task
 from services.analysis_service.app.tasks.blueprint import (
     _apply_deterministic_validation,
+    _format_pre_synthesis_summary_text,
     _is_blueprint_soft_blocked,
+    _summarize_pre_synthesis_outcome,
 )
 
 
@@ -162,3 +164,62 @@ def test_precision_first_keeps_calendar_when_allowed_and_context_is_clean(monkey
     assert summary["allowed_strategy_types"] == ["single_leg", "vertical_spread", "iron_condor", "calendar_spread"]
     assert summary["error_count"] == 0
     assert summary["passed"] is True
+
+
+def test_pre_synthesis_summary_includes_monitor_symbol_reasons():
+    blueprint = _make_blueprint(["MSFT"]).model_copy(update={
+        "reasoning_context": {
+            "pre_synthesis_filter": {
+                "dropped_symbol_count": 2,
+            },
+            "pre_synthesis_triage": {
+                "target_shortlist_size": 5,
+                "escalate_symbol_count": 5,
+                "monitor_symbol_count": 1,
+                "escalate_symbols": ["AAPL", "MSFT", "NVDA", "TSLA", "AMZN"],
+                "ranked_symbols": [
+                    {
+                        "symbol": "META",
+                        "rank": 6,
+                        "action": "monitor",
+                        "coarse_score": 0.4123,
+                        "decision_reason": "rank 6 below shortlist cutoff 5; weaker data_quality=0.45, option_coverage=0.20",
+                    }
+                ],
+            },
+        }
+    })
+
+    summary = _summarize_pre_synthesis_outcome(blueprint)
+
+    assert summary["dropped_symbol_count"] == 2
+    assert summary["monitor_symbol_count"] == 1
+    assert summary["monitor_symbols"] == [
+        {
+            "symbol": "META",
+            "rank": 6,
+            "coarse_score": 0.4123,
+            "reason": "rank 6 below shortlist cutoff 5; weaker data_quality=0.45, option_coverage=0.20",
+        }
+    ]
+
+
+def test_pre_synthesis_summary_text_lists_each_monitor_symbol_and_reason():
+    text = _format_pre_synthesis_summary_text({
+        "monitor_symbols": [
+            {
+                "symbol": "META",
+                "reason": "rank 6 below shortlist cutoff 5; weaker data_quality=0.45, option_coverage=0.20",
+            },
+            {
+                "symbol": "CRM",
+                "reason": "rank 7 below shortlist cutoff 5; weaker liquidity=0.30, earnings_buffer=0.35",
+            },
+        ]
+    })
+
+    assert text == (
+        "Pre-synthesis triage monitor symbols: "
+        "META (rank 6 below shortlist cutoff 5; weaker data_quality=0.45, option_coverage=0.20); "
+        "CRM (rank 7 below shortlist cutoff 5; weaker liquidity=0.30, earnings_buffer=0.35)."
+    )
