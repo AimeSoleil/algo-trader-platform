@@ -21,7 +21,7 @@ class SignalComputeRequest(BaseModel):
     trading_date: date | None = Field(None, description="Target date (ISO format). Defaults to today.")
     symbols: list[str] | None = Field(
         None,
-        description="Specific symbols to compute. Defaults to full watchlist.",
+        description="Specific symbols to compute. Defaults to the full data/signal watchlist.",
     )
 
 
@@ -117,7 +117,7 @@ async def get_signal_features(
 async def trigger_signal_compute(req: SignalComputeRequest):
     """手动触发当日或指定交易日的批量信号计算任务。
 
-    可指定 symbols 仅计算特定标的，否则使用完整 watchlist。
+    可指定 symbols 仅计算特定标的，否则使用完整 data/signal watchlist。
     """
     td = req.trading_date or today_trading()
     if td > today_trading():
@@ -136,7 +136,7 @@ async def trigger_signal_compute(req: SignalComputeRequest):
         queue="signal",
     )
 
-    symbols_msg = f", symbols={clean_symbols}" if clean_symbols else " (full watchlist)"
+    symbols_msg = f", symbols={clean_symbols}" if clean_symbols else " (full data/signal watchlist)"
     return SignalComputeResponse(
         task_id=task.id,
         status="queued",

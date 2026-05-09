@@ -35,6 +35,8 @@ Signal Service 的主要流程是：
 
 这是一个“批量日级特征计算服务”，不是盘中逐 tick 决策服务。
 
+默认 symbol 语义：Signal Service 默认覆盖 `common.watchlist.for_data_signal` 加 benchmark 的上游 universe。它是 analysis 的上游数据层，不直接决定 daily LLM analysis target list。
+
 ## Compute Tasks
 
 ### `signal_service.tasks.compute_daily_signals`
@@ -50,6 +52,7 @@ Signal Service 的主要流程是：
 - 支持指定 `symbols`
 - 使用并发 semaphore 控制单标的处理并发
 - 预加载 benchmark 和 VIX，避免重复查询
+- 未显式传 `symbols` 时，默认运行完整 data/signal universe，也就是统一的 `for_data_signal` 加 signal benchmarks
 
 ### `signal_service.tasks.compute_signals_chunk`
 
@@ -189,5 +192,6 @@ uv run celery -A shared.celery_app.celery_app worker -Q signal -l info
 ## Dev Notes
 
 - Signal Service 是 analysis service 的上游，不直接生成 blueprint
+- 自动 daily 流程默认先计算完整上游 universe；随后 analysis 会按 `for_data_signal` fan-out 成多个 chunk task 并最终合并
 - 查询默认会选“最新可用 signal date”，而不一定是今天
 - 若指定日期没有任何可计算数据，任务结果会返回错误摘要而不是空成功

@@ -453,7 +453,7 @@ async def trigger_collection(req: CollectRequest):
 
     symbols = [s.upper() for s in req.symbols]
 
-    # Expand "WATCHLIST" keyword → merge with configured watchlist symbols
+    # Expand "WATCHLIST" keyword → merge with configured upstream data/signal watchlist symbols
     if "WATCHLIST" in symbols:
         settings_watchlist = settings.common.watchlist.all
         symbols = list(dict.fromkeys(

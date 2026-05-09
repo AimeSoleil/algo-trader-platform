@@ -368,7 +368,7 @@ async def _evaluation_tick(runtime_state: ExecutionRuntimeState) -> None:
         stage="scheduler",
         paused=runtime_state.paused,
         trading_date=str(runtime_state.loaded_trading_date),
-        symbols=len(settings.common.watchlist.for_trade),
+        symbols=len(settings.common.watchlist.for_data_signal),
     )
     if runtime_state.paused:
         runtime_state.last_tick_at = now_utc()
@@ -400,7 +400,7 @@ async def _evaluation_tick(runtime_state: ExecutionRuntimeState) -> None:
 
         sig_date = runtime_state.loaded_trading_date
 
-        for symbol in settings.common.watchlist.for_trade:
+        for symbol in settings.common.watchlist.for_data_signal:
             market_ctx = await build_market_context(symbol, sig_date.isoformat() if sig_date else "")
             if market_ctx is None:
                 continue
@@ -463,7 +463,7 @@ async def _evaluation_tick(runtime_state: ExecutionRuntimeState) -> None:
             log_event="tick_context",
             stage="evaluation",
             trading_date=str(runtime_state.loaded_trading_date),
-            symbols_total=len(settings.common.watchlist.for_trade),
+            symbols_total=len(settings.common.watchlist.for_data_signal),
             quotes_found=quotes_found,
             symbols_evaluated=symbols_evaluated,
             duration_ms=round((perf_counter() - tick_started) * 1000, 2),
@@ -565,7 +565,7 @@ def start_execution_scheduler(runtime_state: ExecutionRuntimeState) -> None:
         trade_start_time=settings.trade_service.trade_start_time,
         interval_seconds=settings.trade_service.execution_interval,
         timezone=settings.common.timezone,
-        symbols=len(settings.common.watchlist.for_trade),
+        symbols=len(settings.common.watchlist.for_data_signal),
     )
     _scheduler = AsyncIOScheduler(timezone=settings.common.timezone)
     _scheduler.add_job(

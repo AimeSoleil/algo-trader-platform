@@ -145,7 +145,7 @@ async def test_chunked_merge_trims_plans_to_max_total_positions(monkeypatch):
         ),
         common=SimpleNamespace(
             watchlist=SimpleNamespace(
-                for_trade=["AAPL", "MSFT", "NVDA", "TSLA"],
+                for_data_signal=["AAPL", "MSFT", "NVDA", "TSLA"],
                 for_trade_benchmark=[],
             )
         ),
@@ -229,7 +229,7 @@ async def test_chunked_merge_prefers_higher_scoring_duplicate_symbol(monkeypatch
         ),
         common=SimpleNamespace(
             watchlist=SimpleNamespace(
-                for_trade=["AAPL", "MSFT", "NVDA"],
+                for_data_signal=["AAPL", "MSFT", "NVDA"],
                 for_trade_benchmark=[],
             )
         ),
@@ -301,7 +301,7 @@ async def test_chunked_merge_uses_portfolio_impact_heuristic(monkeypatch):
         ),
         common=SimpleNamespace(
             watchlist=SimpleNamespace(
-                for_trade=["AAPL", "MSFT", "NVDA"],
+                for_data_signal=["AAPL", "MSFT", "NVDA"],
                 for_trade_benchmark=[],
             )
         ),
@@ -374,7 +374,7 @@ async def test_chunked_merge_penalizes_same_direction_existing_holding_and_conce
         ),
         common=SimpleNamespace(
             watchlist=SimpleNamespace(
-                for_trade=["AAPL", "MSFT"],
+                for_data_signal=["AAPL", "MSFT"],
                 for_trade_benchmark=[],
             )
         ),
@@ -464,7 +464,7 @@ async def test_chunked_merge_applies_llm_post_merge_ranking(monkeypatch):
         ),
         common=SimpleNamespace(
             watchlist=SimpleNamespace(
-                for_trade=["AAPL", "MSFT", "NVDA"],
+                for_data_signal=["AAPL", "MSFT", "NVDA"],
                 for_trade_benchmark=[],
             )
         ),
@@ -576,7 +576,7 @@ async def test_chunked_merge_precision_first_prefers_simple_allowed_strategy(mon
         ),
         common=SimpleNamespace(
             watchlist=SimpleNamespace(
-                for_trade=["AAPL", "MSFT"],
+                for_data_signal=["AAPL", "MSFT"],
                 for_trade_benchmark=[],
             )
         ),
@@ -644,7 +644,7 @@ async def test_chunked_merge_precision_first_prefers_fewer_gate_conflicts(monkey
         ),
         common=SimpleNamespace(
             watchlist=SimpleNamespace(
-                for_trade=["AAPL", "MSFT"],
+                for_data_signal=["AAPL", "MSFT"],
                 for_trade_benchmark=[],
             )
         ),
@@ -721,7 +721,7 @@ async def test_chunked_generate_uses_market_snapshot_instead_of_benchmark_chunk_
         ),
         common=SimpleNamespace(
             watchlist=SimpleNamespace(
-                for_trade=["AAPL", "MSFT", "NVDA"],
+                for_data_signal=["AAPL", "MSFT", "NVDA"],
                 for_trade_benchmark=["SPY", "QQQ"],
             )
         ),
@@ -790,7 +790,7 @@ async def test_pre_synthesis_filter_skips_low_quality_and_hard_block_liquidity(m
         ),
         common=SimpleNamespace(
             watchlist=SimpleNamespace(
-                for_trade=["AAPL", "MSFT", "NVDA"],
+                for_data_signal=["AAPL", "MSFT", "NVDA"],
                 for_trade_benchmark=[],
             )
         ),
@@ -860,7 +860,7 @@ async def test_pre_synthesis_filter_drops_symbol_with_no_precision_first_strateg
         ),
         common=SimpleNamespace(
             watchlist=SimpleNamespace(
-                for_trade=["AAPL", "MSFT"],
+                for_data_signal=["AAPL", "MSFT"],
                 for_trade_benchmark=[],
             )
         ),
@@ -920,7 +920,7 @@ async def test_pre_synthesis_coarse_ranking_shortlists_top_symbols_and_monitors_
         ),
         common=SimpleNamespace(
             watchlist=SimpleNamespace(
-                for_trade=["AAPL", "MSFT", "NVDA", "TSLA", "AMZN", "META"],
+                for_data_signal=["AAPL", "MSFT", "NVDA", "TSLA", "AMZN", "META"],
                 for_trade_benchmark=[],
             )
         ),
@@ -1001,7 +1001,7 @@ async def test_pre_synthesis_coarse_ranking_uses_configured_shortlist_size_and_w
         ),
         common=SimpleNamespace(
             watchlist=SimpleNamespace(
-                for_trade=["AAPL", "MSFT"],
+                for_data_signal=["AAPL", "MSFT"],
                 for_trade_benchmark=[],
             )
         ),
@@ -1073,7 +1073,7 @@ async def test_pre_synthesis_filter_returns_valid_empty_blueprint_when_everythin
         ),
         common=SimpleNamespace(
             watchlist=SimpleNamespace(
-                for_trade=["AAPL"],
+                for_data_signal=["AAPL"],
                 for_trade_benchmark=[],
             )
         ),

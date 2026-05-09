@@ -102,6 +102,9 @@ def _build_downstream_steps(td: str) -> list[tuple[str, object]]:
     symbols = settings.common.watchlist.all
     chunk_size = settings.data_service.worker.pipeline.chunk_size
     chunks = chunk_symbols(symbols, chunk_size)
+    analysis_symbols = settings.common.watchlist.for_data_signal
+    analysis_chunk_size = settings.analysis_service.daily_task_chunk_size
+    analysis_chunks = chunk_symbols(analysis_symbols, analysis_chunk_size) or [[]]
 
     return [
         (
@@ -121,12 +124,25 @@ def _build_downstream_steps(td: str) -> list[tuple[str, object]]:
         ),
         (
             "generate_daily_blueprint",
-            celery_app.signature(
-                "analysis_service.tasks.generate_daily_blueprint",
-                args=[td],
-                queue="analysis",
-                immutable=True,
-            ),
+            celery_chain(
+                chord(
+                    group(
+                        celery_app.signature(
+                            "analysis_service.tasks.generate_daily_blueprint_chunk",
+                            args=[chunk, td],
+                            queue="analysis",
+                            immutable=True,
+                        )
+                        for chunk in analysis_chunks
+                    ),
+                    celery_app.signature(
+                        "analysis_service.tasks.finalize_daily_blueprint_chunks",
+                        args=[td],
+                        queue="analysis",
+                    ),
+                ),
+                stage_barrier.s("generate_daily_blueprint", td).set(queue="data"),
+            ).set(immutable=True),
         ),
     ]
 

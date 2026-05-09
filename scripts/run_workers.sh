@@ -21,6 +21,8 @@
 #   SHUTDOWN_GRACE          Seconds before SIGKILL        (default: 30)
 #   WORKERS                 Comma-separated worker list  (default: all)
 #                           Choices: data,signal,analysis
+#   ANALYSIS_WORKER_COUNT   Analysis worker instances     (default: 1)
+#                           Each instance uses prefetch=1 and -c 1
 #   ENABLE_FLOWER           Set to 1 to start Flower     (default: 0)
 #   FLOWER_PORT             Flower listen port           (default: 5555)
 #   FLOWER_INSPECT_TIMEOUT  Flower inspect timeout ms    (default: 60000)
@@ -36,6 +38,7 @@
 #   ./scripts/run_workers.sh --list          # show available worker names
 #   ENABLE_FLOWER=1 ./scripts/run_workers.sh
 #   WORKERS=data,signal ./scripts/run_workers.sh
+#   ANALYSIS_WORKER_COUNT=3 ./scripts/run_workers.sh --workers=analysis
 #   Ctrl+C to stop all processes.
 #
 # Available workers:
@@ -58,6 +61,7 @@ HEALTH_CHECK_TIMEOUT="${HEALTH_CHECK_TIMEOUT:-25}"
 HEALTH_CHECK_FAILURES="${HEALTH_CHECK_FAILURES:-3}"
 SHUTDOWN_GRACE="${SHUTDOWN_GRACE:-30}"
 WORKERS="${WORKERS:-all}"
+ANALYSIS_WORKER_COUNT="${ANALYSIS_WORKER_COUNT:-1}"
 ENABLE_FLOWER="${ENABLE_FLOWER:-0}"
 FLOWER_PORT="${FLOWER_PORT:-5555}"
 FLOWER_INSPECT_TIMEOUT="${FLOWER_INSPECT_TIMEOUT:-60000}"
@@ -74,6 +78,8 @@ declare -A WORKER_DESC=(
   [signal]="盘后特征计算与信号生成"
   [analysis]="LLM 蓝图生成与分析"
 )
+
+declare -A WORKER_QUEUE=()
 
 resolve_env_file() {
   if [[ -n "$ENV_FILE" ]]; then
@@ -125,11 +131,99 @@ show_workers() {
   echo ""
   echo "用法: ./scripts/run_workers.sh --workers=data,signal"
   echo "默认启动全部: ${ALL_QUEUES[*]}"
+  echo "analysis 可通过 ANALYSIS_WORKER_COUNT=N 启动多个安全模式实例"
+}
+
+build_active_workers() {
+  ACTIVE_WORKERS=()
+  WORKER_QUEUE=()
+
+  local queue instance_name idx
+  for queue in "${REQUESTED_WORKERS[@]}"; do
+    if [[ "$queue" == "analysis" ]]; then
+      if (( ANALYSIS_WORKER_COUNT == 1 )); then
+        ACTIVE_WORKERS+=("analysis")
+        WORKER_QUEUE[analysis]="analysis"
+      else
+        for (( idx=1; idx<=ANALYSIS_WORKER_COUNT; idx++ )); do
+          instance_name="analysis-${idx}"
+          ACTIVE_WORKERS+=("$instance_name")
+          WORKER_QUEUE[$instance_name]="analysis"
+        done
+      fi
+      continue
+    fi
+
+    ACTIVE_WORKERS+=("$queue")
+    WORKER_QUEUE[$queue]="$queue"
+  done
+}
+
+process_family_name() {
+  local name="$1"
+  if [[ "$name" == analysis-* ]]; then
+    printf 'analysis\n'
+    return
+  fi
+
+  printf '%s\n' "$name"
+}
+
+collect_status_worker_names() {
+  local -a names=(data signal)
+  local -A seen=([data]=1 [signal]=1)
+  local found_analysis=0
+  local path base
+
+  for path in \
+    "$LOG_DIR"/analysis.pid \
+    "$LOG_DIR"/analysis-*.pid \
+    "$LOG_DIR"/celery-analysis.log \
+    "$LOG_DIR"/celery-analysis-*.log; do
+    [[ -e "$path" ]] || continue
+    found_analysis=1
+    base="$(basename "$path")"
+    case "$base" in
+      analysis.pid)
+        base="analysis"
+        ;;
+      analysis-*.pid)
+        base="${base%.pid}"
+        ;;
+      celery-analysis.log)
+        base="analysis"
+        ;;
+      celery-analysis-*.log)
+        base="${base#celery-}"
+        base="${base%.log}"
+        ;;
+      *)
+        continue
+        ;;
+    esac
+
+    if [[ -z "${seen[$base]:-}" ]]; then
+      names+=("$base")
+      seen[$base]=1
+    fi
+  done
+
+  if (( found_analysis == 0 )); then
+    names+=("analysis")
+  fi
+
+  printf '%s\n' "${names[@]}"
 }
 
 show_status() {
   mkdir -p "$LOG_DIR"
   local manager_pid_file="$LOG_DIR/run_workers-manager.pid"
+  local -a worker_names=()
+  local name pid pidfile state
+
+  while IFS= read -r name; do
+    worker_names+=("$name")
+  done < <(collect_status_worker_names)
 
   echo "[run_workers] Status"
   echo "  LOG_DIR=${LOG_DIR}"
@@ -149,31 +243,31 @@ show_status() {
     echo "  manager   : STOPPED"
   fi
 
-  local names=("${ALL_QUEUES[@]}" beat flower watchdog)
+  local names=("${worker_names[@]}" beat flower watchdog)
   for name in "${names[@]}"; do
-    local pidfile="$LOG_DIR/${name}.pid"
-    _pad="$(printf '%*s' $((10-${#name})) '')"
+    pidfile="$LOG_DIR/${name}.pid"
     if [[ -f "$pidfile" ]]; then
-      local pid
       pid="$(cat "$pidfile" 2>/dev/null || true)"
       if [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null; then
-        echo "  ${name}${_pad}: RUNNING (pid=${pid})"
+        state="RUNNING (pid=${pid})"
       else
-        echo "  ${name}${_pad}: STALE_PID_FILE"
+        state="STALE_PID_FILE"
       fi
     else
-      echo "  ${name}${_pad}: STOPPED"
+      state="STOPPED"
     fi
+
+    printf "  %-12s %s\n" "${name}:" "$state"
   done
 
   # ── Log files ──
   echo ""
   echo "  日志文件:"
-  printf "    %-10s → %s\n" "manager" "${LOG_DIR}/run_workers-manager.out"
-  for q in "${ALL_QUEUES[@]}"; do
-    printf "    %-10s → %s\n" "$q" "${LOG_DIR}/celery-${q}.log"
+  printf "    %-12s %s\n" "manager" "${LOG_DIR}/run_workers-manager.out"
+  for name in "${worker_names[@]}"; do
+    printf "    %-12s %s\n" "$name" "${LOG_DIR}/celery-${name}.log"
   done
-  printf "    %-10s → %s\n" "beat" "${LOG_DIR}/celery-beat.log"
+  printf "    %-12s %s\n" "beat" "${LOG_DIR}/celery-beat.log"
 }
 
 run_diag() {
@@ -348,13 +442,18 @@ case "$LOG_LEVEL" in
     ;;
 esac
 
+if ! [[ "$ANALYSIS_WORKER_COUNT" =~ ^[1-9][0-9]*$ ]]; then
+  echo "[run_workers] ANALYSIS_WORKER_COUNT 必须是大于等于 1 的整数: '${ANALYSIS_WORKER_COUNT}'" >&2
+  exit 1
+fi
+
 # Resolve which workers to start
 if [[ "$WORKERS" == "all" ]]; then
-  ACTIVE_WORKERS=("${ALL_QUEUES[@]}")
+  REQUESTED_WORKERS=("${ALL_QUEUES[@]}")
 else
-  IFS=',' read -ra ACTIVE_WORKERS <<< "$WORKERS"
+  IFS=',' read -ra REQUESTED_WORKERS <<< "$WORKERS"
   # Validate worker names
-  for w in "${ACTIVE_WORKERS[@]}"; do
+  for w in "${REQUESTED_WORKERS[@]}"; do
     found=0
     for q in "${ALL_QUEUES[@]}"; do [[ "$w" == "$q" ]] && found=1 && break; done
     if (( found == 0 )); then
@@ -365,6 +464,16 @@ else
     fi
   done
 fi
+
+ANALYSIS_REQUESTED=0
+for w in "${REQUESTED_WORKERS[@]}"; do
+  if [[ "$w" == "analysis" ]]; then
+    ANALYSIS_REQUESTED=1
+    break
+  fi
+done
+
+build_active_workers
 
 CELERY_CMD="uv run celery -A shared.celery_app.celery_app"
 
@@ -397,6 +506,7 @@ if [[ "$DAEMON_MODE" == "1" ]]; then
   HEALTH_CHECK_FAILURES="$HEALTH_CHECK_FAILURES" \
   SHUTDOWN_GRACE="$SHUTDOWN_GRACE" \
   WORKERS="$WORKERS" \
+  ANALYSIS_WORKER_COUNT="$ANALYSIS_WORKER_COUNT" \
   ENABLE_FLOWER="$ENABLE_FLOWER" \
   FLOWER_PORT="$FLOWER_PORT" \
   FLOWER_INSPECT_TIMEOUT="$FLOWER_INSPECT_TIMEOUT" \
@@ -410,6 +520,9 @@ if [[ "$DAEMON_MODE" == "1" ]]; then
   echo "[run_workers] manager 后台启动成功 (pid=${daemon_pid})"
   echo ""
   echo "  Workers:  ${ACTIVE_WORKERS[*]}"
+  if (( ANALYSIS_REQUESTED == 1 )); then
+    echo "  Analysis: ${ANALYSIS_WORKER_COUNT} x (--prefetch-multiplier=1 -c 1)"
+  fi
   echo "  LogLevel: ${LOG_LEVEL}"
   echo ""
   echo "  日志文件:"
@@ -458,7 +571,9 @@ log() {
   local name="$1"; shift
   local ts
   ts="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
-  local clr="${NAME_CLR[$name]:-$CLR_RESET}"
+  local family
+  family="$(process_family_name "$name")"
+  local clr="${NAME_CLR[$family]:-$CLR_RESET}"
   printf "${clr}%s [run_workers/%s]${CLR_RESET} %s\n" "$ts" "$name" "$*"
 }
 
@@ -781,7 +896,11 @@ log main "HEALTH_CHECK_INTERVAL=${HEALTH_CHECK_INTERVAL}s"
 log main "HEALTH_CHECK_TIMEOUT=${HEALTH_CHECK_TIMEOUT}s"
 log main "HEALTH_CHECK_FAILURES=${HEALTH_CHECK_FAILURES}"
 log main "SHUTDOWN_GRACE=${SHUTDOWN_GRACE}s"
+log main "REQUESTED_WORKERS=${REQUESTED_WORKERS[*]}"
 log main "WORKERS=${ACTIVE_WORKERS[*]}"
+if (( ANALYSIS_REQUESTED == 1 )); then
+  log main "ANALYSIS_WORKER_COUNT=${ANALYSIS_WORKER_COUNT} (each worker uses prefetch=1 -c 1)"
+fi
 log main "WORKER_HOST=${WORKER_HOST}"
 log main "LOG_LEVEL=${LOG_LEVEL}"
 [[ -n "$ENV_FILE" ]] && log main "ENV_FILE=${ENV_FILE}"
@@ -799,15 +918,18 @@ echo "$$" > "$MANAGER_PID_FILE"
 
 # ── Start workers (only those in ACTIVE_WORKERS) ──────────
 
-for queue in "${ACTIVE_WORKERS[@]}"; do
-  # analysis worker: force prefetch=1 (one LLM call at a time)
-  extra_args=""
-  [[ "$queue" == "analysis" ]] && extra_args="--prefetch-multiplier=1 -c 1"
+for worker_name in "${ACTIVE_WORKERS[@]}"; do
+  queue="${WORKER_QUEUE[$worker_name]}"
+  extra_args=()
+  if [[ "$queue" == "analysis" ]]; then
+    extra_args=(--prefetch-multiplier=1 -c 1)
+  fi
 
-  run_with_restart "$queue" \
-    $CELERY_CMD worker -Q "$queue" -n "${queue}@${WORKER_HOST}" $extra_args \
-    --loglevel="$LOG_LEVEL" --logfile="$LOG_DIR/celery-${queue}.log" &
-  WRAPPER_PIDS[$queue]=$!
+  run_with_restart "$worker_name" \
+    $CELERY_CMD worker -Q "$queue" -n "${worker_name}@${WORKER_HOST}" \
+    "${extra_args[@]}" \
+    --loglevel="$LOG_LEVEL" --logfile="$LOG_DIR/celery-${worker_name}.log" &
+  WRAPPER_PIDS[$worker_name]=$!
 done
 
 run_with_restart beat \

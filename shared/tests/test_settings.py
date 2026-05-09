@@ -2,6 +2,9 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+from pydantic import ValidationError
+
 from shared.config.settings import Settings
 
 
@@ -103,3 +106,49 @@ analysis_service:
     assert settings.analysis_service.llm.coarse_ranking.weights.liquidity == 0.35
     assert settings.analysis_service.llm.coarse_ranking.weights.strategy_eligibility == 0.15
     assert settings.analysis_service.llm.coarse_ranking.weights.earnings_buffer == 0.10
+
+
+def test_watchlist_all_uses_data_signal_universe_plus_benchmarks(tmp_path: Path) -> None:
+    yaml_path = tmp_path / "config.yaml"
+    yaml_path.write_text(
+        """
+common:
+  watchlist:
+    for_data_signal:
+      - SPY
+      - AAPL
+      - MSFT
+      - NVDA
+    for_trade_benchmark:
+      - SPY
+      - MSFT
+    for_signal_benchmark:
+      - ^VIX
+      - SPY
+""".strip(),
+        encoding="utf-8",
+    )
+
+    settings = Settings.from_yaml(yaml_path)
+
+    assert settings.common.watchlist.all == ["SPY", "AAPL", "MSFT", "NVDA", "^VIX"]
+
+
+def test_trade_benchmark_must_be_subset_of_data_signal(tmp_path: Path) -> None:
+    yaml_path = tmp_path / "config.yaml"
+    yaml_path.write_text(
+        """
+common:
+  watchlist:
+    for_data_signal:
+      - AAPL
+      - MSFT
+    for_trade_benchmark:
+      - AAPL
+      - NVDA
+""".strip(),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValidationError, match="common.watchlist.for_trade_benchmark must be a subset"):
+        Settings.from_yaml(yaml_path)

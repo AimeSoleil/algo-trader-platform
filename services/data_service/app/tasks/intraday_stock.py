@@ -40,7 +40,7 @@ async def _capture_intraday_stock_orchestrator() -> dict:
         return {"captured": 0, "skipped": True}
 
     settings = get_settings()
-    symbols = [s for s in settings.common.watchlist.for_trade if not s.startswith("^")]
+    symbols = [s for s in settings.common.watchlist.all if not s.startswith("^")]
     chunk_size = settings.data_service.worker.pipeline.chunk_size
     chunks = chunk_symbols(symbols, chunk_size)
 

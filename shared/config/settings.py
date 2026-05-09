@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any, ClassVar
 
 import yaml
-from pydantic import Field, field_validator
+from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, PydanticBaseSettingsSource
 
 
@@ -176,35 +176,37 @@ class LoggingSettings(BaseSettings):
 class WatchlistSettings(BaseSettings):
     """Structured watchlist with three symbol categories.
 
-    ``for_trade``  — symbols we collect data for AND generate trading
-                     blueprints for.  If a symbol also appears in
-                     *for_trade_benchmark* it is still treated as a
-                     trade target (deduplication during analysis).
-    ``for_trade_benchmark`` — injected into every LLM analysis chunk
-                     for market context.  Plans are NOT generated for
-                     these unless they also appear in *for_trade*.
-    ``for_signal_benchmark`` — used by the signal service for beta /
-                     correlation computation.  Data is collected but
-                     no blueprints are generated.
+    ``for_data_signal`` — unified upstream universe for data capture,
+                     signal generation, daily analysis, and trade
+                     execution.
+    ``for_trade_benchmark`` — injected into analysis as market context
+                     and must remain a subset of *for_data_signal*.
+                     Benchmark symbols remain tradable.
+    ``for_signal_benchmark`` — extra signal-only benchmark symbols used
+                     by the signal service for beta / correlation
+                     computation. These may extend beyond the tradable
+                     universe.
 
-    Use ``.all`` to get the deduplicated union across all three lists
-    (for data collection and maintenance).
+    Use ``.all`` to get the deduplicated union across the tradable
+    universe plus both benchmark lists.
     """
-    for_trade: list[str] = Field(
+    for_data_signal: list[str] = Field(
         default_factory=lambda: [
             # ETFs
-            "SPY", "QQQ", "IWM",
+            "SPY", "QQQ", "IWM", "DIA",
             # Tech / Growth
-            "AAPL", "MSFT", "NVDA", "TSLA", "AMZN",
-            "META", "GOOGL", "AMD", "NFLX", "AVGO",
+            "AAPL", "MSFT", "TSLA", "AMZN", "META",
+            "GOOGL", "AMD", "NFLX", "ORCL", "INTC",
+            # AI Infra / AI Datacenter
+            "NVDA", "AVGO", "SMCI", "MU", "LITE",
+            "GEV",
+            # SaaS
+            "ADBE",
             # AI / Defense
             "PLTR",
-            # Financials
-            "JPM", "GS",
-            # Payments · Healthcare · Pharma · Energy
-            "V", "UNH", "LLY", "XOM",
-            # Consumer · Industrials · Crypto
-            "COST", "CAT", "UBER", "COIN", "IBIT",
+            # Robotics / Aerospace / Nuclear / Consumer / Crypto
+            "SYM", "RKLB", "OKLO", "V", "LLY",
+            "XOM", "WMT", "CRWV", "COIN",
         ],
     )
     for_trade_benchmark: list[str] = Field(
@@ -217,11 +219,25 @@ class WatchlistSettings(BaseSettings):
         ],
     )
 
+    @model_validator(mode="after")
+    def _validate_trade_benchmark_subset(self) -> WatchlistSettings:
+        upstream = {symbol.upper() for symbol in self.for_data_signal}
+        missing = [
+            symbol for symbol in self.for_trade_benchmark
+            if symbol.upper() not in upstream
+        ]
+        if missing:
+            raise ValueError(
+                "common.watchlist.for_trade_benchmark must be a subset of "
+                f"common.watchlist.for_data_signal; missing: {', '.join(missing)}"
+            )
+        return self
+
     @property
     def all(self) -> list[str]:
-        """Deduplicated union of all three lists (order-preserving)."""
+        """Deduplicated upstream data/signal universe plus benchmark lists."""
         return list(dict.fromkeys(
-            self.for_trade + self.for_trade_benchmark + self.for_signal_benchmark
+            self.for_data_signal + self.for_trade_benchmark + self.for_signal_benchmark
         ))
 
 
@@ -493,6 +509,7 @@ class LLMSettings(BaseSettings):
 
 class AnalysisServiceSettings(BaseSettings):
     """analysis_service 顶级配置."""
+    daily_task_chunk_size: int = 20
     llm: LLMSettings = Field(default_factory=LLMSettings)
 
 

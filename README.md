@@ -136,6 +136,16 @@ flowchart LR
 6. `gateway_service` 为所有服务提供统一入口和统一文档
 7. `celery_worker` 和 `celery-beat` 负责自动调度这整条链路
 
+### Watchlist 分层
+
+当前 watchlist 分成三层语义：
+
+- `common.watchlist.for_data_signal`：统一的 tradable + analysis universe。data、signal、analysis、trade 都以这组 symbol 为主集合。
+- `common.watchlist.for_trade_benchmark`：analysis 的 benchmark context，并且必须是 `for_data_signal` 的子集；这些 benchmark symbol 仍然可交易。
+- `common.watchlist.for_signal_benchmark`：signal 的 beta / 相关性 benchmark，可以扩展到 `for_data_signal` 之外。
+
+自动 daily pipeline 在进入 analysis stage 后，会把 `for_data_signal` 按 `analysis_service.daily_task_chunk_size` 分块，默认每 20 个 symbol 触发一个 analysis task；全部 chunk 完成后，再合并为一个最终 blueprint 输出。
+
 ### 如何读这张图
 
 - 左到右的主链路是业务链：`data -> signal -> analysis -> trade`
@@ -336,6 +346,8 @@ uv run python -m scripts.init_db
 uv run python -m scripts.seed_watchlist
 ```
 
+说明：`seed_watchlist` 会把上游 `for_data_signal + benchmark` 的去重并集同步到 `watchlist_symbols`，而不是只写 analysis list。
+
 ### 7.4 启动各服务
 
 建议按这个顺序：
@@ -432,6 +444,8 @@ docker compose -f docker-compose.yml -f docker-compose.app.yml -f docker-compose
 uv run python -m scripts.init_db
 uv run python -m scripts.seed_watchlist
 ```
+
+说明：这里同步的是统一的 `for_data_signal` universe，供采集、信号计算、daily analysis 和交易执行复用。
 
 ## 9. 常用访问地址
 

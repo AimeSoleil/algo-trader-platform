@@ -28,6 +28,7 @@ Data Service 当前分成两类职责：
 
 核心设计点：
 
+- 默认处理统一的 `common.watchlist.for_data_signal` 加 benchmark 扩展；这组 symbol 也是后续 analysis / trade 的主 universe
 - 盘中期权链先进入缓存/快照表，不直接生成日级 option 数据
 - 盘后股票数据单独采集
 - `option_daily` 与 `option_iv_daily` 只从 intraday snapshots 聚合，不走盘后 yfinance 兜底
@@ -141,6 +142,8 @@ Data Service 使用 fetcher registry 做 provider 抽象。
 - 周末默认回补到上一个交易日
 - 结果仍通过 `GET /api/v1/data/collect/{task_id}` 轮询
 
+补充语义：这里的默认 `WATCHLIST` 扩展到的是上游 data/signal universe，不是较窄的 analysis / trade target list。
+
 ## Workers And Queues
 
 Data Service 主要依赖 `data` 队列 worker。
@@ -189,5 +192,6 @@ uv run celery -A shared.celery_app.celery_app worker -Q analysis -l info
 
 - 需要 TimescaleDB、Postgres、Redis、RabbitMQ 可用
 - 首次运行前执行 `uv run python -m scripts.init_db`
+- `watchlist.all` 代表上游 `for_data_signal + benchmark` 去重并集；不是 analysis target list
 - Data Service 本身不负责执行分析或交易，只负责数据层和流水线协调
 - API 进程不是采集调度器；真正的盘后执行由 Celery tasks / Beat 驱动

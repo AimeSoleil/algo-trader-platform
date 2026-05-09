@@ -13,12 +13,18 @@ common:
     end: "16:00"
 
   watchlist:
-    for_trade:
-      # ── ETFs ──
+    for_data_signal:
+      # ── Unified tradable universe for data capture + signal generation ──
+      # Analysis and trade both target this list directly.
+      # Keep for_trade_benchmark as a subset of this list.
+      # ── Macro Benchmark ETFs (Ultra-Liquid Strategy Backbone) ──
       - "SPY"                          # S&P 500 ETF | Ultra-liquid global macro benchmark, ideal for all options strategies (covered calls, spreads, hedging)
       - "QQQ"                          # Nasdaq 100 ETF | Tech/growth benchmark, high volatility, perfect for directional/volatility spreads
       - "IWM"                          # Russell 2000 ETF | Small-cap benchmark, high volatility, ideal for aggressive growth/volatility strategies
-      # ── Tech / Growth ──
+      - "DIA"                          # Dow Jones ETF | Blue-chip / value benchmark, still tradable and reused as analysis benchmark context
+      - "TLT"                          # iShares 20+ Year Treasury Bond ETF | Ultra-liquid interest rate benchmark, critical for macro hedging, rate-sensitive spreads, and equity duration risk hedging
+      - "VXX"                          # iPath Series B S&P 500 VIX Short-Term Futures ETN | Global volatility benchmark, highest liquidity for volatility-focused options, ideal for tail hedging and portfolio drawdown protection
+      # ── Mega-Cap Tech / Growth Core ──
       - "AAPL"                         # Apple Inc. | Ultra-liquid blue-chip tech, low volatility, gold standard for covered calls/LEAPS
       - "MSFT"                         # Microsoft Corp. | AI/cloud leader, top 3 single-stock options volume, consistent institutional order flow
       - "TSLA"                         # Tesla Inc. | EV/AI leader, extreme retail/institutional flow, wide strike range for low-cost directional plays
@@ -26,43 +32,65 @@ common:
       - "META"                         # Meta Platforms Inc. | Social/AI leader, high volatility, industry-leading weekly options liquidity
       - "GOOGL"                        # Alphabet Inc. (Google) | Search/AI/cloud leader, low-volatility growth, perfect for consistent income strategies
       - "AMD"                          # Advanced Micro Devices | AI/PC chip competitor to NVDA, high speculative volume, liquid weekly expirations
-      - "NFLX"                         # Netflix Inc. | Streaming leader, extreme catalyst-driven earnings volatility, strong monthly options flow
-      - "ORCL"                         # Oracle Corp. | Enterprise AI/software leader, low-volatility growth, ideal for covered calls
-      - "INTC"                         # Intel Corp. | Semiconductor turnaround play, high speculative volume, wide strike range for low-cost plays
-      # ── AI Infra / AI Datacenter ── (Full Stack: Compute → Memory → Interconnect → Storage → Power Electronics)
-      # ── Core AI Compute & Networking ──
+      - "TSM"                          # Taiwan Semiconductor | Sole manufacturer of NVDA's cutting-edge AI GPUs, backbone of global semiconductor supply chain, ~220k average daily options contracts, 2026 revenue growth >20%
+      # ── AI Infra Full-Stack Core ──
       - "NVDA"                         # NVIDIA Corp. | Global leader in AI GPUs/accelerators, backbone of modern AI datacenters, highest single-stock options volume in tech
       - "AVGO"                         # Broadcom Inc. | Leader in AI datacenter networking chips/ASICs, high-speed interconnect for AI clusters, low-volatility growth, consistent institutional flow
       - "SMCI"                         # Super Micro Computer | Leader in AI rack-scale servers & liquid cooling for datacenters, top 50 single-stock options volume, extreme institutional/retail flow
-      # ── DRAM / AI High-Bandwidth Memory ──
       - "MU"                           # Micron Technology | US-listed global DRAM/HBM leader, core AI datacenter high-bandwidth memory supplier, top 40 single-stock options volume
-      # ── 光通讯 / Optical Communications (AI Interconnect Backbone) ──
-      - "LITE"                         # Lumentum Holdings | Global optical chip & module leader, 50%+ global share of high-end EML lasers for 800G/1.6T AI datacenter optics
-      # ── Electronic Power / 电子电力 (AI Datacenter Power Lifeline) ──
-      - "GEV"                          # GE Vernova | AI datacenter grid/power generation equipment leader, gas turbine/HVDC system global top 3, 2026 AI-driven breakout growth, high-liquidity options
-      # ── SaaS ──
-      - "ADBE"                         # Adobe Inc. | Creative/marketing SaaS leader (Creative Cloud/Experience Cloud), top 50 single-stock options volume
-      # ── AI / Defense ──
+      - "ANET"                         # Arista Networks | Global leader in AI datacenter switching & cloud networking, top 30 single-stock options volume, consistent institutional AI infrastructure flow
+      - "AMAT"                         # Applied Materials | Global leader in semiconductor manufacturing equipment for AI chips, critical to global AI supply chain, ~160k average daily options contracts, 18%+ 2026 revenue growth
+      - "ORCL"                         # Oracle Corp. | Global enterprise software & cloud leader, rapidly growing AI cloud business, high institutional flow, ideal for stable income strategies
+      - "WOLF"                         # Wolfspeed Inc. | Leader in silicon carbide (SiC) power semiconductors for AI datacenters and EVs, critical for energy-efficient AI compute, high-growth speculative play with rising institutional options flow
       - "PLTR"                         # Palantir Technologies | AI/defense software leader, high retail/institutional flow, volatile thematic play
-      # ── Robotics / 机器人龙头 ── NEW DEDICATED SECTION
-      - "SYM"                         # Symbotic Inc. | Warehouse robotics leader, critical supplier to top retailers (WMT, TGT), high growth/volatility, emerging options liquidity
-      # ── Space / Aerospace 商业航天 ── NEW DEDICATED SECTION (Incl. LUNR/RKLB)
-      - "RKLB"                         # Rocket Lab USA | 全球商业火箭发射龙头，除SpaceX外唯一实现高频稳定发射的美股标的，NASA/国防核心供应商，美股航天板块期权成交量TOP3，高弹性成长标的
-      # ── Nuclear Energy / AI Datacenter Power 核能电力 ──
-      - "OKLO"                         # Oklo Inc | 4th-gen SMR small modular reactor leader, exclusive power supply partnerships with NVIDIA/Meta for distributed AI datacenters, options volume surged 6x in 2026
-      # ── Payments ──
-      - "V"                            # Visa Inc. | Global payments leader, ultra-liquid, low-volatility growth, ideal for consistent covered calls
-      # ── Healthcare / Pharma ──
-      - "LLY"                          # Eli Lilly and Company | Biopharma leader, strong diabetes/obesity franchise, high-volatility growth play, top 50 single-stock options volume
-      # ── Energy ──
-      - "XOM"                          # ExxonMobil | Largest US integrated oil, ultra-liquid, ideal for commodity-focused/income strategies
-      # ── Consumer / Industrials ──
+      - "CRM"                          # Salesforce Inc. | Global #1 enterprise AI SaaS leader (Einstein GPT), top 20 single-stock options volume, ~220k daily contracts, 15%+ 2026 revenue growth (ADBE replacement)
+      # ── Financial Infrastructure & Banking Foundation (FI Fiserv Archetype) ──
+      - "FI"                           # Fiserv Inc. | Global core banking & payment processing infrastructure leader, #1 US core banking systems provider, high liquidity, ideal for low-volatility covered calls
+      - "V"                            # Visa Inc. | Global payments leader, ultra-liquid, low-volatility growth, ideal for consistent covered calls and consumer spending hedging
+      - "JPM"                          # JPMorgan Chase & Co. | Largest US bank, global financial system backbone, top 15 single-stock options volume, perfect for macro rate hedging and financial sector spreads
+      # ── Healthcare Backbone Foundation (UNH Archetype) ──
+      - "UNH"                          # UnitedHealth Group Inc. | Largest US managed care & healthcare services provider, global healthcare infrastructure backbone, top 10 single-stock options volume, ultra-liquid defensive growth
+      - "LLY"                          # Eli Lilly and Company | Biopharma leader, dominant diabetes/obesity franchise, high-volatility growth play, top 50 single-stock options volume
+      # ── Industrial, Logistics & Critical Infrastructure ──
+      - "UPS"                          # United Parcel Service Inc. | Global logistics & supply chain infrastructure leader, high institutional flow, steady cash flow, perfect for income strategies and supply chain cycle plays
+      - "FDX"                          # FedEx Corp. | Global logistics & supply chain infrastructure leader, backbone of global shipping & e-commerce fulfillment, ultra-liquid, sensitive to economic cycles
+      # ── Utilities, Telecom & Consumer Staples Foundation ──
       - "WMT"                          # Walmart Inc. | Top consumer staple defensive play, top 10 single-stock options volume, low correlation to growth swings
-      # ── AI算力运营 / 算力房东 ── (GPU Compute Operators, Not Traditional Real Estate REITs)
-      - "CRWV"                         # CoreWeave | 北美AI算力租赁绝对龙头，英伟达持股7%，与Meta/OpenAI签订超600亿美元算力长单，美股前50期权流动性，机构持仓集中度极高
-      # ── Crypto ──
-      - "COIN"                         # Coinbase Global | Crypto exchange leader, high volatility, leveraged BTC/ETH price exposure
+      - "T"                            # AT&T Inc. | Global telecom & broadband infrastructure leader, core US wireless, fiber, and 5G backbone, top 30 single-stock options liquidity
+      # ── Optical Communications (AI Interconnect Backbone) ──
+      - "LITE"                         # Lumentum Holdings | Global optical chip & module leader, 50%+ global share of high-end EML lasers for 800G/1.6T AI datacenter optics, high options liquidity
+      - "MRVL"                         # Marvell Technology | Leader in AI Ethernet controllers & optical interconnect chips, critical for 800G/1.6T AI datacenter networks, liquid weekly options
+      - "CIEN"                         # Ciena Corp | #1 global coherent optical networking leader for AI hyperscaler interconnect, 2026 growth forecast >15%, ~85k average daily options contracts
+      - "AAOI"                         # Applied Optoelectronics | High-growth 800G/1.6T AI optical transceiver leader, hyperscaler-qualified, rising institutional options flow (added back per request)
+      # ── Nuclear Power & SMR (AI Datacenter Power Backbone) ──
+      - "OKLO"                         # Oklo Inc | 4th-gen SMR small modular reactor leader, exclusive power supply partnerships with NVIDIA/Meta for AI datacenters, options volume surged 6x in 2026
+      - "BWXT"                         # BWX Technologies | Global nuclear reactor & SMR component leader, NASA/DoD prime contractor, core US nuclear infrastructure, high institutional options flow
+      - "CCJ"                          # Cameco Corp | Global #2 uranium producer, nuclear fuel backbone for global reactor fleet, ultra-liquid options, high sensitivity to nuclear energy renaissance
+      # ── Electronic Power & Power Semiconductors (AI Datacenter Power Lifeline) ──
+      - "GEV"                          # GE Vernova | AI datacenter grid/power generation equipment leader, gas turbine/HVDC system global top 3, 2026 AI-driven breakout growth, high-liquidity options
+      - "ON"                           # ON Semiconductor | Global leader in power semiconductors for AI datacenters, EVs, and industrial automation, core hyperscaler power infrastructure supplier, rising institutional options flow
+      - "MPS"                          # Monolithic Power Systems | Leader in high-efficiency power semiconductors for AI servers, 2026 revenue growth forecast >25%, ~90k average daily options contracts
+      # ── Commercial Space & Aerospace ──
+      - "RKLB"                         # Rocket Lab USA | Global commercial rocket launch leader, only SpaceX peer with consistent orbital launch cadence, NASA/defense core supplier, top 3 US aerospace options liquidity
+      - "ASTS"                         # AST SpaceMobile | Space-based mobile broadband leader, global cellular coverage from low Earth orbit, high volatility, rising institutional options flow
+      - "PL"                           # Planet Labs PBC | High-frequency Earth observation satellite leader, critical geospatial data infrastructure for AI applications, rapidly growing institutional options flow
+      # ── Quantum Computing ──
+      - "IONQ"                         # IonQ Inc | Trapped-ion quantum computing pure-play leader, enterprise partnerships with AWS/Microsoft, highest options volume among pure-play quantum stocks, 87% 2026 revenue growth forecast
+      - "RGTI"                         # Rigetti Computing | Pure-play superconducting quantum computing leader, enterprise/government partnerships, high-growth quantum hardware developer, liquid retail/institutional options flow
+      # ── AI Compute Operators (GPU Cloud / 算力房东) ──
+      - "CRWV"                         # CoreWeave | North American AI compute rental absolute leader, NVIDIA-backed, $60B+ hyperscaler long-term contracts, top 50 US single-stock options liquidity
+      - "DOCN"                         # DigitalOcean | High-growth cloud infrastructure provider with rapidly expanding AI GPU rental business, 2026 revenue growth forecast >20%, direct exposure to SME AI compute demand
+      # ── Cybersecurity ──
+      - "PANW"                         # Palo Alto Networks | Global AI-native cybersecurity leader, ~250k average daily options contracts, top 30 single-stock options volume, 15%+ 2026 revenue growth forecast
+      - "CRWD"                         # CrowdStrike Holdings | Cloud-native endpoint security leader, AI-driven threat detection, ~200k average daily options contracts, high growth, liquid weekly expirations
+      - "ZS"                           # Zscaler Inc | Zero Trust network security leader, cloud-native, ~100k average daily options contracts, high growth, AI security tailwinds
+      # ── Crypto & Digital Assets Infrastructure ──
+      - "COIN"                         # Coinbase Global | US regulated crypto exchange leader, high volatility, direct leveraged BTC/ETH price exposure, top 30 single-stock options volume
+      - "IBIT"                         # Bit Digital Inc | Pure-play Bitcoin mining leader, high volatility, direct leveraged BTC price exposure, rising institutional options flow
     for_trade_benchmark:
+      # Analysis benchmark context. Must remain a subset of for_data_signal.
+      # These symbols remain tradable because analysis/trade target the
+      # unified for_data_signal universe.
       - "SPY"                          # Broad Market Benchmark
       - "QQQ"                          # Tech / Growth Benchmark
       - "IWM"                          # Small Cap / Breadth Benchmark
@@ -262,6 +290,7 @@ signal_service:
 # ── Analysis Service — LLM 分析引擎 ────────────────────────
 
 analysis_service:
+  daily_task_chunk_size: 20            # Daily pipeline analysis fan-out chunk size (one Celery analysis task per chunk)
   llm:
     provider: "closeai"                 # openai / copilot / qiniu / closeai
     openai:

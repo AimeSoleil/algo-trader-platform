@@ -30,11 +30,13 @@ uv run python -m scripts.init_db --truncate-all --yes
 uv run python -m scripts.init_db --drop-all --yes
 ```
 
-## 2) Seed/update `watchlist_symbols` from `settings.watchlist`
+## 2) Seed/update `watchlist_symbols` from the upstream data/signal watchlist
 
 ```bash
 uv run python -m scripts.seed_watchlist
 ```
+
+当前 `seed_watchlist` 同步的是 `common.watchlist.for_data_signal + benchmark` 的去重并集，用于上游采集、signal 计算、daily analysis 和维护任务。
 
 ## 3) Start Celery workers and beat (local development)
 
