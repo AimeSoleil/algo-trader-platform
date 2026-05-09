@@ -45,7 +45,7 @@ common:
       - "PLTR"                         # Palantir Technologies | AI/defense software leader, high retail/institutional flow, volatile thematic play
       - "CRM"                          # Salesforce Inc. | Global #1 enterprise AI SaaS leader (Einstein GPT), top 20 single-stock options volume, ~220k daily contracts, 15%+ 2026 revenue growth (ADBE replacement)
       # ── Financial Infrastructure & Banking Foundation (FI Fiserv Archetype) ──
-      - "FI"                           # Fiserv Inc. | Global core banking & payment processing infrastructure leader, #1 US core banking systems provider, high liquidity, ideal for low-volatility covered calls
+      - "FISV"                         # Fiserv Inc. | Global core banking & payment processing infrastructure leader, #1 US core banking systems provider, high liquidity, ideal for low-volatility covered calls
       - "V"                            # Visa Inc. | Global payments leader, ultra-liquid, low-volatility growth, ideal for consistent covered calls and consumer spending hedging
       - "JPM"                          # JPMorgan Chase & Co. | Largest US bank, global financial system backbone, top 15 single-stock options volume, perfect for macro rate hedging and financial sector spreads
       # ── Healthcare Backbone Foundation (UNH Archetype) ──
