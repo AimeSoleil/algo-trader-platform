@@ -310,7 +310,18 @@ run_diag() {
   echo ""
 
   echo "  inspect ping:"
-  ${CELERY_CMD} inspect ping -t "$HEALTH_CHECK_TIMEOUT" -d "$destinations" 2>&1 || true
+  local inspect_output=""
+  local inspect_status=0
+  set +e
+  inspect_output="$(${CELERY_CMD} inspect ping -t "$HEALTH_CHECK_TIMEOUT" -d "$destinations" 2>&1)"
+  inspect_status=$?
+  set -e
+
+  if (( inspect_status == 0 )); then
+    printf '%s\n' "$inspect_output"
+  else
+    print_inspect_failure_summary "$inspect_output" "    "
+  fi
   echo ""
 
   echo "  watchdog log tail:"
@@ -320,6 +331,53 @@ run_diag() {
   else
     echo "    (no watchdog log yet)"
   fi
+}
+
+inspect_failure_kind() {
+  local inspect_output="$1"
+
+  if echo "$inspect_output" | grep -Eq 'ACCESS_REFUSED|Login was refused using authentication mechanism'; then
+    printf 'auth\n'
+    return
+  fi
+
+  if echo "$inspect_output" | grep -Eq 'ConnectionRefusedError|Connection refused|Errno 61|Errno 111'; then
+    printf 'connect\n'
+    return
+  fi
+
+  if echo "$inspect_output" | grep -Eq 'timed out|TimeoutError'; then
+    printf 'timeout\n'
+    return
+  fi
+
+  printf 'unknown\n'
+}
+
+print_inspect_failure_summary() {
+  local inspect_output="$1"
+  local prefix="${2:-}"
+  local kind
+  kind="$(inspect_failure_kind "$inspect_output")"
+
+  case "$kind" in
+    auth)
+      printf '%sbroker authentication failed; inspect ping could not connect to RabbitMQ.\n' "$prefix"
+      printf '%sCheck broker username/password and the Celery broker URL in the loaded env/config.\n' "$prefix"
+      ;;
+    connect)
+      printf '%sbroker connection failed; inspect ping could not reach RabbitMQ.\n' "$prefix"
+      printf '%sCheck whether RabbitMQ is running and reachable from this host.\n' "$prefix"
+      ;;
+    timeout)
+      printf '%sinspect ping timed out before any worker replied.\n' "$prefix"
+      printf '%sCheck broker latency, inspect timeout, or whether the target workers are registered.\n' "$prefix"
+      ;;
+    *)
+      printf '%sinspect ping failed. Raw output:\n' "$prefix"
+      printf '%s\n' "$inspect_output"
+      ;;
+  esac
 }
 
 # Accept CLI flags (supports both --param=value and --param value)
@@ -744,7 +802,20 @@ health_watchdog() {
     done
 
     local ping_output
-    ping_output="$(${CELERY_CMD} inspect ping -t "$HEALTH_CHECK_TIMEOUT" -d "$destinations" 2>&1)" || true
+    local ping_status=0
+    set +e
+    ping_output="$(${CELERY_CMD} inspect ping -t "$HEALTH_CHECK_TIMEOUT" -d "$destinations" 2>&1)"
+    ping_status=$?
+    set -e
+
+    if (( ping_status != 0 )); then
+      local inspect_kind
+      inspect_kind="$(inspect_failure_kind "$ping_output")"
+      if [[ "$inspect_kind" == "auth" || "$inspect_kind" == "connect" ]]; then
+        log_both watchdog "inspect ping 因 broker ${inspect_kind} 故障失败；本轮跳过 worker 失败计数"
+        continue
+      fi
+    fi
 
     # Distinguish control-plane timeout from worker failure.
     # If inspect has no replies but all worker processes are still alive,
