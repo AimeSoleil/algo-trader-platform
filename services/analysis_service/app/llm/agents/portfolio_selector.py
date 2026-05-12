@@ -64,7 +64,6 @@ class PortfolioSelector:
         self,
         *,
         candidates: list[PlanCandidate],
-        max_total_positions: int,
         trade_symbols: set[str],
         current_positions: dict | None = None,
         precision_first_enabled: bool = False,
@@ -83,7 +82,6 @@ class PortfolioSelector:
         ]
         selector_metadata = {
             "candidate_count": len(candidates),
-            "max_total_positions": max_total_positions,
             "trade_symbols": sorted(trade_symbols),
             "ranking_method": self._ranking_method(precision_first_enabled),
             "precision_first_enabled": precision_first_enabled,
@@ -102,7 +100,6 @@ class PortfolioSelector:
         self,
         *,
         candidates: list[PlanCandidate],
-        max_total_positions: int,
         trade_symbols: set[str],
         chunk_limits: list[dict[str, Any]],
         risk_policy: Any,
@@ -206,43 +203,10 @@ class PortfolioSelector:
             ),
             reverse=True,
         )
-        limit = max(1, int(max_total_positions))
-        selected_candidates = ranked_plans[:limit]
-        dropped_candidates = ranked_plans[limit:]
-
-        for candidate in dropped_candidates:
-            decisions.append({
-                "symbol": candidate.plan.underlying.upper(),
-                "action": "filtered",
-                "reason": "portfolio_rank_below_cutoff",
-                "score": self._candidate_score(
-                    candidate,
-                    position_context,
-                    precision_first_enabled=precision_first_enabled,
-                    allowed_strategy_types=normalized_allowed_strategy_types,
-                ),
-                "confidence": round(candidate.plan.confidence, 6),
-                "data_quality_score": round(candidate.quality_score, 6),
-                "portfolio_impact_score": self._portfolio_impact_score(candidate, position_context),
-                "portfolio_impact_breakdown": self._portfolio_impact_breakdown(candidate, position_context),
-                "precision_first_score": self._precision_first_score(
-                    candidate,
-                    precision_first_enabled=precision_first_enabled,
-                    allowed_strategy_types=normalized_allowed_strategy_types,
-                ),
-                "precision_first_breakdown": self._precision_first_breakdown(
-                    candidate,
-                    precision_first_enabled=precision_first_enabled,
-                    allowed_strategy_types=normalized_allowed_strategy_types,
-                ),
-                "llm_rank": llm_rank_positions.get(candidate.plan.underlying.upper()),
-                "chunk_index": candidate.chunk_index,
-                "chunk_id": candidate.chunk_id,
-            })
-
+        selected_candidates = ranked_plans
         selected_plans = [candidate.plan for candidate in selected_candidates]
         selected_symbols = [plan.underlying.upper() for plan in selected_plans]
-        filtered_symbols = [candidate.plan.underlying.upper() for candidate in dropped_candidates]
+        filtered_symbols: list[str] = []
 
         final_limits = {
             "max_total_positions": len(selected_plans),
@@ -253,7 +217,8 @@ class PortfolioSelector:
         }
 
         metadata = {
-            "selector_version": "v2",
+            "selector_version": "v3",
+            "selection_mode": "dedupe_and_rank_all",
             "ranking_method": self._ranking_method(precision_first_enabled),
             "input_plan_count": len(candidates),
             "trade_candidate_count": len(filtered_candidates),
@@ -261,6 +226,7 @@ class PortfolioSelector:
             "output_plan_count": len(selected_plans),
             "selected_symbols": selected_symbols,
             "filtered_symbols": filtered_symbols,
+            "ranked_symbols": [candidate.plan.underlying.upper() for candidate in ranked_plans],
             "precision_first_enabled": precision_first_enabled,
             "allowed_strategy_types": normalized_allowed_strategy_types,
             "deterministic_sort_priority": self._deterministic_sort_priority(precision_first_enabled),

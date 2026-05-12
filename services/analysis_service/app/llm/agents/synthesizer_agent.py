@@ -323,7 +323,12 @@ def _normalize_adjustment_rules(items: Any) -> tuple[list[dict[str, Any]], int, 
     return normalized_items, dropped, dropped_samples
 
 
-def _normalize_blueprint_payload(data: dict[str, Any], signal_date: date | None) -> tuple[dict[str, Any], dict[str, Any]]:
+def _normalize_blueprint_payload(
+    data: dict[str, Any],
+    signal_date: date | None,
+    *,
+    minimum_max_total_positions: int | None = None,
+) -> tuple[dict[str, Any], dict[str, Any]]:
     settings = get_settings()
     risk_limits = settings.trade_service.risk.blueprint_limits
 
@@ -334,7 +339,7 @@ def _normalize_blueprint_payload(data: dict[str, Any], signal_date: date | None)
         "legs_side_normalized": 0,
         "strategy_type_repaired": 0,
         "strategy_type_repair_samples": [],
-        "symbol_plans_trimmed": 0,
+        "max_total_positions_expanded": 0,
         "max_daily_loss_clamped": 0,
         "max_margin_usage_clamped": 0,
         "portfolio_delta_limit_clamped": 0,
@@ -421,9 +426,15 @@ def _normalize_blueprint_payload(data: dict[str, Any], signal_date: date | None)
     except (TypeError, ValueError):
         max_total_positions_int = 5
 
-    if len(normalized_plans) > max_total_positions_int:
-        stats["symbol_plans_trimmed"] = len(normalized_plans) - max_total_positions_int
-        normalized_plans = normalized_plans[:max_total_positions_int]
+    required_max_total_positions = len(normalized_plans)
+    if minimum_max_total_positions is not None:
+        try:
+            required_max_total_positions = max(required_max_total_positions, int(minimum_max_total_positions))
+        except (TypeError, ValueError):
+            pass
+    if required_max_total_positions > max_total_positions_int:
+        stats["max_total_positions_expanded"] = required_max_total_positions - max_total_positions_int
+        max_total_positions_int = required_max_total_positions
 
     def _coerce_risk_limit(
         key: str,
@@ -555,7 +566,12 @@ class SynthesizerAgent:
                 if isinstance(sp, dict):
                     data["symbol_plans"] = list(sp.values())
 
-                data, normalize_stats = _normalize_blueprint_payload(data, signal_date)
+                minimum_max_total_positions = len(trade_symbols) if trade_symbols else len(signals_summary)
+                data, normalize_stats = _normalize_blueprint_payload(
+                    data,
+                    signal_date,
+                    minimum_max_total_positions=minimum_max_total_positions,
+                )
                 if any(normalize_stats.values()):
                     logger.warning(
                         "synthesizer.output_normalized",
@@ -658,6 +674,7 @@ class SynthesizerAgent:
         settings = get_settings()
         risk_limits = settings.trade_service.risk.blueprint_limits
         precision_first = settings.analysis_service.llm.precision_first
+        target_max_total_positions = max(1, len(trade_symbols or signals_summary))
 
         # Agent analyses
         parts.append("## Specialist Agent Analyses\n")
@@ -703,6 +720,7 @@ class SynthesizerAgent:
             parts.append(
                 f"\n## Trade Symbols\n\n"
                 f"Generate symbol_plans ONLY for these trade symbols: {sym_list}\n"
+                "Generate plans for as many of them as support a valid setup after applying all hard exclusions and risk rules.\n"
                 f"Other symbols (benchmarks) are provided as cross-asset context only — "
                 f"do NOT create plans for them."
             )
@@ -719,7 +737,7 @@ class SynthesizerAgent:
         parts.append(
             json.dumps(
                 {
-                    "max_total_positions": 5,
+                    "max_total_positions": target_max_total_positions,
                     "max_daily_loss": risk_limits.max_daily_loss,
                     "max_margin_usage": risk_limits.max_margin_usage,
                     "portfolio_delta_limit": risk_limits.portfolio_delta_limit,
@@ -866,7 +884,7 @@ BLUEPRINT JSON SCHEMA
 market_regime:str, market_analysis:str(2-3 sentences)
 symbol_plans[]: underlying, strategy_type, direction, legs[{expiry,strike,option_type,side=buy|sell,quantity}], entry_conditions[{field,operator,value,description}], exit_conditions[], adjustment_rules[{trigger:{field,operator,value,timeframe,description},action:hedge_delta|roll_strike|close_leg|add_leg|close_all,params:{},description}], max_position_size(FLOAT 0.0-1.5, position sizing ratio: 1.0=full, 0.5=half, 0.7=70%), max_contracts(INTEGER ≥1, number of contract sets to trade), stop_loss_amount, take_profit_amount, max_loss_per_trade, reasoning(MUST reference agents), confidence(0-1)
 Top-level: max_total_positions, max_daily_loss, max_margin_usage, portfolio_delta_limit, portfolio_gamma_limit
-Hard cap: symbol_plans length MUST be <= max_total_positions. Default max_total_positions is 5.
+max_total_positions MUST be >= symbol_plans length. Set it large enough to cover every emitted plan; do not use 5 as a default if more valid trade symbols remain.
 
 ## Enums
 StrategyType: single_leg|vertical_spread|iron_condor|iron_butterfly|butterfly|calendar_spread|diagonal_spread|straddle|strangle|covered_call|protective_put|collar

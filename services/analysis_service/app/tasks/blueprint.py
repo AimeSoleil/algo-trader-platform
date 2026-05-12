@@ -190,46 +190,38 @@ def _summarize_pre_synthesis_outcome(blueprint: LLMTradingBlueprint) -> dict[str
     reasoning_context = blueprint.reasoning_context or {}
     filter_summary = reasoning_context.get("pre_synthesis_filter", {}) or {}
     triage_summary = reasoning_context.get("pre_synthesis_triage", {}) or {}
-    monitor_symbols: list[dict[str, object]] = []
+    analysis_order = list(triage_summary.get("analysis_order", []) or [])
+    ranked_symbols: list[dict[str, object]] = []
 
     for item in triage_summary.get("ranked_symbols", []) or []:
-        if item.get("action") != "monitor":
+        if not isinstance(item, dict):
             continue
-        monitor_symbols.append({
+        ranked_symbols.append({
             "symbol": item.get("symbol", "UNKNOWN"),
             "rank": item.get("rank"),
             "coarse_score": item.get("coarse_score"),
-            "reason": item.get("decision_reason", "ranked below shortlist cutoff"),
+            "reason": item.get("decision_reason", "priority-ranked for analysis"),
         })
 
     return {
         "dropped_symbol_count": int(filter_summary.get("dropped_symbol_count", 0) or 0),
-        "escalate_symbol_count": int(triage_summary.get("escalate_symbol_count", 0) or 0),
-        "monitor_symbol_count": int(triage_summary.get("monitor_symbol_count", 0) or 0),
-        "target_shortlist_size": int(triage_summary.get("target_shortlist_size", 0) or 0),
-        "escalate_symbols": list(triage_summary.get("escalate_symbols", []) or []),
-        "monitor_symbols": monitor_symbols,
+        "analysis_symbol_count": int(triage_summary.get("analysis_symbol_count", len(analysis_order)) or 0),
+        "analysis_order": analysis_order,
+        "top_ranked_symbols": ranked_symbols[:5],
     }
 
 
 def _format_pre_synthesis_summary_text(summary: dict[str, object]) -> str:
-    """Format monitor-symbol explanations for user-facing daily summaries."""
-    monitor_symbols = summary.get("monitor_symbols", []) or []
-    if not monitor_symbols:
+    """Format ranking summaries for user-facing daily notifications."""
+    analysis_order = summary.get("analysis_order", []) or []
+    if not analysis_order:
         return ""
 
-    details = "; ".join(
-        f"{item['symbol']} ({item['reason']})"
-        for item in monitor_symbols
-        if isinstance(item, dict) and item.get("symbol") and item.get("reason")
-    )
-    if not details:
-        return ""
+    preview = ", ".join(str(symbol) for symbol in analysis_order[:5])
+    remaining_count = max(0, len(analysis_order) - 5)
+    suffix = f", +{remaining_count} more" if remaining_count else ""
 
-    return (
-        "Pre-synthesis triage monitor symbols: "
-        f"{details}."
-    )
+    return f"Pre-synthesis analysis priority: {preview}{suffix}."
 
 
 def _notify_blueprint_failure(trading_date: str, exc: Exception, *, phase: str) -> None:
@@ -279,8 +271,8 @@ def _notify_blueprint_success(trading_date: str, result: dict) -> None:
                     "trading_date": trading_date,
                     "blueprint_id": str(result.get("blueprint_id", "")),
                     "plans_count": str(result.get("plans_count", 0)),
-                    "monitor_symbol_count": str(
-                        (result.get("pre_synthesis_summary") or {}).get("monitor_symbol_count", 0)
+                    "analysis_symbol_count": str(
+                        (result.get("pre_synthesis_summary") or {}).get("analysis_symbol_count", 0)
                     ),
                 },
             ))

@@ -464,9 +464,8 @@ class CoarseRankingWeightsSettings(BaseSettings):
 
 
 class CoarseRankingSettings(BaseSettings):
-    """Stage-A deterministic shortlist controls before full agentic analysis."""
+    """Stage-A deterministic ranking controls before full agentic analysis."""
 
-    shortlist_size: int = Field(default=5, ge=1)
     weights: CoarseRankingWeightsSettings = Field(default_factory=CoarseRankingWeightsSettings)
 
 class LLMSettings(BaseSettings):

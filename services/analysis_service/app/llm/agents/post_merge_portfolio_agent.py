@@ -36,7 +36,7 @@ class PostMergePortfolioAgent:
         previous_execution: dict | None = None,
         chunk_limit_proposals: list[dict[str, Any]] | None = None,
         selector_metadata: dict[str, Any] | None = None,
-        max_total_positions: int,
+        candidate_count: int,
         provider: AgentLLMProvider | None = None,
         usage_tracker: LLMUsageTracker | None = None,
         model: str | None = None,
@@ -50,7 +50,7 @@ class PostMergePortfolioAgent:
             previous_execution=previous_execution,
             chunk_limit_proposals=chunk_limit_proposals or [],
             selector_metadata=selector_metadata or {},
-            max_total_positions=max_total_positions,
+            candidate_count=candidate_count,
         )
 
         settings = get_settings()
@@ -151,7 +151,7 @@ class PostMergePortfolioAgent:
         previous_execution: dict | None,
         chunk_limit_proposals: list[dict[str, Any]],
         selector_metadata: dict[str, Any],
-        max_total_positions: int,
+        candidate_count: int,
     ) -> str:
         parts: list[str] = []
         parts.append("## Candidate Plans\n")
@@ -173,13 +173,14 @@ class PostMergePortfolioAgent:
 
         parts.append(
             "\n## Task\n"
-            f"Rank the candidate plans globally and recommend at most {max_total_positions} symbols. "
+            f"Rank all {candidate_count} candidate plans globally. "
+            "Your ranking must cover every candidate symbol exactly once; do not apply any portfolio-capacity trimming. "
             "You may only reference symbols already present in the candidate list. "
             "Do NOT modify plan structure, legs, conditions, or risk numbers. "
             "The candidate list already includes deterministic selector scores and breakdowns. "
             "Use selector_metadata.deterministic_sort_priority as the primary ranking order, and keep your explanations aligned with those same fields. "
             "If you rank a lower-confidence plan above a higher-confidence one, the rationale must cite the better deterministic inputs already present in candidate_summaries, such as precision_first_score or portfolio_impact_score. "
-            "Your job is limited to: ranking, keep/drop suggestions, conflict explanations, and a portfolio-level summary. "
+            "Your job is limited to: ranking, optional strongest-conviction highlights in selected_symbols, conflict explanations, and a portfolio-level summary. "
             "Output JSON only."
         )
         return "\n\n".join(parts)
@@ -193,9 +194,11 @@ HARD RULES
 - You are NOT allowed to modify legs, strategy_type, entry_conditions, exit_conditions, or top-level risk fields.
 - You may only:
   1. rank existing candidate symbols,
-  2. suggest which symbols to keep if the portfolio must be trimmed,
+    2. optionally highlight the strongest-conviction symbols in selected_symbols for summary purposes,
   3. explain duplicate/conflict choices,
   4. write a concise portfolio summary and risk notes.
+- ranking MUST include every candidate symbol exactly once.
+- selected_symbols is NOT a trimming instruction and MUST NOT imply a portfolio-capacity cutoff.
 
 SELECTION PRINCIPLES
 - Treat selector_metadata.deterministic_sort_priority as the canonical ordering logic.

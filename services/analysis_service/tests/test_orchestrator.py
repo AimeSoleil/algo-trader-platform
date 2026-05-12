@@ -121,7 +121,7 @@ class _LLMProvider:
 
 
 @pytest.mark.asyncio
-async def test_chunked_merge_trims_plans_to_max_total_positions(monkeypatch):
+async def test_chunked_merge_keeps_all_ranked_plans(monkeypatch):
     settings = SimpleNamespace(
         analysis_service=SimpleNamespace(
             llm=SimpleNamespace(
@@ -195,16 +195,17 @@ async def test_chunked_merge_trims_plans_to_max_total_positions(monkeypatch):
         _make_sf("TSLA"),
     ])
 
-    assert blueprint.max_total_positions == 2
+    assert blueprint.max_total_positions == 4
     assert blueprint.max_daily_loss == 2_000.0
     assert blueprint.max_margin_usage == 0.5
     assert blueprint.portfolio_delta_limit == 0.5
     assert blueprint.portfolio_gamma_limit == 0.1
-    assert len(blueprint.symbol_plans) == 2
-    assert [plan.underlying for plan in blueprint.symbol_plans] == ["MSFT", "NVDA"]
-    assert [plan.confidence for plan in blueprint.symbol_plans] == [0.91, 0.87]
+    assert len(blueprint.symbol_plans) == 4
+    assert [plan.underlying for plan in blueprint.symbol_plans] == ["MSFT", "NVDA", "AAPL", "TSLA"]
+    assert [plan.confidence for plan in blueprint.symbol_plans] == [0.91, 0.87, 0.55, 0.42]
     assert blueprint.reasoning_context is not None
-    assert blueprint.reasoning_context["post_merge_phase"]["selected_symbols"] == ["MSFT", "NVDA"]
+    assert blueprint.reasoning_context["post_merge_phase"]["selected_symbols"] == ["MSFT", "NVDA", "AAPL", "TSLA"]
+    assert blueprint.reasoning_context["post_merge_phase"]["selection_mode"] == "dedupe_and_rank_all"
     assert blueprint.reasoning_context["post_merge_phase"]["final_limit_sources"]["max_daily_loss"]["source"] == "risk_policy"
 
 
@@ -270,7 +271,7 @@ async def test_chunked_merge_prefers_higher_scoring_duplicate_symbol(monkeypatch
         _make_sf("NVDA"),
     ])
 
-    assert [plan.underlying for plan in blueprint.symbol_plans] == ["AAPL", "MSFT"]
+    assert [plan.underlying for plan in blueprint.symbol_plans] == ["AAPL", "MSFT", "NVDA"]
     duplicate_info = blueprint.reasoning_context["post_merge_phase"]["duplicate_symbols"]["AAPL"]
     assert duplicate_info["selected_chunk_id"] == "chunk-1"
     assert duplicate_info["dropped_chunk_ids"] == ["chunk-0"]
@@ -345,7 +346,7 @@ async def test_chunked_merge_uses_portfolio_impact_heuristic(monkeypatch):
         _make_sf("NVDA"),
     ])
 
-    assert [plan.underlying for plan in blueprint.symbol_plans] == ["MSFT", "AAPL"]
+    assert [plan.underlying for plan in blueprint.symbol_plans] == ["MSFT", "AAPL", "NVDA"]
     decisions = {item["symbol"]: item for item in blueprint.reasoning_context["post_merge_phase"]["decisions"]}
     assert decisions["MSFT"]["portfolio_impact_score"] > decisions["AAPL"]["portfolio_impact_score"]
     assert "size_penalty" in decisions["MSFT"]["portfolio_impact_breakdown"]
@@ -535,12 +536,14 @@ async def test_chunked_merge_applies_llm_post_merge_ranking(monkeypatch):
         _make_sf("NVDA"),
     ])
 
-    assert [plan.underlying for plan in blueprint.symbol_plans] == ["AAPL", "MSFT"]
+    assert [plan.underlying for plan in blueprint.symbol_plans] == ["AAPL", "MSFT", "NVDA"]
     llm_review = blueprint.reasoning_context["post_merge_phase"]["llm_review"]
     assert llm_review["status"] == "applied"
     assert llm_review["ranking"] == ["AAPL", "MSFT", "NVDA"]
     assert llm_review["portfolio_summary"] == "Prefer AAPL first for portfolio balance."
+    assert captured_review_inputs["candidate_count"] == 3
     assert captured_review_inputs["selector_metadata"]["ranking_method"] == "precision_first_confidence_quality_portfolio_impact_weighted"
+    assert "max_total_positions" not in captured_review_inputs["selector_metadata"]
     assert captured_review_inputs["selector_metadata"]["deterministic_sort_priority"][0] == "precision_first_score"
     review_candidates = {item["symbol"]: item for item in captured_review_inputs["candidate_summaries"]}
     assert review_candidates["AAPL"]["precision_first_score"] > review_candidates["MSFT"]["precision_first_score"]
@@ -612,7 +615,7 @@ async def test_chunked_merge_precision_first_prefers_simple_allowed_strategy(mon
         _make_sf("MSFT"),
     ])
 
-    assert [plan.underlying for plan in blueprint.symbol_plans] == ["AAPL"]
+    assert [plan.underlying for plan in blueprint.symbol_plans] == ["AAPL", "MSFT"]
     decisions = {item["symbol"]: item for item in blueprint.reasoning_context["post_merge_phase"]["decisions"]}
     assert decisions["AAPL"]["precision_first_score"] > decisions["MSFT"]["precision_first_score"]
     assert decisions["MSFT"]["precision_first_breakdown"]["strategy_scope_penalty"] > 0.0
@@ -693,7 +696,7 @@ async def test_chunked_merge_precision_first_prefers_fewer_gate_conflicts(monkey
         _make_sf("MSFT"),
     ])
 
-    assert [plan.underlying for plan in blueprint.symbol_plans] == ["AAPL"]
+    assert [plan.underlying for plan in blueprint.symbol_plans] == ["AAPL", "MSFT"]
     decisions = {item["symbol"]: item for item in blueprint.reasoning_context["post_merge_phase"]["decisions"]}
     assert decisions["AAPL"]["precision_first_score"] > decisions["MSFT"]["precision_first_score"]
     assert decisions["MSFT"]["precision_first_breakdown"]["trade_blocked_agents"] == ["trend"]
@@ -770,7 +773,7 @@ async def test_chunked_generate_uses_market_snapshot_instead_of_benchmark_chunk_
 
 
 @pytest.mark.asyncio
-async def test_pre_synthesis_filter_skips_low_quality_and_hard_block_liquidity(monkeypatch):
+async def test_pre_synthesis_filter_keeps_wide_spread_symbols_for_ranking(monkeypatch):
     settings = SimpleNamespace(
         analysis_service=SimpleNamespace(
             llm=SimpleNamespace(
@@ -824,15 +827,15 @@ async def test_pre_synthesis_filter_skips_low_quality_and_hard_block_liquidity(m
         ),
     ])
 
-    assert captured_call["trade_symbols"] == ["AAPL"]
+    assert captured_call["trade_symbols"] == ["AAPL", "NVDA"]
     pre_synthesis_filter = blueprint.reasoning_context["pre_synthesis_filter"]
-    assert pre_synthesis_filter["kept_symbol_count"] == 1
+    assert pre_synthesis_filter["kept_symbol_count"] == 2
     dropped = {
         item["symbol"]: {reason["rule"] for reason in item["reasons"]}
         for item in pre_synthesis_filter["dropped_symbols"]
     }
-    assert dropped["MSFT"] == {"data_quality_skip_threshold", "insufficient_option_rows"}
-    assert dropped["NVDA"] == {"bid_ask_hard_block"}
+    assert dropped["MSFT"] == {"data_quality_skip_threshold"}
+    assert "NVDA" not in dropped
 
 
 @pytest.mark.asyncio
@@ -900,7 +903,7 @@ async def test_pre_synthesis_filter_drops_symbol_with_no_precision_first_strateg
 
 
 @pytest.mark.asyncio
-async def test_pre_synthesis_coarse_ranking_shortlists_top_symbols_and_monitors_rest(monkeypatch):
+async def test_pre_synthesis_coarse_ranking_orders_all_symbols_for_analysis(monkeypatch):
     settings = SimpleNamespace(
         analysis_service=SimpleNamespace(
             llm=SimpleNamespace(
@@ -957,28 +960,25 @@ async def test_pre_synthesis_coarse_ranking_shortlists_top_symbols_and_monitors_
         ),
     ])
 
-    assert captured_call["trade_symbols"] == ["AAPL", "MSFT", "NVDA", "TSLA", "AMZN"]
+    assert captured_call["trade_symbols"] == ["AAPL", "MSFT", "NVDA", "TSLA", "AMZN", "META"]
     triage = blueprint.reasoning_context["pre_synthesis_triage"]
-    assert triage["target_shortlist_size"] == 5
-    assert triage["shortlist_limit"] == 5
-    assert triage["escalate_symbols"] == ["AAPL", "MSFT", "NVDA", "TSLA", "AMZN"]
-    assert triage["monitor_symbols"] == ["META"]
-    assert triage["monitor_symbol_count"] == 1
-    assert triage["ranked_symbols"][0]["action"] == "escalate"
+    assert triage["analysis_symbol_count"] == 6
+    assert triage["ranked_symbol_count"] == 6
+    assert triage["analysis_order"] == ["AAPL", "MSFT", "NVDA", "TSLA", "AMZN", "META"]
+    assert triage["ranked_symbols"][0]["action"] == "analyze"
     assert triage["ranked_symbols"][-1]["symbol"] == "META"
-    assert triage["ranked_symbols"][-1]["action"] == "monitor"
-    assert "below shortlist cutoff 5" in triage["ranked_symbols"][-1]["decision_reason"]
+    assert triage["ranked_symbols"][-1]["action"] == "analyze"
+    assert "priority rank 6" in triage["ranked_symbols"][-1]["decision_reason"]
 
 
 @pytest.mark.asyncio
-async def test_pre_synthesis_coarse_ranking_uses_configured_shortlist_size_and_weights(monkeypatch):
+async def test_pre_synthesis_coarse_ranking_uses_configured_weights_for_ordering(monkeypatch):
     settings = SimpleNamespace(
         analysis_service=SimpleNamespace(
             llm=SimpleNamespace(
                 orchestrator_chunk_size=10,
                 orchestrator_max_parallel=2,
                 coarse_ranking=SimpleNamespace(
-                    shortlist_size=1,
                     weights=SimpleNamespace(
                         data_quality=0.1,
                         option_coverage=0.1,
@@ -1038,9 +1038,8 @@ async def test_pre_synthesis_coarse_ranking_uses_configured_shortlist_size_and_w
         ),
     ])
 
-    assert captured_call["trade_symbols"] == ["MSFT"]
+    assert captured_call["trade_symbols"] == ["MSFT", "AAPL"]
     triage = blueprint.reasoning_context["pre_synthesis_triage"]
-    assert triage["target_shortlist_size"] == 1
     assert triage["weights"] == {
         "data_quality": 0.1,
         "option_coverage": 0.1,
@@ -1048,8 +1047,7 @@ async def test_pre_synthesis_coarse_ranking_uses_configured_shortlist_size_and_w
         "strategy_eligibility": 0.1,
         "earnings_buffer": 0.1,
     }
-    assert triage["escalate_symbols"] == ["MSFT"]
-    assert triage["monitor_symbols"] == ["AAPL"]
+    assert triage["analysis_order"] == ["MSFT", "AAPL"]
 
 
 @pytest.mark.asyncio
@@ -1101,4 +1099,4 @@ async def test_pre_synthesis_filter_returns_valid_empty_blueprint_when_everythin
     assert blueprint.model_version == "unknown"
     assert blueprint.reasoning_context["pipeline"] == "agentic_empty"
     assert blueprint.reasoning_context["pre_synthesis_filter"]["dropped_symbol_count"] == 1
-    assert blueprint.reasoning_context["pre_synthesis_triage"]["escalate_symbol_count"] == 0
+    assert blueprint.reasoning_context["pre_synthesis_triage"]["analysis_symbol_count"] == 0

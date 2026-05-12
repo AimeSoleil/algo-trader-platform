@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 from shared.models.blueprint import LLMTradingBlueprint
 
-from services.analysis_service.app.llm.agents.synthesizer_agent import _normalize_blueprint_payload
+from services.analysis_service.app.llm.agents.synthesizer_agent import SynthesizerAgent, _normalize_blueprint_payload
 
 
 def test_normalize_blueprint_payload_records_dropped_condition_samples():
@@ -122,7 +124,7 @@ def test_normalize_blueprint_payload_normalizes_leg_side_aliases():
     assert blueprint.symbol_plans[0].legs[1].side == "sell"
 
 
-def test_normalize_blueprint_payload_trims_symbol_plans_to_max_total_positions():
+def test_normalize_blueprint_payload_expands_max_total_positions_to_cover_all_plans():
     payload = {
         "trading_date": "2026-04-29",
         "generated_at": "2026-04-28T03:39:57",
@@ -158,17 +160,62 @@ def test_normalize_blueprint_payload_trims_symbol_plans_to_max_total_positions()
         ],
     }
 
-    normalized, stats = _normalize_blueprint_payload(payload, signal_date=None)
+    normalized, stats = _normalize_blueprint_payload(
+        payload,
+        signal_date=None,
+        minimum_max_total_positions=3,
+    )
 
-    assert normalized["max_total_positions"] == 2
-    assert len(normalized["symbol_plans"]) == 2
-    assert [p["underlying"] for p in normalized["symbol_plans"]] == ["SPY", "QQQ"]
-    assert stats["symbol_plans_trimmed"] == 1
+    assert normalized["max_total_positions"] == 3
+    assert len(normalized["symbol_plans"]) == 3
+    assert [p["underlying"] for p in normalized["symbol_plans"]] == ["SPY", "QQQ", "IWM"]
+    assert stats["max_total_positions_expanded"] == 1
 
     blueprint = LLMTradingBlueprint.model_validate(normalized)
 
-    assert blueprint.max_total_positions == 2
-    assert len(blueprint.symbol_plans) == 2
+    assert blueprint.max_total_positions == 3
+    assert len(blueprint.symbol_plans) == 3
+
+
+def test_synthesizer_prompt_scales_max_total_positions_to_trade_symbol_count(monkeypatch):
+    settings = SimpleNamespace(
+        trade_service=SimpleNamespace(
+            risk=SimpleNamespace(
+                blueprint_limits=SimpleNamespace(
+                    max_daily_loss=2000.0,
+                    max_margin_usage=0.5,
+                    portfolio_delta_limit=0.5,
+                    portfolio_gamma_limit=0.1,
+                )
+            )
+        ),
+        analysis_service=SimpleNamespace(
+            llm=SimpleNamespace(
+                precision_first=SimpleNamespace(
+                    enabled=True,
+                    allowed_strategy_types=["single_leg", "vertical_spread"],
+                )
+            )
+        ),
+    )
+    monkeypatch.setattr(
+        "services.analysis_service.app.llm.agents.synthesizer_agent.get_settings",
+        lambda: settings,
+    )
+
+    trade_symbols = ["AAPL", "MSFT", "NVDA", "TSLA", "AMZN", "META"]
+    prompt = SynthesizerAgent()._build_prompt(
+        agent_outputs={},
+        signals_summary=[{"symbol": symbol, "close_price": 100.0, "volume": 1_000_000, "volatility_regime": "normal"} for symbol in trade_symbols],
+        current_positions=None,
+        previous_execution=None,
+        critic_feedback=None,
+        signal_date=None,
+        trade_symbols=trade_symbols,
+    )
+
+    assert '"max_total_positions":6' in prompt
+    assert "Generate plans for as many of them as support a valid setup" in prompt
 
 
 def test_normalize_blueprint_payload_clamps_global_risk_limits_to_policy_caps():

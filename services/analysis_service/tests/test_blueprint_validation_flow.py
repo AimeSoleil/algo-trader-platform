@@ -14,11 +14,12 @@ from services.analysis_service.app.tasks.blueprint import (
 
 
 def _make_plan(symbol: str) -> SymbolPlan:
+    future_expiry = (date.today() + timedelta(days=21)).isoformat()
     return SymbolPlan(
         underlying=symbol,
         strategy_type="single_leg",
         direction="bullish",
-        legs=[OptionLeg(expiry="2026-05-15", strike=100, option_type="call", side="buy")],
+        legs=[OptionLeg(expiry=future_expiry, strike=100, option_type="call", side="buy")],
         stop_loss_amount=200.0,
         max_loss_per_trade=500.0,
         exit_conditions=[{"field": "pnl_percent", "operator": ">=", "value": 0.3}],
@@ -166,25 +167,58 @@ def test_precision_first_keeps_calendar_when_allowed_and_context_is_clean(monkey
     assert summary["passed"] is True
 
 
-def test_pre_synthesis_summary_includes_monitor_symbol_reasons():
+def test_pre_synthesis_summary_includes_analysis_priority_order():
     blueprint = _make_blueprint(["MSFT"]).model_copy(update={
         "reasoning_context": {
             "pre_synthesis_filter": {
                 "dropped_symbol_count": 2,
             },
             "pre_synthesis_triage": {
-                "target_shortlist_size": 5,
-                "escalate_symbol_count": 5,
-                "monitor_symbol_count": 1,
-                "escalate_symbols": ["AAPL", "MSFT", "NVDA", "TSLA", "AMZN"],
+                "analysis_symbol_count": 6,
+                "analysis_order": ["AAPL", "MSFT", "NVDA", "TSLA", "AMZN", "META"],
                 "ranked_symbols": [
+                    {
+                        "symbol": "AAPL",
+                        "rank": 1,
+                        "action": "analyze",
+                        "coarse_score": 0.9123,
+                        "decision_reason": "priority rank 1; strongest data_quality=1.00, option_coverage=1.00; weakest earnings_buffer=0.75",
+                    },
+                    {
+                        "symbol": "MSFT",
+                        "rank": 2,
+                        "action": "analyze",
+                        "coarse_score": 0.8423,
+                        "decision_reason": "priority rank 2; strongest data_quality=0.95, option_coverage=0.90; weakest earnings_buffer=0.75",
+                    },
+                    {
+                        "symbol": "NVDA",
+                        "rank": 3,
+                        "action": "analyze",
+                        "coarse_score": 0.7923,
+                        "decision_reason": "priority rank 3; strongest data_quality=0.90, option_coverage=0.80; weakest earnings_buffer=0.75",
+                    },
+                    {
+                        "symbol": "TSLA",
+                        "rank": 4,
+                        "action": "analyze",
+                        "coarse_score": 0.7423,
+                        "decision_reason": "priority rank 4; strongest data_quality=0.85, option_coverage=0.70; weakest earnings_buffer=0.75",
+                    },
+                    {
+                        "symbol": "AMZN",
+                        "rank": 5,
+                        "action": "analyze",
+                        "coarse_score": 0.7023,
+                        "decision_reason": "priority rank 5; strongest data_quality=0.80, option_coverage=0.60; weakest earnings_buffer=0.75",
+                    },
                     {
                         "symbol": "META",
                         "rank": 6,
-                        "action": "monitor",
+                        "action": "analyze",
                         "coarse_score": 0.4123,
-                        "decision_reason": "rank 6 below shortlist cutoff 5; weaker data_quality=0.45, option_coverage=0.20",
-                    }
+                        "decision_reason": "priority rank 6; strongest liquidity=0.30, earnings_buffer=0.35; weakest option_coverage=0.20",
+                    },
                 ],
             },
         }
@@ -193,33 +227,48 @@ def test_pre_synthesis_summary_includes_monitor_symbol_reasons():
     summary = _summarize_pre_synthesis_outcome(blueprint)
 
     assert summary["dropped_symbol_count"] == 2
-    assert summary["monitor_symbol_count"] == 1
-    assert summary["monitor_symbols"] == [
+    assert summary["analysis_symbol_count"] == 6
+    assert summary["analysis_order"] == ["AAPL", "MSFT", "NVDA", "TSLA", "AMZN", "META"]
+    assert summary["top_ranked_symbols"] == [
         {
-            "symbol": "META",
-            "rank": 6,
-            "coarse_score": 0.4123,
-            "reason": "rank 6 below shortlist cutoff 5; weaker data_quality=0.45, option_coverage=0.20",
-        }
+            "symbol": "AAPL",
+            "rank": 1,
+            "coarse_score": 0.9123,
+            "reason": "priority rank 1; strongest data_quality=1.00, option_coverage=1.00; weakest earnings_buffer=0.75",
+        },
+        {
+            "symbol": "MSFT",
+            "rank": 2,
+            "coarse_score": 0.8423,
+            "reason": "priority rank 2; strongest data_quality=0.95, option_coverage=0.90; weakest earnings_buffer=0.75",
+        },
+        {
+            "symbol": "NVDA",
+            "rank": 3,
+            "coarse_score": 0.7923,
+            "reason": "priority rank 3; strongest data_quality=0.90, option_coverage=0.80; weakest earnings_buffer=0.75",
+        },
+        {
+            "symbol": "TSLA",
+            "rank": 4,
+            "coarse_score": 0.7423,
+            "reason": "priority rank 4; strongest data_quality=0.85, option_coverage=0.70; weakest earnings_buffer=0.75",
+        },
+        {
+            "symbol": "AMZN",
+            "rank": 5,
+            "coarse_score": 0.7023,
+            "reason": "priority rank 5; strongest data_quality=0.80, option_coverage=0.60; weakest earnings_buffer=0.75",
+        },
     ]
 
 
-def test_pre_synthesis_summary_text_lists_each_monitor_symbol_and_reason():
+def test_pre_synthesis_summary_text_lists_priority_preview():
     text = _format_pre_synthesis_summary_text({
-        "monitor_symbols": [
-            {
-                "symbol": "META",
-                "reason": "rank 6 below shortlist cutoff 5; weaker data_quality=0.45, option_coverage=0.20",
-            },
-            {
-                "symbol": "CRM",
-                "reason": "rank 7 below shortlist cutoff 5; weaker liquidity=0.30, earnings_buffer=0.35",
-            },
-        ]
+        "analysis_order": ["AAPL", "MSFT", "NVDA", "TSLA", "AMZN", "META"],
     })
 
     assert text == (
-        "Pre-synthesis triage monitor symbols: "
-        "META (rank 6 below shortlist cutoff 5; weaker data_quality=0.45, option_coverage=0.20); "
-        "CRM (rank 7 below shortlist cutoff 5; weaker liquidity=0.30, earnings_buffer=0.35)."
+        "Pre-synthesis analysis priority: "
+        "AAPL, MSFT, NVDA, TSLA, AMZN, +1 more."
     )

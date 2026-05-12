@@ -339,7 +339,6 @@ analysis_service:
         - "iron_condor"
         - "calendar_spread"
     coarse_ranking:
-      shortlist_size: 5                 # Stage-A shortlist cap before full specialist fan-out
       weights:
         data_quality: 0.4               # Prefer complete, clean signal inputs
         option_coverage: 0.2            # Prefer deeper chain coverage / daily options signal support

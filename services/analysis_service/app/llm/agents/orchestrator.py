@@ -21,7 +21,7 @@ from time import perf_counter
 from typing import Any
 
 from shared.config import get_settings
-from shared.data_quality import DataQualityConfig, OPTION_MIN_ROWS, should_circuit_break_analysis
+from shared.data_quality import DataQualityConfig, should_circuit_break_analysis
 from shared.metrics import llm_request_duration
 from shared.models.blueprint import LLMTradingBlueprint
 from shared.redis_pool import get_redis
@@ -222,12 +222,11 @@ class AgentOrchestrator:
             precision_first_enabled=precision_first_enabled,
             allowed_strategy_types=allowed_strategy_types,
         )
-        if pre_synthesis_triage["monitor_symbol_count"]:
+        if pre_synthesis_triage["ranked_symbol_count"]:
             logger.info(
-                "orchestrator.pre_synthesis_triage",
-                escalate_symbols=pre_synthesis_triage["escalate_symbols"],
-                monitor_symbols=pre_synthesis_triage["monitor_symbols"],
-                target_shortlist_size=pre_synthesis_triage["target_shortlist_size"],
+                "orchestrator.pre_synthesis_ranking",
+                ranked_symbol_count=pre_synthesis_triage["ranked_symbol_count"],
+                analysis_order=pre_synthesis_triage["analysis_order"],
             )
 
         active_trade_symbols = {sf.symbol.upper() for sf in trade_features}
@@ -496,6 +495,11 @@ class AgentOrchestrator:
                 ))
                 original_order += 1
 
+        review_candidate_count = max(
+            1,
+            len({candidate.plan.underlying.upper() for candidate in merged_plan_candidates}),
+        )
+
         llm_post_merge_review: dict[str, Any] | None = None
         llm_post_merge_metadata: dict[str, Any] = {"status": "skipped", "reason": "provider_missing_generate"}
         if hasattr(resolved_provider, "generate") and len(merged_plan_candidates) > 1:
@@ -503,7 +507,6 @@ class AgentOrchestrator:
             post_merge_model = agent_models_cfg.post_merge or None
             candidate_summaries, selector_context = self._portfolio_selector.build_review_inputs(
                 candidates=merged_plan_candidates,
-                max_total_positions=min(bp.max_total_positions for bp in chunk_blueprints),
                 trade_symbols=trade_symbols,
                 current_positions=current_positions,
                 precision_first_enabled=precision_first_enabled,
@@ -516,7 +519,7 @@ class AgentOrchestrator:
                     previous_execution=previous_execution,
                     chunk_limit_proposals=chunk_limits,
                     selector_metadata=selector_context,
-                    max_total_positions=min(bp.max_total_positions for bp in chunk_blueprints),
+                    candidate_count=review_candidate_count,
                     provider=resolved_provider,
                     usage_tracker=usage_tracker,
                     model=post_merge_model,
@@ -544,7 +547,6 @@ class AgentOrchestrator:
 
         selected_plans, final_limits, selection_metadata = self._portfolio_selector.select(
             candidates=merged_plan_candidates,
-            max_total_positions=min(bp.max_total_positions for bp in chunk_blueprints),
             trade_symbols=trade_symbols,
             chunk_limits=chunk_limits,
             risk_policy=settings.trade_service.risk.blueprint_limits,
@@ -904,17 +906,14 @@ class AgentOrchestrator:
         precision_first_enabled: bool,
         allowed_strategy_types: list[str],
     ) -> tuple[list[SignalFeatures], dict[str, Any]]:
-        """Rank surviving trade symbols and split them into monitor vs escalate."""
-        target_shortlist_size, coarse_weights = self._pre_synthesis_coarse_ranking_config(settings)
+        """Rank surviving trade symbols but keep all of them for LLM analysis."""
+        coarse_weights = self._pre_synthesis_coarse_ranking_config(settings)
         if not trade_features:
             return [], {
-                "target_shortlist_size": target_shortlist_size,
-                "shortlist_limit": 0,
                 "input_symbol_count": 0,
-                "escalate_symbol_count": 0,
-                "monitor_symbol_count": 0,
-                "escalate_symbols": [],
-                "monitor_symbols": [],
+                "analysis_symbol_count": 0,
+                "ranked_symbol_count": 0,
+                "analysis_order": [],
                 "ranked_symbols": [],
                 "weights": coarse_weights,
             }
@@ -944,34 +943,28 @@ class AgentOrchestrator:
             )
         )
 
-        shortlist_limit = min(len(ranked_entries), target_shortlist_size)
-        escalate_entries = ranked_entries[:shortlist_limit]
-        monitor_entries = ranked_entries[shortlist_limit:]
         ranked_symbols: list[dict[str, Any]] = []
 
         for rank, entry in enumerate(ranked_entries, start=1):
             ranked_symbols.append({
                 "rank": rank,
                 "symbol": entry["symbol"],
-                "action": "escalate" if rank <= shortlist_limit else "monitor",
+                "action": "analyze",
                 "coarse_score": entry["coarse_score"],
                 "eligible_strategy_types": entry["eligible_strategy_types"],
                 "components": entry["components"],
                 "decision_reason": self._coarse_ranking_decision_reason(
                     entry,
                     rank=rank,
-                    shortlist_limit=shortlist_limit,
                 ),
             })
 
-        return [entry["feature"] for entry in escalate_entries], {
-            "target_shortlist_size": target_shortlist_size,
-            "shortlist_limit": shortlist_limit,
+        analysis_order = [entry["symbol"] for entry in ranked_entries]
+        return [entry["feature"] for entry in ranked_entries], {
             "input_symbol_count": len(trade_features),
-            "escalate_symbol_count": len(escalate_entries),
-            "monitor_symbol_count": len(monitor_entries),
-            "escalate_symbols": [entry["symbol"] for entry in escalate_entries],
-            "monitor_symbols": [entry["symbol"] for entry in monitor_entries],
+            "analysis_symbol_count": len(ranked_entries),
+            "ranked_symbol_count": len(ranked_entries),
+            "analysis_order": analysis_order,
             "ranked_symbols": ranked_symbols,
             "weights": coarse_weights,
         }
@@ -1047,7 +1040,6 @@ class AgentOrchestrator:
         """Return hard pre-synthesis drop reasons for one symbol."""
         reasons: list[dict[str, str]] = []
         data_quality = signal_feature.data_quality
-        option_indicators = signal_feature.option_indicators
         earnings_days = signal_feature.cross_asset_indicators.earnings_proximity_days
 
         if data_quality.score < dq_cfg.skip_threshold:
@@ -1055,26 +1047,6 @@ class AgentOrchestrator:
                 "rule": "data_quality_skip_threshold",
                 "description": (
                     f"data_quality.score={data_quality.score:.4f} < {dq_cfg.skip_threshold:.2f}"
-                ),
-            })
-
-        if data_quality.option_row_count < OPTION_MIN_ROWS:
-            reasons.append({
-                "rule": "insufficient_option_rows",
-                "description": (
-                    f"option_row_count={data_quality.option_row_count} < {OPTION_MIN_ROWS}"
-                ),
-            })
-
-        bid_ask_hard_threshold = self._pre_synthesis_bid_ask_hard_threshold(
-            allowed_strategy_types if precision_first_enabled else []
-        )
-        if option_indicators.bid_ask_spread_ratio > bid_ask_hard_threshold:
-            reasons.append({
-                "rule": "bid_ask_hard_block",
-                "description": (
-                    "bid_ask_spread_ratio="
-                    f"{option_indicators.bid_ask_spread_ratio:.4f} > {bid_ask_hard_threshold:.2f}"
                 ),
             })
 
@@ -1124,18 +1096,11 @@ class AgentOrchestrator:
 
         return eligible
 
-    def _pre_synthesis_coarse_ranking_config(self, settings: Any) -> tuple[int, dict[str, float]]:
-        """Resolve Stage-A shortlist size and score weights from config with safe fallbacks."""
-        default_shortlist_size = LLMTradingBlueprint.model_fields["max_total_positions"].default
+    def _pre_synthesis_coarse_ranking_config(self, settings: Any) -> dict[str, float]:
+        """Resolve deterministic ranking weights from config with safe fallbacks."""
         coarse_ranking_cfg = getattr(settings.analysis_service.llm, "coarse_ranking", None)
-        shortlist_size_value = getattr(coarse_ranking_cfg, "shortlist_size", default_shortlist_size)
-        try:
-            shortlist_size = max(1, int(shortlist_size_value))
-        except (TypeError, ValueError):
-            shortlist_size = 5
-
         weights_cfg = getattr(coarse_ranking_cfg, "weights", None)
-        return shortlist_size, {
+        return {
             "data_quality": float(getattr(weights_cfg, "data_quality", 0.4)),
             "option_coverage": float(getattr(weights_cfg, "option_coverage", 0.2)),
             "liquidity": float(getattr(weights_cfg, "liquidity", 0.2)),
@@ -1148,24 +1113,23 @@ class AgentOrchestrator:
         entry: dict[str, Any],
         *,
         rank: int,
-        shortlist_limit: int,
     ) -> str:
-        """Build a concise human-readable explanation for triage decisions."""
-        if rank <= shortlist_limit:
-            return f"rank {rank} inside shortlist cutoff {shortlist_limit}"
-
+        """Build a concise human-readable explanation for ordering decisions."""
+        components = (
+            ("data_quality", entry["components"]["data_quality_score"]),
+            ("option_coverage", entry["components"]["option_coverage_score"]),
+            ("liquidity", entry["components"]["liquidity_score"]),
+            ("strategy_eligibility", entry["components"]["strategy_eligibility_score"]),
+            ("earnings_buffer", entry["components"]["earnings_score"]),
+        )
+        strongest_components = sorted(components, key=lambda item: item[1], reverse=True)[:2]
         weakest_components = sorted(
-            (
-                ("data_quality", entry["components"]["data_quality_score"]),
-                ("option_coverage", entry["components"]["option_coverage_score"]),
-                ("liquidity", entry["components"]["liquidity_score"]),
-                ("strategy_eligibility", entry["components"]["strategy_eligibility_score"]),
-                ("earnings_buffer", entry["components"]["earnings_score"]),
-            ),
+            components,
             key=lambda item: item[1],
-        )[:2]
+        )[:1]
+        strongest_text = ", ".join(f"{label}={value:.2f}" for label, value in strongest_components)
         weakest_text = ", ".join(f"{label}={value:.2f}" for label, value in weakest_components)
-        return f"rank {rank} below shortlist cutoff {shortlist_limit}; weaker {weakest_text}"
+        return f"priority rank {rank}; strongest {strongest_text}; weakest {weakest_text}"
 
     def _coarse_ranking_earnings_score(self, earnings_days: int | None) -> float:
         """Reward cleaner earnings buffers without hard-dropping non-event names."""
@@ -1180,7 +1144,7 @@ class AgentOrchestrator:
         return 1.0
 
     def _pre_synthesis_bid_ask_hard_threshold(self, allowed_strategy_types: list[str]) -> float:
-        """Mirror deterministic liquidity hard blocks conservatively at symbol level."""
+        """Reference liquidity threshold used to normalize coarse ranking scores."""
         normalized = {str(strategy_type).lower() for strategy_type in allowed_strategy_types}
         if normalized.intersection({"iron_condor", "calendar_spread"}):
             return 0.45
