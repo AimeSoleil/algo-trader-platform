@@ -537,7 +537,7 @@ def _check_liquidity(plan: dict, signal: dict, result: CheckResult) -> None:
 
     # A5: relax hard block for multi-leg strategies with wider wings
     if "iron_condor" in strategy or "calendar" in strategy:
-        hard_threshold = 0.30
+        hard_threshold = 0.45
     else:
         hard_threshold = 0.25
 
@@ -1207,7 +1207,7 @@ def _check_chain_hard_block(
     """Block symbol if Chain agent flagged hard_block or liquidity_tier=L5.
 
     Agent prompt source:
-    - Chain H1: bid-ask > 0.20 → hard_block=true, confidence ≤ 0.2, NO strikes
+    - Chain H1: bid-ask > 0.30 → hard_block=true, confidence ≤ 0.2, NO strikes
     - Synthesizer HE1: Chain hard_block=true OR liquidity_tier="L5" → EXCLUDE symbol
     """
     sym = plan.get("underlying", "UNKNOWN")

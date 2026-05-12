@@ -195,11 +195,33 @@ class TestContextAwareChecks:
         signals = {
             "AAPL": {
                 "stock_indicators": {},
-                "option_indicators": {"bid_ask_spread_ratio": 0.26},
+                "option_indicators": {"bid_ask_spread_ratio": 0.31},
             }
         }
         result = check_blueprint(
             _blueprint(),
+            signal_features=signals,
+        )
+        assert any(i.rule == "bid_ask_hard_block" for i in result.issues)
+
+    def test_bid_ask_hard_block_for_condor_uses_relaxed_threshold(self):
+        signals = {
+            "AAPL": {
+                "stock_indicators": {},
+                "option_indicators": {"bid_ask_spread_ratio": 0.46},
+            }
+        }
+        result = check_blueprint(
+            _blueprint(symbol_plans=[_plan(
+                strategy_type="iron_condor",
+                direction="neutral",
+                legs=[
+                    _leg(strike=140, option_type="put", side="buy"),
+                    _leg(strike=145, option_type="put", side="sell"),
+                    _leg(strike=155, option_type="call", side="sell"),
+                    _leg(strike=160, option_type="call", side="buy"),
+                ],
+            )]),
             signal_features=signals,
         )
         assert any(i.rule == "bid_ask_hard_block" for i in result.issues)

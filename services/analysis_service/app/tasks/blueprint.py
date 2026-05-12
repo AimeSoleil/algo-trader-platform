@@ -349,10 +349,14 @@ def _apply_and_log_deterministic_validation(
             "blueprint.pipeline_deterministic_validation",
             trading_date=str(td),
             passed=summary["passed"],
+            initial_error_count=summary["initial_error_count"],
+            initial_warning_count=summary["initial_warning_count"],
             error_count=summary["error_count"],
             warning_count=summary["warning_count"],
+            strategy_scope_pruned_symbols=summary["strategy_scope_pruned_symbols"],
             pruned_symbols=summary["pruned_symbols"],
             pruned_plan_count=summary["pruned_plan_count"],
+            pruned_symbol_errors=summary["pruned_symbol_errors"],
             issues=summary["issues"],
         )
     else:

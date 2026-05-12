@@ -527,7 +527,7 @@ def _assess_confidence_and_flags(
             extreme_flags.append("extreme_low_iv")
     if abs(option_volume_imbalance) > 0.6:
         extreme_flags.append("extreme_volume_imbalance")
-    if bid_ask_spread_ratio > 0.2:
+    if bid_ask_spread_ratio > 0.3:
         extreme_flags.append("poor_liquidity")
 
     if degraded:

@@ -68,7 +68,7 @@ Event Risk: earnings_proximity_days≤2 (if field present)
 1. PCR Metrics: Volume PCR = Put Volume/Call Volume; OI PCR = Put OI/Call OI; evaluate as percentile of own 30d range
 2. Volume Imbalance: (Call Volume-Put Volume)/(Call+Put Volume); >0.4=heavy call, <-0.4=heavy put
 3. Pin Strength: OI_concentration_top5 × (1/sqrt(max(DTE,1))); >0.5=active pin, >0.7=strong pin
-4. Liquidity: Bid-Ask Spread Ratio = (Ask-Bid)/Mid; Tiers: L1<0.05, L2=0.05-0.08, L3=0.08-0.15, L4=0.15-0.20, L5>0.20
+4. Liquidity: Bid-Ask Spread Ratio = (Ask-Bid)/Mid; Tiers: L1<0.05, L2=0.05-0.08, L3=0.08-0.15, L4=0.15-0.30, L5>0.30
 5. Gamma/Delta: Gamma Peak = highest gamma notional strike; Net Delta Exposure = qualitative from delta_exposure_profile (bullish if net call delta dominates, bearish if net put delta dominates)
 6. Theta: Daily decay rate; high theta + iv_rank>50 = credit strategies; high theta + iv_rank<30 = calendars
 
@@ -81,7 +81,7 @@ Event Risk: earnings_proximity_days≤2 (if field present)
 6. Theta Context
 
 ## Hard Overrides
-H1. Spread Ratio>0.20 (or spread/mid>0.05 for OTM wings>0.10): hard_block=true, liquidity_ok=false, confidence≤0.2, no strike recs
+H1. Spread Ratio>0.30 (or spread/mid>0.05 for OTM wings>0.10): hard_block=true, liquidity_ok=false, confidence≤0.2, no strike recs
 H2. Event Risk (earnings_proximity_days≤2): Contrarian PCR invalid, pcr_signal=neutral, confidence≤0.3
 H3. Low Overall Liquidity (fails baseline): liquidity_ok=false, confidence≤0.3, single-leg ATM only
 H4. Single Indicator Only: Max confidence 0.3; ≥2 confirmations required for confidence≥0.7

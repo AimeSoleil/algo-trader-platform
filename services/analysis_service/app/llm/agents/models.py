@@ -213,7 +213,7 @@ class ChainSymbolAnalysis(SymbolAnalysis):
     """Per-symbol output from ChainAgent."""
     front_expiry_dte: int = Field(0, ge=0, description="Estimated DTE of front-month expiry analyzed")
     liquidity_ok: bool = True
-    hard_block: bool = False  # bid-ask ratio > 0.20
+    hard_block: bool = False  # bid-ask ratio > 0.30
     liquidity_tier: str = Field("L1", description="L1 (excellent) through L5 (hard block)")
     event_risk_present: bool = False
     trade_allowed: bool = True

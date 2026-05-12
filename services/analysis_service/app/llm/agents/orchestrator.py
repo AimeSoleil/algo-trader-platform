@@ -1183,7 +1183,7 @@ class AgentOrchestrator:
         """Mirror deterministic liquidity hard blocks conservatively at symbol level."""
         normalized = {str(strategy_type).lower() for strategy_type in allowed_strategy_types}
         if normalized.intersection({"iron_condor", "calendar_spread"}):
-            return 0.30
+            return 0.45
         return 0.25
 
     def _configured_model_version(self, settings: Any, provider_name: str) -> str:

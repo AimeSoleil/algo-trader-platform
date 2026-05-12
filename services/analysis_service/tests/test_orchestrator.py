@@ -819,7 +819,7 @@ async def test_pre_synthesis_filter_skips_low_quality_and_hard_block_liquidity(m
         _make_sf("MSFT", data_quality=DataQuality(score=0.2, stock_bar_count=260, option_row_count=10)),
         _make_sf(
             "NVDA",
-            option_indicators=OptionIndicators(bid_ask_spread_ratio=0.31),
+            option_indicators=OptionIndicators(bid_ask_spread_ratio=0.46),
             data_quality=DataQuality(score=1.0, stock_bar_count=260, option_row_count=200),
         ),
     ])

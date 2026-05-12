@@ -21,7 +21,7 @@
 2. IF `pcr_volume < 0.5` → extreme bullish → contrarian bearish (confirm first)
 3. IF `oi_concentration_top5 > 0.80` AND DTE ≤ 5 → gamma pin → butterfly at gamma_peak_strike
 4. IF `bid_ask_spread_ratio > 0.15` → illiquid → avoid or use wider limits
-5. IF `bid_ask_spread_ratio > 0.20` → HARD BLOCK: do not trade this chain
+5. IF `bid_ask_spread_ratio > 0.30` → HARD BLOCK: do not trade this chain
 6. IF `option_volume_imbalance > 0.4` → institutional call buying → supports bullish
 7. IF `option_volume_imbalance < -0.4` → institutional put buying → bearish or hedging
 8. IF `theta_decay_rate` high AND `iv_rank > 50` → theta-selling edge → credit strategies
