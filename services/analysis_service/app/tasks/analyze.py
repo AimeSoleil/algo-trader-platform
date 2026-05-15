@@ -28,8 +28,8 @@ logger = get_logger("analysis_tasks")
     name="analysis_service.tasks.manual_analyze",
     bind=True,
     max_retries=1,
-    soft_time_limit=2400,
-    time_limit=2700,
+    soft_time_limit=7200,
+    time_limit=7500,
 )
 def manual_analyze(
     self,

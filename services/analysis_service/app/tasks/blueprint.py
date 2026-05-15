@@ -621,7 +621,7 @@ def _annotate_blueprint_quality(
 
 
 @celery_app.task(name="analysis_service.tasks.generate_daily_blueprint", bind=True, max_retries=0,
-                 soft_time_limit=2400, time_limit=2700)
+                 soft_time_limit=7200, time_limit=7500)
 def generate_daily_blueprint(self, trading_date: str | None = None, prev_result=None) -> dict:
     """
     17:10 Celery 任务：生成次日交易蓝图
@@ -699,8 +699,8 @@ async def _generate_blueprint_async(trading_date_str: str | None = None) -> dict
     name="analysis_service.tasks.generate_daily_blueprint_chunk",
     bind=True,
     max_retries=0,
-    soft_time_limit=2400,
-    time_limit=2700,
+    soft_time_limit=7200,
+    time_limit=7500,
 )
 def generate_daily_blueprint_chunk(self, symbols: list[str], trading_date: str) -> dict:
     """Analyze one slice of the daily tradable universe and return a partial blueprint."""
@@ -728,8 +728,8 @@ def generate_daily_blueprint_chunk(self, symbols: list[str], trading_date: str) 
     name="analysis_service.tasks.finalize_daily_blueprint_chunks",
     bind=True,
     max_retries=0,
-    soft_time_limit=2400,
-    time_limit=2700,
+    soft_time_limit=7200,
+    time_limit=7500,
 )
 def finalize_daily_blueprint_chunks(self, chunk_results, trading_date: str) -> dict:
     """Merge all analyzed chunks into one final blueprint and persist it."""
