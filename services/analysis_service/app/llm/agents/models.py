@@ -152,6 +152,8 @@ class VolatilitySymbolAnalysis(SymbolAnalysis):
         if normalized in VolRegime._value2member_map_:
             return normalized
 
+        parts = {part for part in normalized.split("_") if part}
+
         alias_map = {
             ("high",): VolRegime.HIGH_VOL.value,
             ("low",): VolRegime.LOW_VOL.value,
@@ -169,7 +171,26 @@ class VolatilitySymbolAnalysis(SymbolAnalysis):
             ("low", "squeeze", "vol"): VolRegime.LOW_VOL_SQUEEZE.value,
             ("backwardation", "event", "risk"): VolRegime.BACKWARDATION_EVENT_RISK.value,
         }
-        return alias_map.get(tuple(sorted(part for part in normalized.split("_") if part)), normalized)
+        aliased = alias_map.get(tuple(sorted(parts)))
+        if aliased is not None:
+            return aliased
+
+        # When the model emits an unsupported superset compound, collapse it to the
+        # closest supported regime with the most conservative risk semantics.
+        superset_alias_rules = (
+            ({"backwardation", "event", "risk"}, VolRegime.BACKWARDATION_EVENT_RISK.value),
+            ({"high", "vol", "event", "risk"}, VolRegime.HIGH_VOL_EVENT_RISK.value),
+            ({"high", "vol", "backwardation"}, VolRegime.HIGH_VOL_BACKWARDATION.value),
+            ({"low", "vol", "backwardation"}, VolRegime.LOW_VOL_BACKWARDATION.value),
+            ({"low", "vol", "squeeze"}, VolRegime.LOW_VOL_SQUEEZE.value),
+            ({"high", "vol", "contango"}, VolRegime.HIGH_VOL_CONTANGO.value),
+            ({"low", "vol", "contango"}, VolRegime.LOW_VOL_CONTANGO.value),
+        )
+        for required_parts, canonical in superset_alias_rules:
+            if required_parts.issubset(parts):
+                return canonical
+
+        return normalized
 
     iv_percentile_divergence: bool = False
     hv_iv_assessment: str = "neutral"  # "implied_rich", "realized_exceeds", "neutral"

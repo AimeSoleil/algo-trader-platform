@@ -249,6 +249,43 @@ def test_volatility_analysis_normalizes_supported_regime_token_order(raw_value: 
     assert parsed.symbols[0].vol_regime == expected
 
 
+@pytest.mark.parametrize(
+    ("raw_value", "expected"),
+    [
+        ("high_vol_backwardation_event_risk", VolRegime.BACKWARDATION_EVENT_RISK),
+        ("low_vol_backwardation_event_risk", VolRegime.BACKWARDATION_EVENT_RISK),
+        ("high_vol_contango_event_risk", VolRegime.HIGH_VOL_EVENT_RISK),
+    ],
+)
+def test_volatility_analysis_collapses_unsupported_superset_regimes(raw_value: str, expected: VolRegime) -> None:
+    parsed = VolatilityAnalysis.model_validate({
+        "symbols": [
+            {
+                "symbol": "NVDA",
+                "vol_regime": raw_value,
+                "iv_rank_zone": "high",
+                "iv_percentile_divergence": False,
+                "hv_iv_assessment": "neutral",
+                "garch_divergence": False,
+                "garch_divergence_direction": None,
+                "surface_mispricing": False,
+                "event_risk_present": True,
+                "liquidity_status": "high",
+                "trade_allowed": True,
+                "confidence_cap": None,
+                "simple_structures_only": False,
+                "blocked_reasons": [],
+                "strategies": [],
+                "reasoning": "unsupported superset regimes should collapse to the nearest supported conservative regime",
+                "confidence": 0.4,
+            }
+        ],
+        "market_vol_summary": "ok",
+    })
+
+    assert parsed.symbols[0].vol_regime == expected
+
+
 @pytest.mark.asyncio
 async def test_analyze_repairs_null_numeric_field_without_provider_retry(monkeypatch) -> None:
     mock_settings = SimpleNamespace(

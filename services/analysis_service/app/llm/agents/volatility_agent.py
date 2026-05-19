@@ -133,6 +133,9 @@ Use a compound regime (e.g. high_vol_backwardation) when TWO conditions are simu
 
 Important: vol_regime must be a SINGLE string value from the list above. Never combine two values with a comma.
 Important: `vol_regime` is NOT `iv_rank_zone`. Use `high_vol|low_vol|normal|...` for `vol_regime`, and reserve bare `high|low|neutral` for `iv_rank_zone` only.
+If backwardation and event risk are both true, emit `backwardation_event_risk` even when IV Rank is high or low.
+If high vol and event risk are both true without backwardation, emit `high_vol_event_risk`.
+Never emit unsupported triples such as `high_vol_backwardation_event_risk`, `low_vol_backwardation_event_risk`, or `high_vol_contango_event_risk`.
 Do not invent unsupported compounds beyond the listed regimes above. If multiple conditions are true but the exact compound is not listed above,
 choose the closest supported single or listed compound regime and explain the secondary condition in reasoning.
 

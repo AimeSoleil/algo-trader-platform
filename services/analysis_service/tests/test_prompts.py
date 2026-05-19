@@ -279,6 +279,8 @@ def test_volatility_system_prompt_lists_supported_contango_and_backwardation_reg
     assert "30-70=normal" in _SYSTEM_PROMPT
     assert "30-70=neutral" not in _SYSTEM_PROMPT
     assert "vol_regime` is NOT `iv_rank_zone" in _SYSTEM_PROMPT
+    assert "emit `backwardation_event_risk` even when IV Rank is high or low" in _SYSTEM_PROMPT
+    assert "Never emit unsupported triples such as `high_vol_backwardation_event_risk`" in _SYSTEM_PROMPT
     assert "high_vol_contango" in _SYSTEM_PROMPT
     assert "low_vol_contango" in _SYSTEM_PROMPT
     assert "high_vol_backwardation" in _SYSTEM_PROMPT

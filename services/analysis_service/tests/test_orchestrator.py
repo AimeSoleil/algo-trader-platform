@@ -839,7 +839,7 @@ async def test_chunked_generate_skips_non_validation_batch_failures(monkeypatch)
 
 
 @pytest.mark.asyncio
-async def test_chunked_generate_validation_error_fails_fast_without_processing_later_batches(monkeypatch):
+async def test_chunked_generate_validation_error_skips_chunk_and_continues_later_batches(monkeypatch):
     settings = SimpleNamespace(
         analysis_service=SimpleNamespace(
             llm=SimpleNamespace(
@@ -886,13 +886,20 @@ async def test_chunked_generate_validation_error_fails_fast_without_processing_l
 
     monkeypatch.setattr(AgentOrchestrator, "_generate_single_pass", _fake_generate_single_pass)
 
-    with pytest.raises(ValidationError):
-        await orchestrator.generate([
-            _make_sf("AAPL"),
-            _make_sf("MSFT"),
-        ])
+    blueprint = await orchestrator.generate([
+        _make_sf("AAPL"),
+        _make_sf("MSFT"),
+    ])
 
-    assert calls == [("AAPL",)]
+    assert calls == [("AAPL",), ("MSFT",)]
+    assert [plan.underlying for plan in blueprint.symbol_plans] == ["MSFT"]
+    skipped_contexts = [
+        ctx for ctx in blueprint.reasoning_context["chunk_contexts"]
+        if ctx.get("pipeline") == "agentic_chunk_skipped"
+    ]
+    assert len(skipped_contexts) == 1
+    assert skipped_contexts[0]["error_type"] == "ValidationError"
+    assert skipped_contexts[0]["trade_symbols"] == ["AAPL"]
 
 
 @pytest.mark.asyncio

@@ -148,6 +148,7 @@ class AgentOrchestrator:
         is_chunk: bool,
         trade_symbols: list[str],
         error: Exception,
+        failed_agents: list[str] | None = None,
     ) -> LLMTradingBlueprint:
         """Build an empty blueprint for a skipped non-validation batch failure."""
         return self._build_empty_blueprint(
@@ -166,7 +167,7 @@ class AgentOrchestrator:
                 "skip_reason": "batch_exception",
                 "error_type": type(error).__name__,
                 "error": str(error),
-                "failed_agents": self._failed_agents_from_exception(error),
+                "failed_agents": failed_agents if failed_agents is not None else self._failed_agents_from_exception(error),
             },
         )
 
@@ -385,7 +386,6 @@ class AgentOrchestrator:
 
             # Run chunks with concurrency limit
             sem = asyncio.Semaphore(max_parallel)
-            validation_failure_active = asyncio.Event()
             chunk_trackers: dict[int, LLMUsageTracker] = {}
             model_version = self._configured_model_version(settings, provider.name)
 
@@ -398,19 +398,6 @@ class AgentOrchestrator:
                 chunk_tracker: LLMUsageTracker,
             ) -> tuple[int, LLMTradingBlueprint]:
                 async with sem:
-                    if validation_failure_active.is_set():
-                        return idx, self._build_skipped_batch_blueprint(
-                            signal_features=chunk_features,
-                            signal_date=signal_date,
-                            provider_name=provider.name,
-                            model_version=model_version,
-                            analysis_chunk_id=analysis_chunk_id,
-                            batch_index=idx,
-                            is_chunk=True,
-                            trade_symbols=trade_syms_in_chunk,
-                            error=RuntimeError("validation failure already active"),
-                        )
-
                     try:
                         logger.info(
                             "orchestrator.chunk_started",
@@ -436,19 +423,29 @@ class AgentOrchestrator:
                     except Exception as exc:
                         validation_error = self._find_validation_error(exc)
                         if validation_error is not None:
-                            validation_failure_active.set()
-                            logger.error(
-                                "orchestrator.batch_validation_failed",
+                            failed_agents = self._failed_agents_from_exception(exc)
+                            logger.warning(
+                                "orchestrator.batch_validation_skipped",
                                 analysis_chunk_id=analysis_chunk_id,
                                 chunk=idx,
                                 is_chunk=True,
                                 symbols=len(chunk_features),
                                 error_type=type(validation_error).__name__,
                                 error=str(validation_error),
+                                failed_agents=failed_agents,
                             )
-                            if validation_error is exc:
-                                raise
-                            raise validation_error from exc
+                            return idx, self._build_skipped_batch_blueprint(
+                                signal_features=chunk_features,
+                                signal_date=signal_date,
+                                provider_name=provider.name,
+                                model_version=model_version,
+                                analysis_chunk_id=analysis_chunk_id,
+                                batch_index=idx,
+                                is_chunk=True,
+                                trade_symbols=trade_syms_in_chunk,
+                                error=validation_error,
+                                failed_agents=failed_agents,
+                            )
 
                         logger.warning(
                             "orchestrator.batch_skipped",
@@ -494,16 +491,9 @@ class AgentOrchestrator:
                 ))
 
             chunk_blueprints_by_index: dict[int, LLMTradingBlueprint] = {}
-            try:
-                for done in asyncio.as_completed(tasks):
-                    idx, chunk_blueprint = await done
-                    chunk_blueprints_by_index[idx] = chunk_blueprint
-            except ValidationError:
-                for task in tasks:
-                    if not task.done():
-                        task.cancel()
-                await asyncio.gather(*tasks, return_exceptions=True)
-                raise
+            for done in asyncio.as_completed(tasks):
+                idx, chunk_blueprint = await done
+                chunk_blueprints_by_index[idx] = chunk_blueprint
 
             chunk_blueprints = [
                 chunk_blueprints_by_index[idx]
