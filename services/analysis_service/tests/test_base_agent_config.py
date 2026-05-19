@@ -6,7 +6,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ValidationError
 import pytest
 
 ROOT = Path(__file__).resolve().parents[3]
@@ -273,4 +273,34 @@ async def test_analyze_repairs_null_numeric_field_without_provider_retry(monkeyp
     )
 
     assert parsed.symbols[0].iv_rank == 0.0
+    assert provider.calls == 1
+
+
+@pytest.mark.asyncio
+async def test_analyze_unrepairable_validation_error_does_not_retry(monkeypatch) -> None:
+    mock_settings = SimpleNamespace(
+        analysis_service=SimpleNamespace(
+            llm=SimpleNamespace(
+                max_retries=3,
+                backoff_base_seconds=0,
+                backoff_max_seconds=0,
+                openai=SimpleNamespace(temperature=0.11, max_tokens=1111),
+                qiniu=SimpleNamespace(temperature=0.22, max_tokens=2222),
+                closeai=SimpleNamespace(temperature=0.33, max_tokens=3333),
+                output_budget_ratio=0.8,
+                output_truncation_threshold_ratio=0.95,
+            )
+        )
+    )
+    monkeypatch.setattr(base_agent, "get_settings", lambda: mock_settings)
+
+    agent = _RepairAgent()
+    provider = _RepairProvider(json.dumps({"symbols": [{"iv_rank": 42.0}]}))
+
+    with pytest.raises(ValidationError):
+        await agent.analyze(
+            [{"symbol": "AAPL", "price": 100}],
+            provider=provider,
+        )
+
     assert provider.calls == 1

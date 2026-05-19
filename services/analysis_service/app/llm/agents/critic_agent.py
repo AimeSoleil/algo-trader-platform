@@ -128,7 +128,12 @@ class CriticAgent:
                 )
                 return verdict
 
-            except (json.JSONDecodeError, ValidationError, ValueError) as e:
+            except ValidationError as e:
+                last_exc = e
+                logger.warning("critic.validation_error", provider=provider.name, attempt=attempt + 1, error=decode_escaped_unicode(e))
+                raise
+
+            except (json.JSONDecodeError, ValueError) as e:
                 last_exc = e
                 llm_retries_total.labels(provider=provider.name, error_type="parse").inc()
                 logger.warning("critic.parse_error", provider=provider.name, attempt=attempt + 1, error=decode_escaped_unicode(e))

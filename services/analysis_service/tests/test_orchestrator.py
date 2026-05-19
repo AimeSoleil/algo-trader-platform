@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+from pydantic import ValidationError
 import pytest
 
 from shared.models.blueprint import LLMTradingBlueprint, OptionLeg, SymbolPlan
@@ -770,6 +771,188 @@ async def test_chunked_generate_uses_market_snapshot_instead_of_benchmark_chunk_
     assert market_snapshot["symbols"] == ["SPY", "QQQ"]
     assert captured_calls[1]["market_snapshot"] == market_snapshot
     assert [plan.underlying for plan in blueprint.symbol_plans] == ["AAPL", "MSFT", "NVDA"]
+
+
+@pytest.mark.asyncio
+async def test_chunked_generate_skips_non_validation_batch_failures(monkeypatch):
+    settings = SimpleNamespace(
+        analysis_service=SimpleNamespace(
+            llm=SimpleNamespace(
+                orchestrator_chunk_size=1,
+                orchestrator_max_parallel=2,
+            )
+        ),
+        trade_service=SimpleNamespace(
+            risk=SimpleNamespace(
+                blueprint_limits=SimpleNamespace(
+                    max_daily_loss=2_000.0,
+                    max_margin_usage=0.5,
+                    portfolio_delta_limit=0.5,
+                    portfolio_gamma_limit=0.1,
+                )
+            )
+        ),
+        common=SimpleNamespace(
+            watchlist=SimpleNamespace(
+                for_data_signal=["AAPL", "MSFT"],
+                for_trade_benchmark=[],
+            )
+        ),
+    )
+
+    monkeypatch.setattr(
+        "services.analysis_service.app.llm.agents.orchestrator.get_settings",
+        lambda: settings,
+    )
+
+    orchestrator = AgentOrchestrator(provider=_Provider())
+
+    async def _fake_generate_single_pass(self, **kwargs):
+        trade_symbols = kwargs["trade_symbols"]
+        if trade_symbols == ["AAPL"]:
+            raise RuntimeError("upstream timeout")
+        if trade_symbols == ["MSFT"]:
+            return _make_blueprint(
+                [("MSFT", 0.83)],
+                max_total_positions=1,
+                analysis_chunk_id=kwargs["analysis_chunk_id"],
+            )
+        raise AssertionError(f"unexpected trade_symbols: {trade_symbols}")
+
+    monkeypatch.setattr(AgentOrchestrator, "_generate_single_pass", _fake_generate_single_pass)
+
+    blueprint = await orchestrator.generate([
+        _make_sf("AAPL"),
+        _make_sf("MSFT"),
+    ])
+
+    assert [plan.underlying for plan in blueprint.symbol_plans] == ["MSFT"]
+    assert blueprint.reasoning_context is not None
+    skipped_contexts = [
+        ctx for ctx in blueprint.reasoning_context["chunk_contexts"]
+        if ctx.get("pipeline") == "agentic_chunk_skipped"
+    ]
+    assert len(skipped_contexts) == 1
+    assert skipped_contexts[0]["trade_symbols"] == ["AAPL"]
+    assert skipped_contexts[0]["error_type"] == "RuntimeError"
+    assert skipped_contexts[0]["skip_reason"] == "batch_exception"
+
+
+@pytest.mark.asyncio
+async def test_chunked_generate_validation_error_fails_fast_without_processing_later_batches(monkeypatch):
+    settings = SimpleNamespace(
+        analysis_service=SimpleNamespace(
+            llm=SimpleNamespace(
+                orchestrator_chunk_size=1,
+                orchestrator_max_parallel=1,
+            )
+        ),
+        trade_service=SimpleNamespace(
+            risk=SimpleNamespace(
+                blueprint_limits=SimpleNamespace(
+                    max_daily_loss=2_000.0,
+                    max_margin_usage=0.5,
+                    portfolio_delta_limit=0.5,
+                    portfolio_gamma_limit=0.1,
+                )
+            )
+        ),
+        common=SimpleNamespace(
+            watchlist=SimpleNamespace(
+                for_data_signal=["AAPL", "MSFT"],
+                for_trade_benchmark=[],
+            )
+        ),
+    )
+
+    monkeypatch.setattr(
+        "services.analysis_service.app.llm.agents.orchestrator.get_settings",
+        lambda: settings,
+    )
+
+    orchestrator = AgentOrchestrator(provider=_Provider())
+    calls: list[tuple[str, ...]] = []
+
+    async def _fake_generate_single_pass(self, **kwargs):
+        trade_symbols = tuple(kwargs["trade_symbols"])
+        calls.append(trade_symbols)
+        if trade_symbols == ("AAPL",):
+            LLMTradingBlueprint.model_validate({"symbol_plans": [{"underlying": "AAPL"}]})
+        return _make_blueprint(
+            [("MSFT", 0.83)],
+            max_total_positions=1,
+            analysis_chunk_id=kwargs["analysis_chunk_id"],
+        )
+
+    monkeypatch.setattr(AgentOrchestrator, "_generate_single_pass", _fake_generate_single_pass)
+
+    with pytest.raises(ValidationError):
+        await orchestrator.generate([
+            _make_sf("AAPL"),
+            _make_sf("MSFT"),
+        ])
+
+    assert calls == [("AAPL",)]
+
+
+@pytest.mark.asyncio
+async def test_chunked_merge_validation_error_from_post_merge_review_is_not_swallowed(monkeypatch):
+    settings = SimpleNamespace(
+        analysis_service=SimpleNamespace(
+            llm=SimpleNamespace(
+                orchestrator_chunk_size=1,
+                orchestrator_max_parallel=2,
+                agent_models_override=SimpleNamespace(post_merge=""),
+                precision_first=SimpleNamespace(
+                    enabled=True,
+                    allowed_strategy_types=["single_leg", "vertical_spread"],
+                ),
+            )
+        ),
+        trade_service=SimpleNamespace(
+            risk=SimpleNamespace(
+                blueprint_limits=SimpleNamespace(
+                    max_daily_loss=2_000.0,
+                    max_margin_usage=0.5,
+                    portfolio_delta_limit=0.5,
+                    portfolio_gamma_limit=0.1,
+                )
+            )
+        ),
+        common=SimpleNamespace(
+            watchlist=SimpleNamespace(
+                for_data_signal=["AAPL", "MSFT"],
+                for_trade_benchmark=[],
+            )
+        ),
+    )
+
+    monkeypatch.setattr(
+        "services.analysis_service.app.llm.agents.orchestrator.get_settings",
+        lambda: settings,
+    )
+
+    orchestrator = AgentOrchestrator(provider=_LLMProvider())
+
+    async def _fake_generate_single_pass(self, **kwargs):
+        symbol = kwargs["trade_symbols"][0]
+        return _make_blueprint(
+            [(symbol, 0.75)],
+            max_total_positions=1,
+            analysis_chunk_id=kwargs["analysis_chunk_id"],
+        )
+
+    async def _fake_review(**kwargs):
+        LLMTradingBlueprint.model_validate({"symbol_plans": [{"underlying": "AAPL"}]})
+
+    monkeypatch.setattr(AgentOrchestrator, "_generate_single_pass", _fake_generate_single_pass)
+    monkeypatch.setattr(orchestrator._post_merge_portfolio_agent, "review", _fake_review)
+
+    with pytest.raises(ValidationError):
+        await orchestrator.generate([
+            _make_sf("AAPL"),
+            _make_sf("MSFT"),
+        ])
 
 
 @pytest.mark.asyncio

@@ -461,7 +461,18 @@ class AnalysisAgent(ABC):
                 )
                 return parsed
 
-            except (json.JSONDecodeError, ValidationError, ValueError) as e:
+            except ValidationError as e:
+                last_exc = e
+                logger.warning(
+                    f"agent.{self.name}.validation_error",
+                    analysis_chunk_id=analysis_chunk_id,
+                    provider=provider.name,
+                    attempt=attempt + 1,
+                    error=decode_escaped_unicode(e),
+                )
+                raise
+
+            except (json.JSONDecodeError, ValueError) as e:
                 last_exc = e
                 llm_retries_total.labels(
                     provider=provider.name, error_type="parse",

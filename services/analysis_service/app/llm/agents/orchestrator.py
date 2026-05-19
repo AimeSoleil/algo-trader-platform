@@ -20,6 +20,8 @@ from datetime import date
 from time import perf_counter
 from typing import Any
 
+from pydantic import ValidationError
+
 from shared.config import get_settings
 from shared.data_quality import DataQualityConfig, should_circuit_break_analysis
 from shared.metrics import llm_request_duration
@@ -109,6 +111,64 @@ class AgentOrchestrator:
 
         # Provider — lazy-created on first use if not supplied
         self._provider = provider
+
+    @staticmethod
+    def _find_validation_error(exc: BaseException | None) -> ValidationError | None:
+        """Return the first ValidationError found in the cause/context chain."""
+        current = exc
+        seen: set[int] = set()
+        while current is not None and id(current) not in seen:
+            seen.add(id(current))
+            if isinstance(current, ValidationError):
+                return current
+            current = current.__cause__ or current.__context__
+        return None
+
+    @staticmethod
+    def _failed_agents_from_exception(exc: Exception) -> list[str]:
+        """Extract specialist names from orchestrator failure text when present."""
+        prefix = "specialist agent failed:"
+        message = str(exc).strip()
+        if not message.startswith(prefix):
+            return []
+        raw_names = message[len(prefix):].strip()
+        if not raw_names:
+            return []
+        return [name.strip() for name in raw_names.split(",") if name.strip()]
+
+    def _build_skipped_batch_blueprint(
+        self,
+        *,
+        signal_features: list[SignalFeatures],
+        signal_date: date | None,
+        provider_name: str,
+        model_version: str,
+        analysis_chunk_id: str,
+        batch_index: int | None,
+        is_chunk: bool,
+        trade_symbols: list[str],
+        error: Exception,
+    ) -> LLMTradingBlueprint:
+        """Build an empty blueprint for a skipped non-validation batch failure."""
+        return self._build_empty_blueprint(
+            signal_features=signal_features,
+            signal_date=signal_date,
+            provider_name=provider_name,
+            model_version=model_version,
+            reasoning_context={
+                "pipeline": "agentic_chunk_skipped" if is_chunk else "agentic_single_skipped",
+                "provider": provider_name,
+                "analysis_chunk_id": analysis_chunk_id,
+                "batch_index": batch_index,
+                "is_chunk": is_chunk,
+                "trade_symbols": trade_symbols,
+                "input_symbols": len(signal_features),
+                "skip_reason": "batch_exception",
+                "error_type": type(error).__name__,
+                "error": str(error),
+                "failed_agents": self._failed_agents_from_exception(error),
+            },
+        )
 
     async def generate(
         self,
@@ -263,17 +323,48 @@ class AgentOrchestrator:
 
         if len(trade_features) <= chunk_size:
             # Small enough — run everything in one pass (no chunking overhead)
-            blueprint = await self._generate_single_pass(
-                signal_features=trade_features,
-                current_positions=current_positions,
-                previous_execution=previous_execution,
-                provider=provider,
-                signal_date=signal_date,
-                analysis_chunk_id=f"single-{uuid.uuid4().hex[:8]}",
-                usage_tracker=usage_tracker,
-                trade_symbols=trade_symbol_names,
-                market_snapshot=market_snapshot,
-            )
+            analysis_chunk_id = f"single-{uuid.uuid4().hex[:8]}"
+            try:
+                blueprint = await self._generate_single_pass(
+                    signal_features=trade_features,
+                    current_positions=current_positions,
+                    previous_execution=previous_execution,
+                    provider=provider,
+                    signal_date=signal_date,
+                    analysis_chunk_id=analysis_chunk_id,
+                    usage_tracker=usage_tracker,
+                    trade_symbols=trade_symbol_names,
+                    market_snapshot=market_snapshot,
+                )
+            except Exception as exc:
+                validation_error = self._find_validation_error(exc)
+                if validation_error is not None:
+                    if validation_error is exc:
+                        raise
+                    raise validation_error from exc
+
+                logger.warning(
+                    "orchestrator.batch_skipped",
+                    analysis_chunk_id=analysis_chunk_id,
+                    chunk=0,
+                    is_chunk=False,
+                    symbols=len(trade_features),
+                    trade_symbols=trade_symbol_names,
+                    error_type=type(exc).__name__,
+                    error=str(exc),
+                    failed_agents=self._failed_agents_from_exception(exc),
+                )
+                blueprint = self._build_skipped_batch_blueprint(
+                    signal_features=trade_features,
+                    signal_date=signal_date,
+                    provider_name=provider.name,
+                    model_version=self._configured_model_version(settings, provider.name),
+                    analysis_chunk_id=analysis_chunk_id,
+                    batch_index=0,
+                    is_chunk=False,
+                    trade_symbols=trade_symbol_names,
+                    error=exc,
+                )
         else:
             # Chunk trade symbols only; benchmark context is shared as one
             # market snapshot instead of being re-serialized into every chunk.
@@ -294,41 +385,130 @@ class AgentOrchestrator:
 
             # Run chunks with concurrency limit
             sem = asyncio.Semaphore(max_parallel)
+            validation_failure_active = asyncio.Event()
             chunk_trackers: dict[int, LLMUsageTracker] = {}
+            model_version = self._configured_model_version(settings, provider.name)
 
-            async def _run_chunk(idx: int, chunk_features: list[SignalFeatures]):
+            async def _run_chunk(
+                idx: int,
+                chunk_features: list[SignalFeatures],
+                *,
+                analysis_chunk_id: str,
+                trade_syms_in_chunk: list[str],
+                chunk_tracker: LLMUsageTracker,
+            ) -> tuple[int, LLMTradingBlueprint]:
+                async with sem:
+                    if validation_failure_active.is_set():
+                        return idx, self._build_skipped_batch_blueprint(
+                            signal_features=chunk_features,
+                            signal_date=signal_date,
+                            provider_name=provider.name,
+                            model_version=model_version,
+                            analysis_chunk_id=analysis_chunk_id,
+                            batch_index=idx,
+                            is_chunk=True,
+                            trade_symbols=trade_syms_in_chunk,
+                            error=RuntimeError("validation failure already active"),
+                        )
+
+                    try:
+                        logger.info(
+                            "orchestrator.chunk_started",
+                            analysis_chunk_id=analysis_chunk_id,
+                            chunk=idx,
+                            symbols=len(chunk_features),
+                            trade_symbols=trade_syms_in_chunk,
+                            benchmark_symbols=(market_snapshot or {}).get("symbols", []),
+                        )
+                        blueprint = await self._generate_single_pass(
+                            signal_features=chunk_features,
+                            current_positions=current_positions,
+                            previous_execution=previous_execution,
+                            provider=provider,
+                            signal_date=signal_date,
+                            is_chunk=True,
+                            analysis_chunk_id=analysis_chunk_id,
+                            usage_tracker=chunk_tracker,
+                            trade_symbols=trade_syms_in_chunk,
+                            market_snapshot=market_snapshot,
+                        )
+                        return idx, blueprint
+                    except Exception as exc:
+                        validation_error = self._find_validation_error(exc)
+                        if validation_error is not None:
+                            validation_failure_active.set()
+                            logger.error(
+                                "orchestrator.batch_validation_failed",
+                                analysis_chunk_id=analysis_chunk_id,
+                                chunk=idx,
+                                is_chunk=True,
+                                symbols=len(chunk_features),
+                                error_type=type(validation_error).__name__,
+                                error=str(validation_error),
+                            )
+                            if validation_error is exc:
+                                raise
+                            raise validation_error from exc
+
+                        logger.warning(
+                            "orchestrator.batch_skipped",
+                            analysis_chunk_id=analysis_chunk_id,
+                            chunk=idx,
+                            is_chunk=True,
+                            symbols=len(chunk_features),
+                            trade_symbols=trade_syms_in_chunk,
+                            error_type=type(exc).__name__,
+                            error=str(exc),
+                            failed_agents=self._failed_agents_from_exception(exc),
+                        )
+                        return idx, self._build_skipped_batch_blueprint(
+                            signal_features=chunk_features,
+                            signal_date=signal_date,
+                            provider_name=provider.name,
+                            model_version=model_version,
+                            analysis_chunk_id=analysis_chunk_id,
+                            batch_index=idx,
+                            is_chunk=True,
+                            trade_symbols=trade_syms_in_chunk,
+                            error=exc,
+                        )
+
+            tasks = []
+            for idx, chunk_features in enumerate(chunks):
                 chunk_tracker = LLMUsageTracker()
-                chunk_trackers[idx] = chunk_tracker  # Safe: each coroutine writes unique key
+                chunk_trackers[idx] = chunk_tracker
                 analysis_chunk_id = f"chunk-{idx:03d}-{uuid.uuid4().hex[:8]}"
                 trade_syms_in_chunk = [
                     sf.symbol for sf in chunk_features
                     if sf.symbol.upper() in trade_syms
                 ]
-                async with sem:
-                    logger.info(
-                        "orchestrator.chunk_started",
+                tasks.append(asyncio.create_task(
+                    _run_chunk(
+                        idx,
+                        chunk_features,
                         analysis_chunk_id=analysis_chunk_id,
-                        chunk=idx,
-                        symbols=len(chunk_features),
-                        trade_symbols=trade_syms_in_chunk,
-                        benchmark_symbols=(market_snapshot or {}).get("symbols", []),
-                    )
-                    return await self._generate_single_pass(
-                        signal_features=chunk_features,
-                        current_positions=current_positions,
-                        previous_execution=previous_execution,
-                        provider=provider,
-                        signal_date=signal_date,
-                        is_chunk=True,
-                        analysis_chunk_id=analysis_chunk_id,
-                        usage_tracker=chunk_tracker,
-                        trade_symbols=trade_syms_in_chunk,
-                        market_snapshot=market_snapshot,
-                    )
+                        trade_syms_in_chunk=trade_syms_in_chunk,
+                        chunk_tracker=chunk_tracker,
+                    ),
+                    name=f"chunk-{idx}",
+                ))
 
-            chunk_blueprints = await asyncio.gather(
-                *[_run_chunk(i, c) for i, c in enumerate(chunks)]
-            )
+            chunk_blueprints_by_index: dict[int, LLMTradingBlueprint] = {}
+            try:
+                for done in asyncio.as_completed(tasks):
+                    idx, chunk_blueprint = await done
+                    chunk_blueprints_by_index[idx] = chunk_blueprint
+            except ValidationError:
+                for task in tasks:
+                    if not task.done():
+                        task.cancel()
+                await asyncio.gather(*tasks, return_exceptions=True)
+                raise
+
+            chunk_blueprints = [
+                chunk_blueprints_by_index[idx]
+                for idx in sorted(chunk_blueprints_by_index)
+            ]
 
             blueprint = await self.merge_chunk_blueprints(
                 chunk_blueprints=chunk_blueprints,
@@ -534,6 +714,11 @@ class AgentOrchestrator:
                     "conflict_explanations": [item.model_dump() for item in review.conflict_explanations],
                 }
             except Exception as exc:
+                validation_error = self._find_validation_error(exc)
+                if validation_error is not None:
+                    if validation_error is exc:
+                        raise
+                    raise validation_error from exc
                 logger.warning(
                     "orchestrator.post_merge_review_failed",
                     error_type=type(exc).__name__,

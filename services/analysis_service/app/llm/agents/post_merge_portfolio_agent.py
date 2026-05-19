@@ -105,7 +105,12 @@ class PostMergePortfolioAgent:
                 )
                 return review
 
-            except (json.JSONDecodeError, ValidationError, ValueError, TypeError) as exc:
+            except ValidationError as exc:
+                last_exc = exc
+                logger.warning("post_merge.validation_error", provider=provider.name, attempt=attempt + 1, error=decode_escaped_unicode(exc))
+                raise
+
+            except (json.JSONDecodeError, ValueError, TypeError) as exc:
                 last_exc = exc
                 llm_retries_total.labels(provider=provider.name, error_type="parse").inc()
                 logger.warning("post_merge.parse_error", provider=provider.name, attempt=attempt + 1, error=decode_escaped_unicode(exc))
