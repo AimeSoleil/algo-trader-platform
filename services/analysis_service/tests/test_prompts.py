@@ -278,6 +278,7 @@ def test_volatility_system_prompt_lists_supported_contango_and_backwardation_reg
 
     assert "30-70=normal" in _SYSTEM_PROMPT
     assert "30-70=neutral" not in _SYSTEM_PROMPT
+    assert "vol_regime` is NOT `iv_rank_zone" in _SYSTEM_PROMPT
     assert "high_vol_contango" in _SYSTEM_PROMPT
     assert "low_vol_contango" in _SYSTEM_PROMPT
     assert "high_vol_backwardation" in _SYSTEM_PROMPT

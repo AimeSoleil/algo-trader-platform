@@ -132,6 +132,7 @@ Use a compound regime (e.g. high_vol_backwardation) when TWO conditions are simu
 - backwardation_event_risk: term structure inverted AND earnings_proximity_days≤5 → no short vol; defined-risk long only
 
 Important: vol_regime must be a SINGLE string value from the list above. Never combine two values with a comma.
+Important: `vol_regime` is NOT `iv_rank_zone`. Use `high_vol|low_vol|normal|...` for `vol_regime`, and reserve bare `high|low|neutral` for `iv_rank_zone` only.
 Do not invent unsupported compounds beyond the listed regimes above. If multiple conditions are true but the exact compound is not listed above,
 choose the closest supported single or listed compound regime and explain the secondary condition in reasoning.
 
