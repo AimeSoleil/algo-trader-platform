@@ -174,6 +174,7 @@ def test_trend_analysis_coerces_null_iv_rank() -> None:
 @pytest.mark.parametrize(
     ("raw_value", "expected"),
     [
+        ("neutral", VolRegime.NORMAL),
         ("contango", VolRegime.CONTANGO),
         ("high_vol_contango", VolRegime.HIGH_VOL_CONTANGO),
         ("low_vol_contango", VolRegime.LOW_VOL_CONTANGO),

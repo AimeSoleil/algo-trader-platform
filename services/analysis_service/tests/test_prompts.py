@@ -276,6 +276,8 @@ def test_synthesizer_system_prompt_gates_calendar_to_contango_and_earnings_buffe
 def test_volatility_system_prompt_lists_supported_contango_and_backwardation_regimes():
     from services.analysis_service.app.llm.agents.volatility_agent import _SYSTEM_PROMPT
 
+    assert "30-70=normal" in _SYSTEM_PROMPT
+    assert "30-70=neutral" not in _SYSTEM_PROMPT
     assert "high_vol_contango" in _SYSTEM_PROMPT
     assert "low_vol_contango" in _SYSTEM_PROMPT
     assert "high_vol_backwardation" in _SYSTEM_PROMPT

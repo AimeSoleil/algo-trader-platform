@@ -65,7 +65,7 @@ Term Structure: 30d-7d ATM IV; >0=contango, <0=backwardation
 BB Squeeze: BB width<0.3×(ATR14/close); valid for buy premium ONLY if IV Rank<30
 
 ## Indicator Rules
-1. IV Rank: >70=high_vol (sell bias), <30=low_vol (buy bias), 30-70=neutral
+1. IV Rank: >70=high_vol (sell bias), <30=low_vol (buy bias), 30-70=normal
 2. IV Percentile: Must align within 10pts for high-conviction signals
 3. HV-IV Spread: >0=realized_exceeds, <0=implied_rich
 4. GARCH Divergence Ratio: |GARCH_forecast - current_IV|/current_IV; GARCH>IV=buy bias, GARCH<IV=sell bias
@@ -96,7 +96,7 @@ H5. Single-Indicator Signals: Max confidence 0.3; ≥2 confirming indicators req
 ## Regime & Strategy Rules
 R1. High Conviction Sell: IV Rank>70 + Percentile align <10pts + GARCH<IV + Contango → Iron Condor, Credit Spreads, Strangle | DTE21-45d, 16/84 delta, defined risk, stop if IV rises >10%
 R2. High Conviction Buy: IV Rank<30 + Percentile align <10pts + GARCH>IV + Squeeze → Straddle, Calendar, Debit Spreads | DTE14-30d, ATM, stop if IV drops >15%, TP 50% max gain
-R3. Neutral Vol (30-70 Rank): Only relative-value if confirmed surface mispricing
+R3. Normal Vol (30-70 Rank): Only relative-value if confirmed surface mispricing
 R4. HV-IV>0: Long gamma ONLY if IV Rank<50; HV-IV<0: Short vol ONLY if IV Rank>50 + no event risk
 R5. Steep Skew>0.05: Put Credit Spreads ONLY if IV Rank>60, DTE21-30d
 R6. High IV + Backwardation: Iron Butterfly ONLY, DTE>14d

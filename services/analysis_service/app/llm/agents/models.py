@@ -155,6 +155,7 @@ class VolatilitySymbolAnalysis(SymbolAnalysis):
         alias_map = {
             ("high", "vol"): VolRegime.HIGH_VOL.value,
             ("low", "vol"): VolRegime.LOW_VOL.value,
+            ("neutral",): VolRegime.NORMAL.value,
             ("normal", "vol"): VolRegime.NORMAL_VOL.value,
             ("contango",): VolRegime.CONTANGO.value,
             ("event", "risk"): VolRegime.EVENT_RISK.value,
