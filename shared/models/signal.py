@@ -1,7 +1,7 @@
 """信号与指标数据模型"""
 from __future__ import annotations
 from datetime import date, datetime
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 class OptionIndicators(BaseModel):
@@ -121,7 +121,7 @@ class CrossAssetIndicators(BaseModel):
 
     # ── Volatility environment (VIX) ──────────────────────
     vix_level: float = 0.0                 # Current VIX close
-    vix_percentile_52w: float = 0.0        # VIX 52-week percentile (0-1)
+    vix_percentile_60d: float = 0.0        # VIX 60-day percentile (0-1)
     vix_correlation_20d: float = 0.0       # 20-day correlation to VIX (fear sensitivity)
 
     # ── Placeholders (next iteration) ─────────────────────
@@ -129,6 +129,19 @@ class CrossAssetIndicators(BaseModel):
     earnings_proximity_days: int | None = None  # Days until next earnings (None = unknown)
 
     confidence_scores: dict[str, float] = Field(default_factory=dict)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _sync_vix_percentile_aliases(cls, data):
+        if not isinstance(data, dict):
+            return data
+
+        payload = dict(data)
+        legacy_vix_percentile = payload.pop("vix_percentile_52w", None)
+        if "vix_percentile_60d" not in payload and legacy_vix_percentile is not None:
+            payload["vix_percentile_60d"] = legacy_vix_percentile
+
+        return payload
 
 
 class DataQuality(BaseModel):

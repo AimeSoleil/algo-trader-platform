@@ -63,7 +63,7 @@ class TestCrossAssetSerialization:
                 iwm_correlation_20d=0.65,
                 tlt_correlation_20d=-0.3,
                 vix_level=18.5,
-                vix_percentile_52w=0.45,
+                vix_percentile_60d=0.45,
                 vix_correlation_20d=-0.6,
             ),
         )
@@ -83,8 +83,24 @@ class TestCrossAssetSerialization:
         assert "tlt_correlation_20d" in ca
         # VIX fields
         assert "vix_level" in ca
-        assert "vix_percentile_52w" in ca
+        assert "vix_percentile_60d" in ca
+        assert "vix_percentile_52w" not in ca
         assert "vix_correlation_20d" in ca
+
+    def test_legacy_vix_percentile_input_is_migrated_to_60d_field(self):
+        from services.analysis_service.app.llm.prompts import _serialize_one_signal
+
+        raw = _make_signal_features().model_dump(mode="python")
+        raw["cross_asset_indicators"] = {"vix_percentile_52w": 0.37}
+
+        sf = SignalFeatures.model_validate(raw)
+        text = _serialize_one_signal(sf)
+        data = json.loads(text.split("\n", 1)[1])
+
+        ca = data.get("cross_asset", {})
+        assert sf.cross_asset_indicators.vix_percentile_60d == pytest.approx(0.37)
+        assert ca["vix_percentile_60d"] == pytest.approx(0.37)
+        assert "vix_percentile_52w" not in ca
 
     def test_sparse_filtering_removes_zero_values(self):
         from services.analysis_service.app.llm.prompts import _serialize_one_signal

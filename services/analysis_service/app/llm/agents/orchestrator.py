@@ -1355,7 +1355,7 @@ class AgentOrchestrator:
         "price": ("close_price", "daily_return", "volume", "volatility_regime"),
         "stock_trend": ("trend", "trend_strength", "rsi_14", "adx_14"),
         "option_vol_surface": ("iv_rank", "iv_percentile", "term_structure_slope"),
-        "cross_asset": ("vix_level", "vix_percentile_52w"),
+        "cross_asset": ("vix_level", "vix_percentile_60d"),
     }
 
     def _build_market_snapshot(

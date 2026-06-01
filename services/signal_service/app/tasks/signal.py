@@ -56,7 +56,10 @@ async def _compute_daily_signals(
         load_stock_bars,
         load_vix_bars,
     )
-    from services.signal_service.app.indicators.option_indicators import compute_option_indicators
+    from services.signal_service.app.indicators.option_indicators import (
+        compute_option_indicators,
+        get_historical_iv_series,
+    )
     from services.signal_service.app.indicators.stock_indicators import compute_stock_indicators
     from services.signal_service.app.queries import delete_signal_cache, set_signal_cache
     from services.signal_service.app.signal_generator import generate_signal
@@ -146,8 +149,15 @@ async def _compute_daily_signals(
                 total_volume = int(bars_df["volume"].iloc[-1])
 
                 # ── Technical indicators ───────────────────
+                historical_iv_series = await get_historical_iv_series(symbol)
+                historical_iv = historical_iv_series.tolist()
                 stock_indicators = compute_stock_indicators(bars_df)
-                option_indicators = await compute_option_indicators(symbol, option_df, close_price)
+                option_indicators = await compute_option_indicators(
+                    symbol,
+                    option_df,
+                    close_price,
+                    historical_iv=historical_iv,
+                )
 
                 # ── Cross-asset indicators ─────────────────
                 bar_returns = bars_df["close"].pct_change().dropna()
@@ -158,7 +168,7 @@ async def _compute_daily_signals(
                     symbol=symbol,
                     bars_df=bars_df,
                     bar_returns=bar_returns,
-                    option_df=option_df,
+                    iv_history=historical_iv_series,
                     benchmark_returns=benchmark_returns,
                     vix_bars=vix_bars,
                     total_volume=total_volume,

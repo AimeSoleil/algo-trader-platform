@@ -78,18 +78,18 @@ H4. Single Indicator: Max confidence 0.3 when only one signal supports the regim
 ────────────────────────────────────────────────────────
 INDICATOR DEFINITIONS (Exact Calculations)
 ────────────────────────────────────────────────────────
-1. Stock-IV Corr: 20d exp-weighted corr of underlying returns vs ATM IV changes.
+1. Stock-IV Corr: 20d Pearson correlation of daily stock returns vs daily aggregated IV changes.
    <-0.5 = fear, [-0.3, 0.3] = decoupled, >0.3 = bullish_vol.
 2. Opt/Stock Vol Ratio: share-equivalent option volume / stock shares (contracts*100 / shares).
     <0.5 = illiquid-options proxy, 0.5-1.5 = normal, 1.5-2.5 = elevated, >2.5 = extreme abnormal volume.
     Use only as supporting evidence; >2.5 requires event / IV confirmation, and <0.5 is not sufficient by itself to override spread/OI-based liquidity checks.
-3. Benchmark Beta/Corr: 60d beta (SPY/QQQ/IWM), 20d exp-weighted corr
+3. Benchmark Beta/Corr: 60d beta (SPY/QQQ/IWM), 20d Pearson corr
    (SPY/QQQ/IWM/TLT/GLD/HYG/XLE/IBIT).
    - SPY β > 1.2 = amplifies market; < 0.8 = defensive.
    - QQQ β > 1.5 + SPY β < 1.0 = pure tech exposure.
    - TLT corr > 0.3 = rate-sensitive; < -0.3 = rate-beneficiary.
 4. VIX: Level bands <15 / 15-25 / 25-35 / >35.
-   60d rolling percentile (252d prohibited — regime changes distort).
+    Use vix_percentile_60d for the 60d rolling percentile (252d prohibited — regime changes distort).
    <0.2 = complacent, >0.8 = fear extreme.
 5. Correlation Confidence: Use correlation_significance (R² proxy) from confidence_scores.
    R² < 0.3 = unstable → cap derived confidence at 0.4.
@@ -120,8 +120,8 @@ R4. VIX environment rules:
     - VIX > 35 → no aggressive short vol, position max 0.5×.
     - VIX 25-35 → defensive short vol only, max 0.75×.
     - VIX < 15 → buy cheap protection, narrow spreads.
-    - vix_pct > 0.8 → fear extreme → contrarian long, small size.
-    - vix_pct < 0.2 → complacency → buy VIX hedge, tighten stops.
+    - vix_percentile_60d > 0.8 → fear extreme → contrarian long, small size.
+    - vix_percentile_60d < 0.2 → complacency → buy VIX hedge, tighten stops.
 R5. Equity benchmark divergence (require ≥ 2 consecutive days):
     - IWM corr > 0.6 + IWM down 2+ days → risk-off → reduce 25%.
     - SPY/QQQ/IWM corr spread > 0.4 → regime transition → reduce 25%.

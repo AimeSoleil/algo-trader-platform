@@ -10,7 +10,7 @@
 | Vanna | `option_indicators.vanna` | dDelta/dIV — if >0 and IV dropping, delta rises |
 | Charm | `option_indicators.charm` | dDelta/dTime — overnight delta drift |
 | Trend Strength | `stock_indicators.trend_strength` | 0.0–1.0; governs directional tilt allowance |
-| Delta-Adjusted Hedge | `cross_asset_indicators.delta_adjusted_hedge_ratio` | Shares to delta-neutralize; >0 = buy, <0 = sell |
+| Delta-Adjusted Hedge | `cross_asset_indicators.delta_adjusted_hedge_ratio` | Unitized hedge ratio; >0 = buy shares to offset, <0 = sell shares to offset |
 
 ## Rules
 

@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import math
 from datetime import date, datetime
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import numpy as np
@@ -107,11 +108,27 @@ def make_option_df(
     return pd.DataFrame(rows)
 
 
-def _mock_settings() -> MagicMock:
-    s = MagicMock()
-    s.signal_service.option_strategy.high_quantile = 0.7
-    s.signal_service.option_strategy.low_quantile = 0.3
-    return s
+def _mock_settings() -> SimpleNamespace:
+    return SimpleNamespace(
+        signal_service=SimpleNamespace(
+            option_strategy=SimpleNamespace(
+                high_quantile=0.7,
+                low_quantile=0.3,
+            ),
+        ),
+        common=SimpleNamespace(
+            data_quality=SimpleNamespace(
+                weight_stock=0.5,
+                weight_option=0.3,
+                weight_degradation=0.2,
+                stock_full_bars=260,
+                option_full_rows=200,
+                skip_threshold=0.3,
+                reduce_threshold=0.7,
+                reduce_factor=0.5,
+            ),
+        ),
+    )
 
 
 # ===================================================================
@@ -374,10 +391,10 @@ class TestCalculateIVSkew:
         # underlying = 100; OTM put strike ≤ 95; OTM call strike ≥ 105
         data = pd.DataFrame(
             [
-                {"option_type": "put", "strike": 90.0, "iv": 0.35},
-                {"option_type": "put", "strike": 95.0, "iv": 0.32},
-                {"option_type": "call", "strike": 105.0, "iv": 0.22},
-                {"option_type": "call", "strike": 110.0, "iv": 0.20},
+                {"expiry": "2025-02-15", "option_type": "put", "strike": 90.0, "iv": 0.35},
+                {"expiry": "2025-02-15", "option_type": "put", "strike": 95.0, "iv": 0.32},
+                {"expiry": "2025-02-15", "option_type": "call", "strike": 105.0, "iv": 0.22},
+                {"expiry": "2025-02-15", "option_type": "call", "strike": 110.0, "iv": 0.20},
             ]
         )
         skew = calculate_iv_skew(data, 100.0)

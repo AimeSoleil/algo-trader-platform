@@ -10,7 +10,7 @@
 |---|---|---|
 | Stock-IV Correlation | `cross_asset_indicators.stock_iv_correlation` | <-0.5: fear regime · near 0: decoupled · >0.3: bullish vol |
 | Options/Stock Vol Ratio | `cross_asset_indicators.option_vs_stock_volume_ratio` | <0.5: illiquid-options proxy · 0.5–1.5: normal · 1.5–2.5: elevated · >2.5: extreme abnormal volume |
-| Delta-Adj Hedge Ratio | `cross_asset_indicators.delta_adjusted_hedge_ratio` | >0: buy shares · <0: sell · |value| > 200: significant |
+| Delta-Adj Hedge Ratio | `cross_asset_indicators.delta_adjusted_hedge_ratio` | >0: buy shares to offset · <0: sell shares to offset · |value| > 0.3: significant |
 | Correlation Confidence | `cross_asset_indicators.confidence_scores` | Need ≥ 0.5 for actionable signals |
 
 ### Multi-Benchmark Beta & Correlation
@@ -30,7 +30,7 @@
 | Indicator | Field | Key Levels |
 |---|---|---|
 | VIX Level | `cross_asset_indicators.vix_level` | <15: low vol · 15-25: normal · 25-35: elevated · >35: panic |
-| VIX 52w Percentile | `cross_asset_indicators.vix_percentile_52w` | <0.2: complacent · >0.8: fear extreme |
+| VIX 60d Percentile | `cross_asset_indicators.vix_percentile_60d` | <0.2: complacent · >0.8: fear extreme |
 | VIX Correlation (20d) | `cross_asset_indicators.vix_correlation_20d` | Most stocks negative (-0.3 to -0.7); positive = unusual/contrarian |
 
 ## Rules
@@ -44,8 +44,8 @@
 5. IF `option_vs_stock_volume_ratio > 2.5` → extreme abnormal options activity; treat as supporting evidence for event/catalyst interest only when earnings / IV / market-stress context also agrees
 6. IF `option_vs_stock_volume_ratio` in `[1.5, 2.5]` → elevated options participation; use as secondary confirmation, not standalone catalyst proof
 7. IF `option_vs_stock_volume_ratio < 0.5` → illiquid-options proxy; prefer simpler structures only if spreads / OI also look weak
-8. IF `|delta_adjusted_hedge_ratio| > 200` → significant hedging needed → factor into strategy
-9. IF `|delta_adjusted_hedge_ratio| < 50` → delta-neutral → no hedging action
+8. IF `|delta_adjusted_hedge_ratio| > 0.3` → significant net delta bias → factor hedge pressure into strategy
+9. IF `|delta_adjusted_hedge_ratio| < 0.1` → roughly delta-neutral → no hedge adjustment signal
 10. IF stock trend bullish AND IV rising → divergence → reduce bullish size by 30%
 11. IF stock trend bearish AND IV falling → unusual complacency → monitor for contrarian long
 
@@ -63,8 +63,8 @@
 
 18. IF `vix_level > 30` → elevated fear → sell premium aggressively (put spreads), wider strikes for defined risk
 19. IF `vix_level < 15` → complacent market → buy cheap protection, narrow spreads, avoid naked short vol
-20. IF `vix_percentile_52w > 0.8` → fear extreme → contrarian long opportunity, but size small
-21. IF `vix_percentile_52w < 0.2` → complacency extreme → buy VIX calls as hedge, tighten all stops
+20. IF `vix_percentile_60d > 0.8` → fear extreme → contrarian long opportunity, but size small
+21. IF `vix_percentile_60d < 0.2` → complacency extreme → buy VIX calls as hedge, tighten all stops
 22. IF `vix_correlation_20d > 0` (positive) → stock rises with fear → unusual, likely short squeeze or safe haven
 23. IF `vix_level > 25` AND `vix_correlation_20d < -0.5` → stock highly fear-sensitive → cut to half position, add protective puts
 
@@ -74,12 +74,12 @@
 - Cross-asset is confirmation only — never standalone entry trigger
 - Correlation regime change requires 5 consecutive days before adoption
 - Never use `option_vs_stock_volume_ratio` alone as proof of catalyst risk; for `<0.5`, confirm actual illiquidity with bid/ask and OI before hard-blocking structures
-- When `|hedge_ratio| > 200` → split into tranches (max 100 shares each)
+- When `|delta_adjusted_hedge_ratio| > 0.3` → treat hedge pressure as meaningful, but do not translate it directly into share counts without a separate portfolio sizing step
 - Multi-benchmark signals need `multi_benchmark_quality ≥ 0.5` to be actionable
 - VIX signals need `vix_quality = 1.0` (VIX data available) to be actionable
 
 ## Example
 
-Given: `spy_beta=1.15`, `qqq_beta=1.82`, `iwm_beta=0.45`, `tlt_correlation_20d=0.35`, `vix_level=22.5`, `vix_percentile_52w=0.65`, `vix_correlation_20d=-0.42`, `stock_iv_correlation=-0.62`, confidence=0.72, trend=bullish, IV stable
+Given: `spy_beta=1.15`, `qqq_beta=1.82`, `iwm_beta=0.45`, `tlt_correlation_20d=0.35`, `vix_level=22.5`, `vix_percentile_60d=0.65`, `vix_correlation_20d=-0.42`, `stock_iv_correlation=-0.62`, confidence=0.72, trend=bullish, IV stable
 Analysis: High QQQ beta + moderate SPY beta → tech-driven stock. Positive TLT correlation → rate-sensitive growth. VIX normal range, moderate fear sensitivity. Fear regime correlation. Bullish trend.
 Action: Confirms tech-momentum thesis. Sell put spreads with elevated premium. Monitor FOMC for rate sensitivity. No IWM risk-off signal. Moderate VIX = normal positioning.

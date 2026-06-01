@@ -11,9 +11,9 @@
 | Trend Strength | `stock_indicators.trend_strength` | 0.0–1.0 continuous |
 | RSI | `stock_indicators.rsi_14` | >70: overbought · <30: oversold |
 | Stochastic RSI | `stock_indicators.stoch_rsi` | >0.8: overbought · <0.2: oversold |
-| RSI Divergence | `stock_indicators.rsi_divergence` | +1: bullish div · -1: bearish div · 0: none |
+| RSI Divergence | `stock_indicators.rsi_divergence` | +1: bearish div · -1: bullish div · 0: none |
 | MACD Histogram | `stock_indicators.macd_histogram` | >0: bullish momentum · <0: bearish |
-| MACD Hist Divergence | `stock_indicators.macd_hist_divergence` | +1: bullish div · -1: bearish div |
+| MACD Hist Divergence | `stock_indicators.macd_hist_divergence` | +1: momentum confirms price direction · -1: momentum/price divergence |
 | Keltner Upper | `stock_indicators.keltner_upper` | Price above = strong bullish |
 | Keltner Lower | `stock_indicators.keltner_lower` | Price below = strong bearish |
 | Ichimoku Tenkan | `stock_indicators.ichimoku_tenkan` | Tenkan > Kijun = bullish |
@@ -29,8 +29,8 @@
 3. IF `adx_14 < 20` → range-bound → iron_condor, iron_butterfly
 4. IF `ichimoku_tenkan > ichimoku_kijun` AND `close_price > ichimoku_span_a` AND `close_price > ichimoku_span_b` → bullish confirmation
 5. IF `rsi_divergence != 0` → potential reversal → reduce directional exposure, tighten stops
-6. IF `macd_hist_divergence != 0` → momentum exhaustion → corroborates RSI divergence
-7. IF `rsi_divergence != 0` AND `macd_hist_divergence != 0` (same sign) → high-probability reversal
+6. IF `macd_hist_divergence = -1` → momentum exhaustion / divergence → corroborates reversal warnings
+7. IF `rsi_divergence != 0` AND `macd_hist_divergence = -1` → higher-confidence reversal warning
 8. IF `bollinger_band_width < 0.03` → squeeze → straddle/strangle entry
 9. IF `linear_reg_slope` sign just changed → trend reversal warning → no new trend-following entries
 10. IF `adx_14 > 30` AND trend confirmed → do NOT enter counter-trend positions

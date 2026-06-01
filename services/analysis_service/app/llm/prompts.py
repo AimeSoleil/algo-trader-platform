@@ -56,7 +56,7 @@ All specialist agents receive the same signal data. Key unit conventions, calcul
 **atr_14: absolute dollar value (e.g. 2.50 = $2.50 average daily trading range)
 **volume_profile_poc / val / vah: absolute price levels in dollars
 **VWAP: Rolling ~1-year volume-weighted average price (long-term metric, NOT intraday VWAP)
-**delta_adjusted_hedge_ratio: OI-weighted average delta per standard options contract (1 contract = 100 shares); typical range -1 to +1; |value| > 0.3 = significant hedging intensity
+**delta_adjusted_hedge_ratio: Negative of OI-weighted average portfolio delta per standard options contract (1 contract = 100 shares); >0 suggests buy shares to offset, <0 suggests sell shares to offset; typical range -1 to +1; |value| > 0.3 = meaningful net delta bias
 **portfolio_greeks: OI-weighted average greeks per contract (delta, gamma, theta, vega)
 **delta_exposure_profile: Total market delta exposure for DEX/GEX analysis, calculated as raw sum of delta × open interest
 **earnings_proximity_days: Trading days remaining until next earnings release; null = unknown or not applicable (e.g. ETFs)
@@ -73,7 +73,7 @@ All specialist agents receive the same signal data. Key unit conventions, calcul
 **vix_percentile_60d: 0–1 scale, percentile rank of current VIX against trailing 60-day historical range
 **vol_surface_fit_error: RMSE of quadratic moneyness-IV fitting (decimal); lower value = better volatility surface fitting
 **option_vs_stock_volume_ratio: (Total option volume × 100) / Stock volume (unit-aligned calculation); <0.5 = illiquid-options proxy; 0.5–1.5 = normal activity; 1.5–2.5 = elevated activity; >2.5 = extreme abnormal volume (requires further validation). Do not use this metric alone as standalone proof of catalyst risk; confirm with bid_ask_spread_ratio, open interest, and event context before making hard liquidity or event-risk calls
-**stock_iv_correlation: 20-day Pearson correlation coefficient between underlying stock returns and IV changes, range -1 to +1
+**stock_iv_correlation: 20-day Pearson correlation coefficient between daily stock returns and daily aggregated IV changes; requires 20 overlapping daily observations, otherwise defaults to 0.0
 **oi_concentration_top5: Proportion of total open interest held by top 5 strike prices within a single expiry series; range 0–1
 **bid_ask_spread_ratio: Average (ask-bid)/mid across all option contracts; lower value = better liquidity
 **option_volume_imbalance: (Call volume - Put volume) / Total option volume; range -1 to +1
@@ -223,7 +223,7 @@ def _serialize_one_signal(sf: SignalFeatures) -> str:
         "xle_correlation_20d": round(ca.xle_correlation_20d, 4),
         "ibit_correlation_20d": round(ca.ibit_correlation_20d, 4),
         "vix_level": round(ca.vix_level, 4),
-        "vix_percentile_52w": round(ca.vix_percentile_52w, 4),
+        "vix_percentile_60d": round(ca.vix_percentile_60d, 4),
         "vix_correlation_20d": round(ca.vix_correlation_20d, 4),
     }
     if ca.confidence_scores:

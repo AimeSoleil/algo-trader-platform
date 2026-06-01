@@ -26,8 +26,24 @@ MIN_POLY_FIT_POINTS = 5        # Vol surface 多项式拟合最少数据点
 TRADING_TO_CALENDAR_DAYS = 365 / 252
 
 
-async def get_historical_iv(symbol: str, lookback_days: int | None = None) -> list[float]:
-    """从 TimescaleDB 获取历史 IV 数据。
+def _rows_to_iv_series(rows: list[tuple]) -> pd.Series:
+    """Convert dated DB rows into a date-indexed IV series."""
+    values: list[float] = []
+    index: list[pd.Timestamp] = []
+    for row in rows:
+        if not row[1]:
+            continue
+        index.append(pd.Timestamp(row[0]).normalize())
+        values.append(float(row[1]))
+
+    if not values:
+        return pd.Series(dtype=float)
+
+    return pd.Series(values, index=pd.DatetimeIndex(index), dtype=float).sort_index()
+
+
+async def get_historical_iv_series(symbol: str, lookback_days: int | None = None) -> pd.Series:
+    """从 TimescaleDB 获取带日期索引的历史日度 IV 序列。
 
     lookback_days 默认使用 config 中的 signal_service.iv_lookback_days（252 交易日）。
 
@@ -48,7 +64,7 @@ async def get_historical_iv(symbol: str, lookback_days: int | None = None) -> li
     async with get_timescale_session() as session:
         result = await session.execute(
             text(
-                "SELECT avg_iv "
+                "SELECT trading_date, avg_iv "
                 "FROM option_iv_daily "
                 "WHERE underlying = :symbol "
                 "AND trading_date >= :start_date "
@@ -57,17 +73,18 @@ async def get_historical_iv(symbol: str, lookback_days: int | None = None) -> li
             ),
             {"symbol": symbol, "start_date": start_date},
         )
-        iv_daily_rows = [float(row[0]) for row in result.fetchall() if row[0]]
+        iv_daily_rows = result.fetchall()
 
-    if iv_daily_rows:
-        return iv_daily_rows
+    iv_daily_series = _rows_to_iv_series(iv_daily_rows)
+    if not iv_daily_series.empty:
+        return iv_daily_series
 
     # ── 2) Fallback: option_daily per-contract snapshots ──
     logger.debug("get_historical_iv.fallback_option_daily", symbol=symbol)
     async with get_timescale_session() as session:
         result = await session.execute(
             text(
-                "SELECT AVG(iv) as avg_iv "
+                "SELECT snapshot_date, AVG(iv) as avg_iv "
                 "FROM option_daily "
                 "WHERE underlying = :symbol "
                 "AND snapshot_date >= :start_date "
@@ -77,17 +94,18 @@ async def get_historical_iv(symbol: str, lookback_days: int | None = None) -> li
             ),
             {"symbol": symbol, "start_date": start_date},
         )
-        daily_rows = [float(row[0]) for row in result.fetchall() if row[0]]
+        daily_rows = result.fetchall()
 
-    if daily_rows:
-        return daily_rows
+    daily_series = _rows_to_iv_series(daily_rows)
+    if not daily_series.empty:
+        return daily_series
 
     # ── 3) Fallback: intraday 5-min snapshots ──
     logger.debug("get_historical_iv.fallback_intraday", symbol=symbol)
     async with get_timescale_session() as session:
         result = await session.execute(
             text(
-                "SELECT AVG(iv) as avg_iv "
+                "SELECT timestamp::date AS trading_date, AVG(iv) as avg_iv "
                 "FROM option_5min_snapshots "
                 "WHERE underlying = :symbol "
                 "AND timestamp::date >= :start_date "
@@ -97,7 +115,15 @@ async def get_historical_iv(symbol: str, lookback_days: int | None = None) -> li
             ),
             {"symbol": symbol, "start_date": start_date},
         )
-        return [float(row[0]) for row in result.fetchall() if row[0]]
+        intraday_rows = result.fetchall()
+
+    return _rows_to_iv_series(intraday_rows)
+
+
+async def get_historical_iv(symbol: str, lookback_days: int | None = None) -> list[float]:
+    """从 TimescaleDB 获取历史 IV 数值列表。"""
+    historical_iv_series = await get_historical_iv_series(symbol, lookback_days)
+    return historical_iv_series.tolist()
 
 
 def _sanitize_option_indicators(ind: OptionIndicators) -> OptionIndicators:

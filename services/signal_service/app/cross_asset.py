@@ -66,7 +66,7 @@ class BetaResult:
 class VixResult:
     """VIX environment indicators."""
     vix_level: float = 0.0
-    vix_percentile_52w: float = 0.0
+    vix_percentile_60d: float = 0.0
     vix_correlation_20d: float = 0.0
 
 
@@ -251,7 +251,7 @@ def compute_vix_environment(
     Returns
     -------
     VixResult
-        ``vix_level``, ``vix_percentile_52w``, ``vix_correlation_20d``.
+        ``vix_level``, ``vix_percentile_60d``, ``vix_correlation_20d``.
     """
     if vix_bars.empty:
         return VixResult()
@@ -261,7 +261,7 @@ def compute_vix_environment(
     # ── VIX level (latest close) ───────────────────────────
     vix_level = float(vix_close.iloc[-1])
 
-    # ── VIX 52-week percentile ─────────────────────────────
+    # ── VIX 60-day percentile ──────────────────────────────
     lookback = vix_close.tail(VIX_LOOKBACK_DAYS)
     if len(lookback) >= 20:  # need at least 20 days for meaningful percentile
         vix_pct = float(np.sum(lookback < vix_level) / len(lookback))
@@ -293,7 +293,7 @@ def compute_vix_environment(
 
     return VixResult(
         vix_level=round(vix_level, 2),
-        vix_percentile_52w=round(vix_pct, 4),
+        vix_percentile_60d=round(vix_pct, 4),
         vix_correlation_20d=round(vix_corr, 4),
     )
 
@@ -303,38 +303,50 @@ def compute_vix_environment(
 # ═══════════════════════════════════════════════════════════
 
 def compute_iv_stock_correlation(
-    bar_returns: pd.Series,
-    option_df: pd.DataFrame,
+    bars_df: pd.DataFrame,
+    iv_history: pd.Series,
+    *,
+    window: int = CORR_WINDOW,
 ) -> float:
-    """Correlation between daily stock returns and aggregated IV changes.
+    """Fixed-window Pearson correlation between daily stock returns and IV changes.
 
-    Returns 0.0 when data is insufficient.
+    Uses the last ``window`` overlapping daily observations between stock returns
+    and aggregated daily IV changes. Returns 0.0 when overlap is insufficient.
     """
-    if option_df.empty or "timestamp" not in option_df.columns:
+    if bars_df.empty or "timestamp" not in bars_df.columns or iv_history.empty:
         return 0.0
 
-    avg_iv = (
-        option_df[option_df["iv"] > 0]
-        .groupby("timestamp")["iv"]
-        .mean()
+    stock_returns = (
+        bars_df.assign(timestamp=pd.to_datetime(bars_df["timestamp"], errors="coerce"))
+        .dropna(subset=["timestamp"])
+        .set_index("timestamp")["close"]
         .sort_index()
+        .pct_change()
+        .dropna()
     )
-    iv_changes = avg_iv.pct_change().dropna()
 
-    if len(bar_returns) <= IV_CORR_MIN_SAMPLES or len(iv_changes) <= IV_CORR_MIN_SAMPLES:
+    iv_series = pd.Series(iv_history, copy=False)
+    iv_series.index = pd.to_datetime(iv_series.index, errors="coerce")
+    iv_series = iv_series[iv_series.index.notna()].sort_index()
+    iv_series = iv_series[iv_series > 0].dropna()
+    iv_changes = iv_series.pct_change().dropna()
+
+    if stock_returns.empty or len(iv_changes) < window:
         return 0.0
 
-    sample_size = min(len(bar_returns), len(iv_changes))
     merged = pd.DataFrame({
-        "ret": bar_returns.tail(sample_size).reset_index(drop=True),
-        "iv": iv_changes.tail(sample_size).reset_index(drop=True),
-    })
-    if len(merged) <= 5:
-        return 0.0
-    if merged["ret"].std() == 0 or merged["iv"].std() == 0:
+        "ret": stock_returns,
+        "iv": iv_changes,
+    }).dropna()
+
+    if len(merged) < window:
         return 0.0
 
-    return float(merged["ret"].corr(merged["iv"]))
+    window_slice = merged.tail(window)
+    if window_slice["ret"].std() == 0 or window_slice["iv"].std() == 0:
+        return 0.0
+
+    return float(window_slice["ret"].corr(window_slice["iv"]))
 
 
 # ═══════════════════════════════════════════════════════════
@@ -346,7 +358,7 @@ def build_cross_asset_indicators(
     symbol: str,
     bars_df: pd.DataFrame,
     bar_returns: pd.Series,
-    option_df: pd.DataFrame,
+    iv_history: pd.Series,
     benchmark_returns: dict[str, pd.Series],
     vix_bars: pd.DataFrame,
     total_volume: int,
@@ -369,7 +381,7 @@ def build_cross_asset_indicators(
     vix_bars : DataFrame
         ^VIX OHLCV bars. Empty DataFrame if VIX data is unavailable.
     """
-    iv_corr = compute_iv_stock_correlation(bar_returns, option_df)
+    iv_corr = compute_iv_stock_correlation(bars_df, iv_history)
     option_vs_stock = _compute_option_vs_stock_volume_ratio(
         total_volume=total_volume,
         total_option_volume=total_option_volume,
@@ -461,7 +473,7 @@ def build_cross_asset_indicators(
 
         # VIX environment
         vix_level=vix_result.vix_level,
-        vix_percentile_52w=vix_result.vix_percentile_52w,
+        vix_percentile_60d=vix_result.vix_percentile_60d,
         vix_correlation_20d=vix_result.vix_correlation_20d,
 
         # Earnings
