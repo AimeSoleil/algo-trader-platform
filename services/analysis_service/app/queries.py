@@ -1,6 +1,7 @@
 """Analysis Service — 查询层（Redis L1 缓存 + DB 查询）"""
 from __future__ import annotations
 
+import json
 from datetime import date
 
 from sqlalchemy import text
@@ -14,6 +15,25 @@ from services.analysis_service.app.cache import (
 )
 
 logger = get_logger("analysis_queries")
+
+
+def _decode_json_column(value):
+    if isinstance(value, str):
+        try:
+            return json.loads(value)
+        except json.JSONDecodeError:
+            return value
+    return value
+
+
+def _build_blueprint_response(row) -> dict:
+    return {
+        "id": row[0],
+        "trading_date": str(row[1]),
+        "status": row[2],
+        "blueprint": _decode_json_column(row[3]),
+        "execution_summary": _decode_json_column(row[4]),
+    }
 
 
 async def query_blueprint(
@@ -43,16 +63,29 @@ async def query_blueprint(
     if not row:
         return {"error": f"No blueprint for {td}", "_from_cache": False}
 
-    data = {
-        "id": row[0],
-        "trading_date": str(row[1]),
-        "status": row[2],
-        "blueprint": row[3],
-        "execution_summary": row[4],
-    }
+    data = _build_blueprint_response(row)
 
     # Populate cache
     await set_cached_blueprint(td, data)
+    return {**data, "_from_cache": False}
+
+
+async def query_blueprint_by_id(blueprint_id: str) -> dict:
+    """从 DB 按 blueprint id 查询蓝图。"""
+    async with get_postgres_session() as session:
+        result = await session.execute(
+            text(
+                "SELECT id, trading_date, status, blueprint_json, execution_summary "
+                "FROM llm_trading_blueprint WHERE id = :id"
+            ),
+            {"id": blueprint_id},
+        )
+        row = result.fetchone()
+
+    if not row:
+        return {"error": f"No blueprint found with id '{blueprint_id}'", "_from_cache": False}
+
+    data = _build_blueprint_response(row)
     return {**data, "_from_cache": False}
 
 

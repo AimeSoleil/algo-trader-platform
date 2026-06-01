@@ -290,7 +290,7 @@ signal_service:
 # ── Analysis Service — LLM 分析引擎 ────────────────────────
 
 analysis_service:
-  daily_task_chunk_size: 20            # Daily pipeline analysis fan-out chunk size (one Celery analysis task per chunk)
+  daily_task_chunk_size: 5            # Daily pipeline analysis fan-out chunk size (one Celery analysis task per chunk)
   llm:
     provider: "deepseek"                # openai / closeai / deepseek
     openai:

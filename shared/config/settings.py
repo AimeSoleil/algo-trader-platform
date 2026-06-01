@@ -500,7 +500,7 @@ class LLMSettings(BaseSettings):
 
 class AnalysisServiceSettings(BaseSettings):
     """analysis_service 顶级配置."""
-    daily_task_chunk_size: int = 20
+    daily_task_chunk_size: int = 5
     llm: LLMSettings = Field(default_factory=LLMSettings)
 
 

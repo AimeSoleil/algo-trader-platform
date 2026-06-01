@@ -1,6 +1,8 @@
 """Analysis Service — REST API routes."""
 from __future__ import annotations
 
+from uuid import UUID
+
 from celery.result import AsyncResult
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel, Field
@@ -15,6 +17,45 @@ router = APIRouter(tags=["analysis"])
 # ---------------------------------------------------------------------------
 
 
+def _parse_symbol_filter(symbols: str | None) -> set[str] | None:
+    if not symbols:
+        return None
+    parsed = {s.strip().upper() for s in symbols.split(",") if s.strip()}
+    return parsed or None
+
+
+def _apply_symbol_filter(result: dict, symbol_filter: set[str] | None) -> dict:
+    if not symbol_filter or "blueprint" not in result or not result["blueprint"]:
+        return result
+
+    response = dict(result)
+    blueprint = response["blueprint"]
+    if isinstance(blueprint, dict) and isinstance(blueprint.get("symbol_plans"), list):
+        filtered_blueprint = dict(blueprint)
+        filtered_blueprint["symbol_plans"] = [
+            plan for plan in filtered_blueprint["symbol_plans"]
+            if plan.get("underlying", "").upper() in symbol_filter
+        ]
+        response["blueprint"] = filtered_blueprint
+    response["_symbol_filter"] = sorted(symbol_filter)
+    return response
+
+
+@router.get("/analysis/blueprint/{blueprint_id:uuid}")
+async def get_blueprint_by_id(
+    blueprint_id: UUID,
+    symbols: str | None = Query(None, description="Comma-separated symbols to filter, e.g. AAPL,NVDA"),
+):
+    """按 blueprint id 查询蓝图，可按 symbols 过滤 symbol_plans。"""
+    from services.analysis_service.app.queries import query_blueprint_by_id
+
+    result = await query_blueprint_by_id(str(blueprint_id))
+    if "error" in result:
+        raise HTTPException(status_code=404, detail=result["error"])
+
+    return _apply_symbol_filter(result, _parse_symbol_filter(symbols))
+
+
 @router.get("/analysis/blueprint/{trading_date}")
 async def get_blueprint(
     trading_date: str,
@@ -25,20 +66,7 @@ async def get_blueprint(
     from services.analysis_service.app.queries import query_blueprint
 
     result = await query_blueprint(trading_date, by_pass_cache=by_pass_cache)
-
-    # Apply symbol filter if requested
-    if symbols and "blueprint" in result and result["blueprint"]:
-        upper_symbols = {s.strip().upper() for s in symbols.split(",") if s.strip()}
-        bp = result["blueprint"]
-        # blueprint may be dict or JSON-parsed object
-        if isinstance(bp, dict) and "symbol_plans" in bp:
-            bp["symbol_plans"] = [
-                plan for plan in bp["symbol_plans"]
-                if plan.get("underlying", "").upper() in upper_symbols
-            ]
-        result["_symbol_filter"] = sorted(upper_symbols)
-
-    return result
+    return _apply_symbol_filter(result, _parse_symbol_filter(symbols))
 
 
 # ---------------------------------------------------------------------------
@@ -122,9 +150,7 @@ async def get_blueprint_reasoning(
     """
     from services.analysis_service.app.queries import query_reasoning
 
-    symbol_filter: set[str] | None = None
-    if symbols:
-        symbol_filter = {s.strip().upper() for s in symbols.split(",") if s.strip()}
+    symbol_filter = _parse_symbol_filter(symbols)
 
     result = await query_reasoning(blueprint_id, symbol_filter=symbol_filter)
     if "error" in result:

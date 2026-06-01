@@ -181,6 +181,10 @@ Manual 任务 `manual_analyze`：
 
 ### Routes
 
+- `GET /api/v1/analysis/blueprint/{blueprint_id}`
+  - 当 path 匹配 UUID 时，按 blueprint id 查询 blueprint
+  - 支持 `symbols=AAPL,NVDA` 过滤 `symbol_plans`
+
 - `GET /api/v1/analysis/blueprint/{trading_date}`
   - 查询某天 blueprint
   - 支持 `symbols=AAPL,NVDA` 过滤 `symbol_plans`
