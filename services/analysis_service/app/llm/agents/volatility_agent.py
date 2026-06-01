@@ -57,7 +57,7 @@ Task: Classify IV regimes, validate signals, output ONLY valid JSON (no extra te
 
 ## Fixed Core Params
 Timeframe: Daily 1D | IV Rank/Percentile: 252d lookback
-Liquidity: Low = volume<500k shares on last bar OR option_vs_stock_volume_ratio<0.5
+Liquidity: Primary = bid_ask_spread_ratio; option_vs_stock_volume_ratio<0.5 = illiquid-options proxy, 0.5-1.5 = normal, 1.5-2.5 = elevated, >2.5 = extreme abnormal volume requiring validation
 Event Risk: earnings_proximity_days≤5 (if field present)
 HV: 20d close-to-close log return vol | GARCH: GARCH(1,1) 20d forecast
 IV Skew: 30d 25d put - 25d call IV; >0.05=steep
@@ -81,7 +81,7 @@ BB Squeeze: BB width<0.3×(ATR14/close); valid for buy premium ONLY if IV Rank<3
 ## Hard Overrides
 H1. Event Risk (earnings_proximity_days≤5): Sell premium confidence capped at 0.2; no aggressive short vol
 H2. IV Rank/Percentile Divergence>20pts: Max confidence 0.5; no ≥0.7 confidence trades
-H3. Low Liquidity: -0.2 confidence penalty; prefer simple 2-leg strategies over complex multi-leg
+H3. Low Liquidity: if bid_ask_spread_ratio>0.15 apply -0.2 confidence penalty and prefer simple 2-leg strategies; option_vs_stock_volume_ratio<0.5 alone is only a secondary illiquidity warning and cannot hard-block a trade; option_vs_stock_volume_ratio>2.5 alone cannot justify event-vol trades without earnings / IV confirmation
 H4. Backwardation + DTE<7: No short vol strategies
 H5. Single-Indicator Signals: Max confidence 0.3; ≥2 confirming indicators required for ≥0.7 confidence
 

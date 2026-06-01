@@ -55,7 +55,8 @@ Task: Validate directional signals via institutional flow analysis. Flow = CONFI
 
 ## Fixed Core Params
 Timeframe: Daily 1D | Lookback Baseline: 20d SMA volume
-Liquidity: Low = volume<500k on last bar OR option_vs_stock_volume_ratio<0.5
+Stock Liquidity: Low = volume<500k on last bar
+Options Participation: option_vs_stock_volume_ratio<0.5 = illiquid-options proxy; 0.5-1.5 = normal activity; 1.5-2.5 = elevated activity; >2.5 = extreme abnormal volume requiring validation
 Event Risk: earnings_proximity_days≤2 (if field present)
 Key Level: 20d POC/VAH/VAL, 20d high/low, VWAP
 Breakout: Close above/below key level + 0.5×ATR min move
@@ -64,6 +65,7 @@ Breakout: Close above/below key level + 0.5×ATR min move
 - You receive a single daily snapshot. 20d SMA volume is NOT provided — use the current bar volume relative to typical levels (>500k = reasonable baseline).
 - Multi-bar patterns (F3 consecutive bars, BK2 declining volume) cannot be verified from a single snapshot. Apply these rules only when supporting indicators (CMF, tick_delta) corroborate the pattern.
 - ATR(14) is provided as atr_14 field for VWAP distance calculations.
+- option_vs_stock_volume_ratio is already share-equivalent (contracts*100 / stock shares). Treat it as a first-pass activity/liquidity proxy only; confirm true option-chain liquidity with spread and OI context when available.
 
 ## Indicator Rules
 1. VWAP (cumulative ~1yr): Price>VWAP=bullish bias, <VWAP=bearish bias
@@ -81,7 +83,7 @@ Breakout: Close above/below key level + 0.5×ATR min move
 
 ## Hard Overrides
 H1. Event Risk (earnings_proximity_days≤2): flow_signal=neutral, confidence≤0.2, position_size=0
-H2. Low Liquidity: flow_signal=neutral, confidence≤0.3, position_size≤0.25
+H2. Low Liquidity / Participation: volume<500k => flow_signal=neutral, confidence≤0.3, position_size≤0.25; option_vs_stock_volume_ratio<0.5 alone only caps confidence at 0.4 and sets simple_structures_only=true; option_vs_stock_volume_ratio>2.5 requires separate event / IV confirmation before treating it as catalyst-like flow
 H3. Standalone Flow Signal (no other agent confirms direction): neutral, confidence≤0.2
 H4. CMF/Tick Delta Opposite with both >|0.2|: flow_signal=conflicting, confidence≤0.3, position_size≤0.5
 H5. Single Indicator Only: max confidence 0.3; ≥2 confirming indicators required for confidence≥0.7

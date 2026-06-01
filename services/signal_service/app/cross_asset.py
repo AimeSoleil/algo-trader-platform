@@ -37,6 +37,7 @@ IV_CORR_MIN_SAMPLES = 10    # minimum samples for IV-return correlation
 VIX_LOOKBACK_WEEKS = 52     # weeks for VIX percentile (≈252 trading days)
 VIX_LOOKBACK_DAYS = 60      # trading days for VIX percentile (60d avoids regime distortion)
 FRESHNESS_MAX_LAG_DAYS = 2  # data older than this is treated as stale
+OPTION_CONTRACT_SHARE_MULTIPLIER = 100.0
 
 # Benchmark names that map to model fields
 BENCHMARK_FIELD_MAP: dict[str, tuple[str, str]] = {
@@ -139,6 +140,22 @@ def _score_data_freshness(
     if max_lag <= FRESHNESS_MAX_LAG_DAYS:
         return 0.7
     return 0.3
+
+
+def _compute_option_vs_stock_volume_ratio(
+    *,
+    total_volume: int,
+    total_option_volume: float,
+) -> float:
+    """Compute share-equivalent option activity relative to stock turnover.
+
+    The input option volume is contract count, while stock volume is share count.
+    Convert contracts to share-equivalent turnover via the standard 100-share
+    contract multiplier before comparing the two.
+    """
+    stock_shares = max(float(total_volume), 1.0)
+    option_share_equivalent = max(float(total_option_volume), 0.0) * OPTION_CONTRACT_SHARE_MULTIPLIER
+    return option_share_equivalent / stock_shares
 
 
 # ═══════════════════════════════════════════════════════════
@@ -353,7 +370,10 @@ def build_cross_asset_indicators(
         ^VIX OHLCV bars. Empty DataFrame if VIX data is unavailable.
     """
     iv_corr = compute_iv_stock_correlation(bar_returns, option_df)
-    option_vs_stock = total_option_volume / max(float(total_volume), 1.0)
+    option_vs_stock = _compute_option_vs_stock_volume_ratio(
+        total_volume=total_volume,
+        total_option_volume=total_option_volume,
+    )
 
     # ── Multi-benchmark beta & correlation ─────────────────
     benchmark_results: dict[str, BetaResult] = {}

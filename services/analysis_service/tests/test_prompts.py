@@ -259,6 +259,29 @@ def test_synthesizer_system_prompt_requires_strategy_type_leg_match():
     assert "Never label a 4-leg position as vertical_spread" in _SYNTHESIZER_SYSTEM_PROMPT
 
 
+def test_system_prompt_describes_option_ratio_with_new_threshold_bands():
+    from services.analysis_service.app.llm.prompts import SYSTEM_PROMPT
+
+    assert "(Total option volume × 100) / Stock volume" in SYSTEM_PROMPT
+    assert "<0.5 = illiquid-options proxy" in SYSTEM_PROMPT
+    assert "0.5–1.5 = normal activity" in SYSTEM_PROMPT
+    assert ">2.5 = extreme abnormal volume (requires further validation)" in SYSTEM_PROMPT
+    assert "Do not use this metric alone as standalone proof of catalyst risk" in SYSTEM_PROMPT
+
+
+def test_specialist_prompts_downgrade_option_ratio_to_supporting_signal():
+    from services.analysis_service.app.llm.agents.cross_asset_agent import _SYSTEM_PROMPT as cross_asset_prompt
+    from services.analysis_service.app.llm.agents.flow_agent import _SYSTEM_PROMPT as flow_prompt
+    from services.analysis_service.app.llm.agents.volatility_agent import _SYSTEM_PROMPT as volatility_prompt
+
+    assert "option_vs_stock_volume_ratio<0.5 = illiquid-options proxy" in flow_prompt
+    assert "option_vs_stock_volume_ratio>2.5 requires separate event / IV confirmation" in flow_prompt
+    assert "option_vs_stock_volume_ratio<0.5 = illiquid-options proxy" in volatility_prompt
+    assert "option_vs_stock_volume_ratio>2.5 alone cannot justify event-vol trades" in volatility_prompt
+    assert "<0.5 = illiquid-options proxy, 0.5-1.5 = normal, 1.5-2.5 = elevated, >2.5 = extreme abnormal volume" in cross_asset_prompt
+    assert ">2.5 requires event / IV confirmation" in cross_asset_prompt
+
+
 def test_synthesizer_system_prompt_allows_iron_condor_for_clean_range_bound_setups():
     from services.analysis_service.app.llm.agents.synthesizer_agent import _SYNTHESIZER_SYSTEM_PROMPT
 

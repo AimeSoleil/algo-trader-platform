@@ -47,37 +47,37 @@ If no positions are provided or the portfolio is flat, focus on fresh entry oppo
 (d) never rely on degraded indicators for entry/exit conditions.
 
 ## Data Interpretation Guide
-All specialist agents receive the same signal data. Key unit conventions:
-- **IV / HV / GARCH**: decimal format (0.35 = 35% annualized volatility)
-- **iv_rank / iv_percentile**: 0-100 scale (50 = median)
-- **hv_iv_spread**: hv_20d minus current_iv (both decimal); positive = HV > IV
-- **bollinger_band_width**: price-normalized decimal (not absolute dollar width)
-- **linear_reg_slope**: daily fractional price change (0.001 = +0.1% per day)
-- **atr_14**: absolute dollar value (e.g. 2.50 = $2.50 average daily range)
-- **volume_profile_poc / val / vah**: absolute price levels in dollars
-- **VWAP**: cumulative ~1-year volume-weighted average price (long-term fair value, NOT intraday)
-- **delta_adjusted_hedge_ratio**: OI-weighted average delta per contract (range typically -1 to +1; |val|>0.3 = significant)
-- **portfolio_greeks**: OI-weighted average per contract (delta, gamma, theta, vega)
-- **delta_exposure_profile**: raw sum of delta × OI (total market delta exposure for DEX/GEX analysis)
-- **earnings_proximity_days**: trading days until next earnings; null = unknown or not applicable (e.g. ETFs)
-- **rsi_14**: 0-100 oscillator (>70 overbought, <30 oversold)
-- **stoch_rsi**: 0-1 scale, more sensitive than RSI (>0.8 overbought, <0.2 oversold)
-- **rsi_divergence**: score {-1, 0, +1}; +1 = bearish divergence (price up, RSI weak), -1 = bullish divergence
-- **macd_hist_divergence**: {-1, +1}; +1 = price and MACD direction consistent, -1 = diverging
-- **trend / trend_strength**: trend is "bullish"/"bearish"/"neutral"; strength 0-1
-- **cmf_20**: Chaikin Money Flow, -1 to +1 (>0.1 buying pressure, <-0.1 selling pressure)
-- **tick_volume_delta**: -1 to +1 net up/down volume ratio over recent 20 bars
-- **pcr_volume / pcr_oi**: raw put/call ratios (>1 = more puts; typical range 0.5-1.5)
-- **iv_skew**: 25-delta put IV minus 25-delta call IV (decimal); >0.05 = steep put skew
-- **term_structure_slope**: furthest ATM IV minus nearest ATM IV (decimal); >0 = contango, <0 = backwardation
-- **vix_percentile_52w**: 0-1 scale, percentile rank of current VIX vs trailing 60-day history
-- **vol_surface_fit_error**: RMSE of quadratic moneyness-IV fit (decimal); lower = better fit
-- **option_vs_stock_volume_ratio**: total option volume / stock volume; >3 = elevated, <0.5 = illiquid options
-- **stock_iv_correlation**: Pearson correlation of stock returns vs IV changes (~20d sample)
-- **oi_concentration_top5**: fraction of OI in top 5 strikes per expiry (0-1)
-- **bid_ask_spread_ratio**: average (ask-bid)/mid across all contracts (lower = more liquid)
-- **option_volume_imbalance**: (call_vol - put_vol) / total_vol; range -1 to +1
-- **gld/hyg/xle/ibit/tlt_correlation_20d**: 20-day Pearson correlation with respective ETF (-1 to +1)
+All specialist agents receive the same signal data. Key unit conventions, calculation rules, value ranges and practical thresholds are standardized below:
+**IV / HV / GARCH: decimal format (0.35 = 35% annualized volatility)
+**iv_rank / iv_percentile: 0–100 scale (50 = median volatility level)
+**hv_iv_spread: 20-day historical volatility minus current implied volatility (both decimal); positive = HV > IV
+**bollinger_band_width: price-normalized decimal (not absolute dollar width)
+**linear_reg_slope: Slope of multi-period price linear regression, representing average daily fractional price change (0.001 = +0.1% per day)
+**atr_14: absolute dollar value (e.g. 2.50 = $2.50 average daily trading range)
+**volume_profile_poc / val / vah: absolute price levels in dollars
+**VWAP: Rolling ~1-year volume-weighted average price (long-term metric, NOT intraday VWAP)
+**delta_adjusted_hedge_ratio: OI-weighted average delta per standard options contract (1 contract = 100 shares); typical range -1 to +1; |value| > 0.3 = significant hedging intensity
+**portfolio_greeks: OI-weighted average greeks per contract (delta, gamma, theta, vega)
+**delta_exposure_profile: Total market delta exposure for DEX/GEX analysis, calculated as raw sum of delta × open interest
+**earnings_proximity_days: Trading days remaining until next earnings release; null = unknown or not applicable (e.g. ETFs)
+**rsi_14: 0–100 oscillator; >70 = overbought, <30 = oversold
+**stoch_rsi: 0–1 scale, higher sensitivity than standard RSI; >0.7 = overbought alert, >0.8 = severely overbought; <0.3 = oversold alert, <0.2 = severely oversold
+**rsi_divergence: Score {-1, 0, +1}; +1 = bearish divergence (price makes new highs while RSI weakens / price falls while RSI deteriorates); -1 = bullish divergence (price makes new lows while RSI strengthens / price rebounds while RSI improves); 0 = no divergence
+**macd_hist_divergence: Score {-1, 0, +1}; +1 = price and MACD histogram move in the same direction; -1 = clear divergence between price and MACD histogram; 0 = sideways movement / undetermined
+**trend / trend_strength: trend: "bullish"/"bearish"/"neutral"; trend_strength: 0–1 scale (higher value = stronger trend)
+**cmf_20: Chaikin Money Flow, range -1 to +1; >0.1 = dominant buying pressure; -0.1 ~ +0.1 = neutral capital flow; <-0.1 = dominant selling pressure
+**tick_volume_delta: Net volume ratio over recent 20 bars, calculated as (Up Tick Volume - Down Tick Volume) / Total Volume; range -1 to +1
+**pcr_volume / pcr_oi: Raw put/call ratios; >1 = more put activity; typical normal range 0.5–1.5
+**iv_skew: 25-delta put IV minus 25-delta call IV (decimal); >0.05 = steep put skew (general reference threshold for single stocks & broad-market ETFs)
+**term_structure_slope: Far-dated ATM IV minus near-dated ATM IV (decimal); >0 = volatility contango; <0 = volatility backwardation (applies to ATM option volatility term structure)
+**vix_percentile_60d: 0–1 scale, percentile rank of current VIX against trailing 60-day historical range
+**vol_surface_fit_error: RMSE of quadratic moneyness-IV fitting (decimal); lower value = better volatility surface fitting
+**option_vs_stock_volume_ratio: (Total option volume × 100) / Stock volume (unit-aligned calculation); <0.5 = illiquid-options proxy; 0.5–1.5 = normal activity; 1.5–2.5 = elevated activity; >2.5 = extreme abnormal volume (requires further validation). Do not use this metric alone as standalone proof of catalyst risk; confirm with bid_ask_spread_ratio, open interest, and event context before making hard liquidity or event-risk calls
+**stock_iv_correlation: 20-day Pearson correlation coefficient between underlying stock returns and IV changes, range -1 to +1
+**oi_concentration_top5: Proportion of total open interest held by top 5 strike prices within a single expiry series; range 0–1
+**bid_ask_spread_ratio: Average (ask-bid)/mid across all option contracts; lower value = better liquidity
+**option_volume_imbalance: (Call volume - Put volume) / Total option volume; range -1 to +1
+**gld/hyg/xle/ibit/tlt_correlation_20d: 20-day Pearson correlation coefficient with corresponding benchmark ETFs, range -1 to +1
 """
 
 # ---------------------------------------------------------------------------

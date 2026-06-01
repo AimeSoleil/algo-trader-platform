@@ -103,7 +103,7 @@ class StockIndicators(BaseModel):
 
 class CrossAssetIndicators(BaseModel):
     stock_iv_correlation: float = 0.0
-    option_vs_stock_volume_ratio: float = 0.0
+    option_vs_stock_volume_ratio: float = 0.0  # share-equivalent option volume / stock shares (contracts*100 / shares)
     delta_adjusted_hedge_ratio: float = 0.0
 
     # ── Market beta & correlation (multi-benchmark) ────────

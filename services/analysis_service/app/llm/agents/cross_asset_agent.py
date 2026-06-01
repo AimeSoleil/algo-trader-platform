@@ -80,8 +80,9 @@ INDICATOR DEFINITIONS (Exact Calculations)
 ────────────────────────────────────────────────────────
 1. Stock-IV Corr: 20d exp-weighted corr of underlying returns vs ATM IV changes.
    <-0.5 = fear, [-0.3, 0.3] = decoupled, >0.3 = bullish_vol.
-2. Opt/Stock Vol Ratio: option_vs_stock_volume_ratio.
-   >3 = catalyst event, <0.5 = illiquid options.
+2. Opt/Stock Vol Ratio: share-equivalent option volume / stock shares (contracts*100 / shares).
+    <0.5 = illiquid-options proxy, 0.5-1.5 = normal, 1.5-2.5 = elevated, >2.5 = extreme abnormal volume.
+    Use only as supporting evidence; >2.5 requires event / IV confirmation, and <0.5 is not sufficient by itself to override spread/OI-based liquidity checks.
 3. Benchmark Beta/Corr: 60d beta (SPY/QQQ/IWM), 20d exp-weighted corr
    (SPY/QQQ/IWM/TLT/GLD/HYG/XLE/IBIT).
    - SPY β > 1.2 = amplifies market; < 0.8 = defensive.
