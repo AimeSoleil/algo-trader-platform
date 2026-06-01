@@ -54,29 +54,26 @@ def _create_agent_provider(provider_name: str | None = None) -> AgentLLMProvider
     Parameters
     ----------
     provider_name:
-        ``"openai"``, ``"copilot"``, ``"qiniu"`` or ``"closeai"``.
+        ``"openai"``, ``"closeai"`` or ``"deepseek"``.
         Defaults to ``settings.analysis_service.llm.provider``.
     """
     if provider_name is None:
         provider_name = get_settings().analysis_service.llm.provider
-
-    if provider_name == "copilot":
-        from services.analysis_service.app.llm.agents._copilot_agent_provider import (
-            CopilotAgentProvider,
-        )
-        return CopilotAgentProvider()
-
-    if provider_name == "qiniu":
-        from services.analysis_service.app.llm.agents._qiniu_agent_provider import (
-            QiniuAgentProvider,
-        )
-        return QiniuAgentProvider()
 
     if provider_name == "closeai":
         from services.analysis_service.app.llm.agents._closeai_agent_provider import (
             CloseAIAgentProvider,
         )
         return CloseAIAgentProvider()
+
+    if provider_name == "deepseek":
+        from services.analysis_service.app.llm.agents._deepseek_agent_provider import (
+            DeepSeekAgentProvider,
+        )
+        return DeepSeekAgentProvider()
+
+    if provider_name != "openai":
+        raise ValueError(f"Unsupported LLM provider: {provider_name}")
 
     # Default / "openai"
     from services.analysis_service.app.llm.agents._openai_agent_provider import (

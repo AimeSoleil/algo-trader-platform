@@ -5,7 +5,7 @@ The ``trading-analysis/`` directory contains the skill bundle
 runtime by each provider's native skill mechanism:
 
 * **OpenAI** — Responses API ``shell`` tool with inline skill bundle.
-* **Copilot SDK** — ``skill_directories`` session configuration.
+* **Other providers** — equivalent guidance is inlined directly in prompts.
 
 No Python loader is required; the model reads SKILL.md and
 navigates references autonomously.

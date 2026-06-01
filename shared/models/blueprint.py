@@ -512,7 +512,7 @@ class LLMTradingBlueprint(BaseModel):
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     trading_date: date  # 适用交易日
     generated_at: datetime  # 生成时间
-    model_provider: str = "openai"  # "openai" / "copilot"
+    model_provider: str = "openai"  # "openai" / "closeai" / "deepseek"
     model_version: str = "gpt-4o"
     
     # 市场判断

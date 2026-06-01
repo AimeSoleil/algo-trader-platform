@@ -60,19 +60,17 @@ def _resolve_generation_config(provider_name: str) -> GenerationConfig:
     output_budget_ratio = llm_settings.output_budget_ratio
     output_truncation_threshold_ratio = llm_settings.output_truncation_threshold_ratio
 
-    if provider_name == "qiniu":
-        temperature = llm_settings.qiniu.temperature
-        provider_max_tokens = llm_settings.qiniu.max_tokens
-    elif provider_name == "closeai":
+    if provider_name == "closeai":
         temperature = llm_settings.closeai.temperature
         provider_max_tokens = llm_settings.closeai.max_tokens
+    elif provider_name == "deepseek":
+        temperature = llm_settings.deepseek.temperature
+        provider_max_tokens = llm_settings.deepseek.max_tokens
     elif provider_name == "openai":
         temperature = llm_settings.openai.temperature
         provider_max_tokens = llm_settings.openai.max_tokens
     else:
-        # Copilot does not currently expose its own temperature / max_tokens config.
-        temperature = None
-        provider_max_tokens = 16384
+        raise ValueError(f"Unsupported LLM provider: {provider_name}")
 
     request_max_tokens = max(1, int(provider_max_tokens * output_budget_ratio))
     truncation_threshold_tokens = max(1, int(request_max_tokens * output_truncation_threshold_ratio))
@@ -92,23 +90,20 @@ def _default_provider() -> "AgentLLMProvider":
     settings = get_settings()
     provider_name = settings.analysis_service.llm.provider
 
-    if provider_name == "copilot":
-        from services.analysis_service.app.llm.agents._copilot_agent_provider import (
-            CopilotAgentProvider,
-        )
-        return CopilotAgentProvider()
-
-    if provider_name == "qiniu":
-        from services.analysis_service.app.llm.agents._qiniu_agent_provider import (
-            QiniuAgentProvider,
-        )
-        return QiniuAgentProvider()
-
     if provider_name == "closeai":
         from services.analysis_service.app.llm.agents._closeai_agent_provider import (
             CloseAIAgentProvider,
         )
         return CloseAIAgentProvider()
+
+    if provider_name == "deepseek":
+        from services.analysis_service.app.llm.agents._deepseek_agent_provider import (
+            DeepSeekAgentProvider,
+        )
+        return DeepSeekAgentProvider()
+
+    if provider_name != "openai":
+        raise ValueError(f"Unsupported LLM provider: {provider_name}")
 
     from services.analysis_service.app.llm.agents._openai_agent_provider import (
         OpenAIAgentProvider,
@@ -121,8 +116,8 @@ T = TypeVar("T", bound=BaseModel)
 
 # ── Provider protocol ─────────────────────────────────────────────────
 # Any object that satisfies this interface can be used as a provider.
-# The concrete implementations live in _openai_agent_provider.py and
-# _copilot_agent_provider.py; they are thin wrappers around the SDK.
+# The concrete implementations live in the provider-specific agent modules
+# and are thin wrappers around the underlying SDKs.
 
 
 @dataclass
@@ -228,7 +223,7 @@ class AgentLLMProvider(Protocol):
 
     @property
     def name(self) -> str:
-        """Provider identifier (e.g. 'openai', 'copilot')."""
+        """Provider identifier (e.g. 'openai', 'closeai', 'deepseek')."""
         ...
 
     async def generate(

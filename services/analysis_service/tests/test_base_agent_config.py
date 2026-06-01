@@ -67,7 +67,7 @@ class _RepairAgent(base_agent.AnalysisAgent):
 
 
 class _RepairProvider:
-    name = "copilot"
+    name = "deepseek"
 
     def __init__(self, content: str) -> None:
         self.content = content
@@ -90,8 +90,8 @@ def test_resolve_generation_config_for_closeai(monkeypatch) -> None:
         analysis_service=SimpleNamespace(
             llm=SimpleNamespace(
                 openai=SimpleNamespace(temperature=0.11, max_tokens=1111),
-                qiniu=SimpleNamespace(temperature=0.22, max_tokens=2222),
                 closeai=SimpleNamespace(temperature=0.33, max_tokens=32768),
+                deepseek=SimpleNamespace(temperature=0.44, max_tokens=4444),
                 output_budget_ratio=0.8,
                 output_truncation_threshold_ratio=0.95,
             )
@@ -107,13 +107,13 @@ def test_resolve_generation_config_for_closeai(monkeypatch) -> None:
     assert generation_config.truncation_threshold_tokens == int(int(32768 * 0.8) * 0.95)
 
 
-def test_resolve_generation_config_for_copilot_uses_fallback(monkeypatch) -> None:
+def test_resolve_generation_config_for_deepseek(monkeypatch) -> None:
     mock_settings = SimpleNamespace(
         analysis_service=SimpleNamespace(
             llm=SimpleNamespace(
                 openai=SimpleNamespace(temperature=0.11, max_tokens=1111),
-                qiniu=SimpleNamespace(temperature=0.22, max_tokens=2222),
                 closeai=SimpleNamespace(temperature=0.33, max_tokens=3333),
+                deepseek=SimpleNamespace(temperature=0.44, max_tokens=4444),
                 output_budget_ratio=0.8,
                 output_truncation_threshold_ratio=0.95,
             )
@@ -121,11 +121,11 @@ def test_resolve_generation_config_for_copilot_uses_fallback(monkeypatch) -> Non
     )
     monkeypatch.setattr(base_agent, "get_settings", lambda: mock_settings)
 
-    generation_config = base_agent._resolve_generation_config("copilot")
+    generation_config = base_agent._resolve_generation_config("deepseek")
 
-    assert generation_config.temperature is None
-    assert generation_config.provider_max_tokens == 16384
-    assert generation_config.request_max_tokens == int(16384 * 0.8)
+    assert generation_config.temperature == 0.44
+    assert generation_config.provider_max_tokens == 4444
+    assert generation_config.request_max_tokens == int(4444 * 0.8)
 
 
 def test_build_user_prompt_includes_compact_output_guidance() -> None:
@@ -295,8 +295,8 @@ async def test_analyze_repairs_null_numeric_field_without_provider_retry(monkeyp
                 backoff_base_seconds=0,
                 backoff_max_seconds=0,
                 openai=SimpleNamespace(temperature=0.11, max_tokens=1111),
-                qiniu=SimpleNamespace(temperature=0.22, max_tokens=2222),
                 closeai=SimpleNamespace(temperature=0.33, max_tokens=3333),
+                deepseek=SimpleNamespace(temperature=0.44, max_tokens=4444),
                 output_budget_ratio=0.8,
                 output_truncation_threshold_ratio=0.95,
             )
@@ -325,8 +325,8 @@ async def test_analyze_unrepairable_validation_error_does_not_retry(monkeypatch)
                 backoff_base_seconds=0,
                 backoff_max_seconds=0,
                 openai=SimpleNamespace(temperature=0.11, max_tokens=1111),
-                qiniu=SimpleNamespace(temperature=0.22, max_tokens=2222),
                 closeai=SimpleNamespace(temperature=0.33, max_tokens=3333),
+                deepseek=SimpleNamespace(temperature=0.44, max_tokens=4444),
                 output_budget_ratio=0.8,
                 output_truncation_threshold_ratio=0.95,
             )

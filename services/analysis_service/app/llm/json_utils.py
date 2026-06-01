@@ -1,6 +1,6 @@
 """Shared JSON parsing utilities for LLM responses.
 
-All LLM providers (OpenAI, Copilot) and all consumers (specialist agents,
+All LLM providers (OpenAI, DeepSeek, CloseAI) and all consumers (specialist agents,
 synthesizer, critic, legacy providers) funnel through the two helpers here
 so that JSON extraction, clean-up, and repair logic lives in one place.
 
@@ -122,7 +122,7 @@ def _fix_json(text: str) -> str:
 
     Handles:
     - Literal ``\\n`` / ``\\t`` / ``\\r`` escape sequences outside strings
-      (Copilot SDK sometimes returns these instead of real whitespace)
+            (some providers return these instead of real whitespace)
     - Single-quoted strings → double-quoted
     - Trailing commas before ``}`` / ``]``
     - Python literals ``True`` / ``False`` / ``None``

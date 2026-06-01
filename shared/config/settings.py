@@ -4,7 +4,7 @@ from __future__ import annotations
 import os
 from functools import lru_cache
 from pathlib import Path
-from typing import Any, ClassVar
+from typing import Any, ClassVar, Literal
 
 import yaml
 from pydantic import Field, field_validator, model_validator
@@ -406,17 +406,10 @@ class OpenAILLMSettings(BaseSettings):
     max_tokens: int = 16384
     request_timeout_seconds: int = 600
 
-class CopilotLLMSettings(BaseSettings):
-    cli_path: str = "copilot"
-    github_token: str = ""
-    model: str = "claude-opus-4.6"
-    reasoning_effort: str = "high"
-    request_timeout_seconds: int = 600
-
-class QiuuLLMSettings(BaseSettings):
+class DeepSeekLLMSettings(BaseSettings):
     api_key: str = ""
-    base_url: str = "https://api.qnaigc.com/v1"
-    model: str = "gemini-2.5-flash"
+    base_url: str = "https://api.deepseek.com"
+    model: str = "deepseek-v4-pro"
     reasoning_effort: str = "high"
     temperature: float = 0.1
     max_tokens: int = 32768
@@ -469,12 +462,11 @@ class CoarseRankingSettings(BaseSettings):
     weights: CoarseRankingWeightsSettings = Field(default_factory=CoarseRankingWeightsSettings)
 
 class LLMSettings(BaseSettings):
-    provider: str = "copilot"
+    provider: Literal["openai", "closeai", "deepseek"] = "deepseek"
 
     openai: OpenAILLMSettings = Field(default_factory=OpenAILLMSettings)
-    copilot: CopilotLLMSettings = Field(default_factory=CopilotLLMSettings)
-    qiniu: QiuuLLMSettings = Field(default_factory=QiuuLLMSettings)
     closeai: CloseAILLMSettings = Field(default_factory=CloseAILLMSettings)
+    deepseek: DeepSeekLLMSettings = Field(default_factory=DeepSeekLLMSettings)
 
     # ── Per-agent model overrides ──
     agent_models_override: AgentModelsSettings = Field(default_factory=AgentModelsSettings)

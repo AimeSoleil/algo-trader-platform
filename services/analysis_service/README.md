@@ -69,7 +69,7 @@ Automatic daily pipeline 的 analysis stage 现在分两层：
 Analysis Service 不依赖“模型自己乖乖输出 JSON”，而是采用多层保障：
 
 1. Prompt 层：所有 agents 都要求只输出合法 JSON，并给出明确 schema
-2. Provider 层：OpenAI provider 使用 `json_object`；Copilot provider 强制“只返回一个合法 JSON 对象”
+2. Provider 层：OpenAI provider 使用 `json_object`；DeepSeek / CloseAI provider 走 OpenAI-compatible chat 接口并继续强制 JSON-only 输出
 3. JSON 工具层：统一清洗与修复常见脏输出
 4. Pydantic 层：specialist、critic、blueprint 都经过强类型校验
 5. Retry 层：JSON 解析失败、模型校验失败会触发指数退避重试
@@ -88,7 +88,8 @@ JSON 工具会处理：
 - `services/analysis_service/app/llm/json_utils.py`
 - `services/analysis_service/app/llm/agents/base_agent.py`
 - `services/analysis_service/app/llm/agents/_openai_agent_provider.py`
-- `services/analysis_service/app/llm/agents/_copilot_agent_provider.py`
+- `services/analysis_service/app/llm/agents/_deepseek_agent_provider.py`
+- `services/analysis_service/app/llm/agents/_closeai_agent_provider.py`
 
 ## Blueprint Model And Validation
 
@@ -208,7 +209,8 @@ Manual 任务 `manual_analyze`：
 
 - `analysis_service.llm.provider`
 - `analysis_service.llm.openai.*`
-- `analysis_service.llm.copilot.*`
+- `analysis_service.llm.closeai.*`
+- `analysis_service.llm.deepseek.*`
 - `analysis_service.llm.agent_models_override.*`
 - `analysis_service.llm.max_critic_revisions`
 - `analysis_service.llm.orchestrator_chunk_size`
@@ -217,7 +219,7 @@ Manual 任务 `manual_analyze`：
 - `analysis_service.llm.backoff_base_seconds`
 - `analysis_service.llm.backoff_max_seconds`
 
-当前默认 provider 为 `copilot`。
+当前默认 provider 为 `deepseek`。
 
 ## Observability
 

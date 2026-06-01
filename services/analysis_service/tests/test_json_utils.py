@@ -101,7 +101,7 @@ class TestExtractJsonStr:
         assert parsed["ok"] is True
 
     def test_literal_escaped_newlines(self):
-        """Copilot SDK sometimes returns literal \\n instead of real newlines."""
+        """Some providers return literal \\n instead of real newlines."""
         raw = '{\\n  "symbols": [\\n    {\\n      "symbol": "NVDA",\\n      "score": 0.8\\n    }\\n  ]\\n}'
         result = extract_json_str(raw)
         parsed = json.loads(result)
@@ -124,7 +124,7 @@ class TestExtractJsonStr:
         assert parsed["count"] == 1
 
     def test_literal_escaped_newlines_with_nested_objects(self):
-        """Full Copilot-style response with literal \\n throughout."""
+        """Full provider response with literal \\n throughout."""
         raw = (
             '{\\n  "symbols": [\\n    {\\n      "symbol": "NVDA",\\n'
             '      "best_spread_type": null,\\n      "risk_reward_ratio": 0.0,\\n'

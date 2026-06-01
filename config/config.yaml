@@ -292,7 +292,7 @@ signal_service:
 analysis_service:
   daily_task_chunk_size: 20            # Daily pipeline analysis fan-out chunk size (one Celery analysis task per chunk)
   llm:
-    provider: "closeai"                 # openai / copilot / qiniu / closeai
+    provider: "deepseek"                # openai / closeai / deepseek
     openai:
       api_key: ""                       # or env: ANALYSIS_SERVICE__LLM__OPENAI__API_KEY
       model: "claude-opus-4.6"
@@ -300,25 +300,19 @@ analysis_service:
       temperature: 0.1
       max_tokens: 32768
       request_timeout_seconds: 600
-    copilot:
-      cli_path: "copilot"
-      github_token: ""                 # or env: ANALYSIS_SERVICE__LLM__COPILOT__GITHUB_TOKEN
-      model: "claude-opus-4.6"          # default model for all agents
-      reasoning_effort: "high"        # low / medium / high
-      request_timeout_seconds: 600
-    qiniu:
-      api_key: ""                       # or env: ANALYSIS_SERVICE__LLM__QINIU__API_KEY
-      base_url: "https://api.qnaigc.com/v1"
-      model: "gemini-2.5-flash"         # see https://www.qiniu.com/ai/models
-      reasoning_effort: "high"          # low / medium / high
-      temperature: 0.1
-      max_tokens: 32768                 # Gemini 2.5 Flash supports up to 65536 output tokens
-      request_timeout_seconds: 600
     closeai:
       api_key: ""                       # or env: ANALYSIS_SERVICE__LLM__CLOSEAI__API_KEY
       base_url: "https://api.openai-proxy.org/v1"
       model: "claude-sonnet-4-20250514" # see https://doc.closeai-asia.com/tutorial/library.html
       reasoning_effort: "high"          # low / medium / high
+      temperature: 0.1
+      max_tokens: 32768
+      request_timeout_seconds: 600
+    deepseek:
+      api_key: ""                       # or env: ANALYSIS_SERVICE__LLM__DEEPSEEK__API_KEY
+      base_url: "https://api.deepseek.com"
+      model: "deepseek-v4-pro"          # see https://api-docs.deepseek.com/
+      reasoning_effort: "high"          # low / medium / high / max
       temperature: 0.1
       max_tokens: 32768
       request_timeout_seconds: 600
