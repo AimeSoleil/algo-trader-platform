@@ -182,11 +182,11 @@ Manual 任务 `manual_analyze`：
 ### Routes
 
 - `GET /api/v1/analysis/blueprint/{blueprint_id}`
-  - 当 path 匹配 UUID 时，按 blueprint id 查询 blueprint
+  - 当 path 不是 `YYYY-MM-DD` 时，按 blueprint id 查询 blueprint，例如 `manual-09dc21fa`
   - 支持 `symbols=AAPL,NVDA` 过滤 `symbol_plans`
 
 - `GET /api/v1/analysis/blueprint/{trading_date}`
-  - 查询某天 blueprint
+  - 当 path 为 `YYYY-MM-DD` 时，按交易日查询 blueprint
   - 支持 `symbols=AAPL,NVDA` 过滤 `symbol_plans`
   - 支持 `by_pass_cache=true`
 

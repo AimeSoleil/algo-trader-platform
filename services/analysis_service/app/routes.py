@@ -1,7 +1,7 @@
 """Analysis Service — REST API routes."""
 from __future__ import annotations
 
-from uuid import UUID
+import re
 
 from celery.result import AsyncResult
 from fastapi import APIRouter, HTTPException, Query
@@ -10,6 +10,7 @@ from pydantic import BaseModel, Field
 from shared.celery_app import celery_app
 
 router = APIRouter(tags=["analysis"])
+_ISO_DATE_PATH_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
 
 # ---------------------------------------------------------------------------
@@ -41,31 +42,22 @@ def _apply_symbol_filter(result: dict, symbol_filter: set[str] | None) -> dict:
     return response
 
 
-@router.get("/analysis/blueprint/{blueprint_id:uuid}")
-async def get_blueprint_by_id(
-    blueprint_id: UUID,
-    symbols: str | None = Query(None, description="Comma-separated symbols to filter, e.g. AAPL,NVDA"),
-):
-    """按 blueprint id 查询蓝图，可按 symbols 过滤 symbol_plans。"""
-    from services.analysis_service.app.queries import query_blueprint_by_id
-
-    result = await query_blueprint_by_id(str(blueprint_id))
-    if "error" in result:
-        raise HTTPException(status_code=404, detail=result["error"])
-
-    return _apply_symbol_filter(result, _parse_symbol_filter(symbols))
-
-
 @router.get("/analysis/blueprint/{trading_date}")
 async def get_blueprint(
     trading_date: str,
     symbols: str | None = Query(None, description="Comma-separated symbols to filter, e.g. AAPL,NVDA"),
     by_pass_cache: bool = False,
 ):
-    """查询某天的蓝图，可按 symbols 过滤 symbol_plans"""
-    from services.analysis_service.app.queries import query_blueprint
+    """查询 blueprint；ISO 日期按 trading_date 查询，其余 path 按 blueprint id 查询。"""
+    from services.analysis_service.app.queries import query_blueprint, query_blueprint_by_id
 
-    result = await query_blueprint(trading_date, by_pass_cache=by_pass_cache)
+    if _ISO_DATE_PATH_RE.fullmatch(trading_date):
+        result = await query_blueprint(trading_date, by_pass_cache=by_pass_cache)
+    else:
+        result = await query_blueprint_by_id(trading_date)
+        if "error" in result:
+            raise HTTPException(status_code=404, detail=result["error"])
+
     return _apply_symbol_filter(result, _parse_symbol_filter(symbols))
 
 
