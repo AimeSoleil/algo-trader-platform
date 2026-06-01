@@ -39,6 +39,30 @@ def test_get_blueprint_by_id_uses_non_guid_id(monkeypatch):
     assert seen["by_date"] is None
 
 
+def test_get_blueprint_by_id_explicit_alias_route(monkeypatch):
+    blueprint_id = "manual-09dc21fa"
+    seen: dict[str, str | None] = {"by_id": None}
+
+    async def fake_query_blueprint_by_id(requested_id: str) -> dict:
+        seen["by_id"] = requested_id
+        return {
+            "id": requested_id,
+            "trading_date": "2026-03-24",
+            "status": "manual",
+            "blueprint": {"symbol_plans": []},
+            "execution_summary": None,
+            "_from_cache": False,
+        }
+
+    monkeypatch.setattr(queries, "query_blueprint_by_id", fake_query_blueprint_by_id)
+
+    response = client.get(f"/api/v1/analysis/blueprint/by-id/{blueprint_id}")
+
+    assert response.status_code == 200
+    assert response.json()["id"] == blueprint_id
+    assert seen["by_id"] == blueprint_id
+
+
 def test_get_blueprint_by_date_still_uses_date_route(monkeypatch):
     seen: dict[str, str | None] = {"by_id": None, "by_date": None}
 

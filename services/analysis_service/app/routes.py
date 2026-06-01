@@ -42,6 +42,25 @@ def _apply_symbol_filter(result: dict, symbol_filter: set[str] | None) -> dict:
     return response
 
 
+async def _query_blueprint_by_id_or_404(blueprint_id: str) -> dict:
+    from services.analysis_service.app.queries import query_blueprint_by_id
+
+    result = await query_blueprint_by_id(blueprint_id)
+    if "error" in result:
+        raise HTTPException(status_code=404, detail=result["error"])
+    return result
+
+
+@router.get("/analysis/blueprint/by-id/{blueprint_id}")
+async def get_blueprint_by_id_explicit(
+    blueprint_id: str,
+    symbols: str | None = Query(None, description="Comma-separated symbols to filter, e.g. AAPL,NVDA"),
+):
+    """按 blueprint id 查询蓝图；显式 by-id 路径用于 OpenAPI 文档展示。"""
+    result = await _query_blueprint_by_id_or_404(blueprint_id)
+    return _apply_symbol_filter(result, _parse_symbol_filter(symbols))
+
+
 @router.get("/analysis/blueprint/{trading_date}")
 async def get_blueprint(
     trading_date: str,
@@ -54,9 +73,7 @@ async def get_blueprint(
     if _ISO_DATE_PATH_RE.fullmatch(trading_date):
         result = await query_blueprint(trading_date, by_pass_cache=by_pass_cache)
     else:
-        result = await query_blueprint_by_id(trading_date)
-        if "error" in result:
-            raise HTTPException(status_code=404, detail=result["error"])
+        result = await _query_blueprint_by_id_or_404(trading_date)
 
     return _apply_symbol_filter(result, _parse_symbol_filter(symbols))
 

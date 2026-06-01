@@ -181,6 +181,11 @@ Manual 任务 `manual_analyze`：
 
 ### Routes
 
+- `GET /api/v1/analysis/blueprint/by-id/{blueprint_id}`
+  - 显式按 blueprint id 查询，主要用于 Swagger/OpenAPI 可发现性
+  - 支持非 GUID id，例如 `manual-09dc21fa`
+  - 支持 `symbols=AAPL,NVDA` 过滤 `symbol_plans`
+
 - `GET /api/v1/analysis/blueprint/{blueprint_id}`
   - 当 path 不是 `YYYY-MM-DD` 时，按 blueprint id 查询 blueprint，例如 `manual-09dc21fa`
   - 支持 `symbols=AAPL,NVDA` 过滤 `symbol_plans`
