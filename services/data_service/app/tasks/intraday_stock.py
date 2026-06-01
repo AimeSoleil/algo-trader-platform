@@ -1,10 +1,9 @@
 """Intraday 5-minute stock bar capture — direct DB writes."""
 from __future__ import annotations
 
-import asyncio
-
 from celery import chain as celery_chain
 
+from shared.async_bridge import run_async
 from shared.celery_app import celery_app
 from shared.config import get_settings
 from shared.distributed_lock import distributed_once
@@ -28,7 +27,7 @@ def capture_intraday_stock(self) -> dict:
     Uses @distributed_once to ensure only one data worker per tick runs this
     orchestrator when celery-data is scaled horizontally.
     """
-    return asyncio.run(_capture_intraday_stock_orchestrator())
+    return run_async(_capture_intraday_stock_orchestrator())
 
 
 @distributed_once("data:intraday_stock_capture", ttl=240, service="data_service")
@@ -77,7 +76,7 @@ async def _capture_intraday_stock_orchestrator() -> dict:
 )
 def capture_intraday_stock_chunk(self, symbols: list[str]) -> dict:
     """盘中采集一组 symbols 的 5m stock bars → 直接写入 DB。"""
-    return asyncio.run(_capture_intraday_stock_chunk_async(symbols))
+    return run_async(_capture_intraday_stock_chunk_async(symbols))
 
 
 async def _capture_intraday_stock_chunk_async(symbols: list[str]) -> dict:

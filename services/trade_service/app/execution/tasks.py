@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-import asyncio
 from datetime import date
 
+from shared.async_bridge import run_async
 from shared.celery_app import celery_app
 from shared.utils import get_logger
 
@@ -13,7 +13,7 @@ logger = get_logger("execution_tasks")
 
 @celery_app.task(name="trade_service.tasks.load_daily_blueprint", bind=True, max_retries=2)
 def load_daily_blueprint(self, trading_date: str) -> dict:
-    return asyncio.run(_load_daily_blueprint_async(trading_date))
+    return run_async(_load_daily_blueprint_async(trading_date))
 
 
 async def _load_daily_blueprint_async(trading_date: str) -> dict:
@@ -29,7 +29,7 @@ async def _load_daily_blueprint_async(trading_date: str) -> dict:
 
 @celery_app.task(name="trade_service.tasks.finalize_daily_blueprint", bind=True, max_retries=2)
 def finalize_daily_blueprint(self, trading_date: str) -> dict:
-    return asyncio.run(_finalize_daily_blueprint_async(trading_date))
+    return run_async(_finalize_daily_blueprint_async(trading_date))
 
 
 async def _finalize_daily_blueprint_async(trading_date: str) -> dict:

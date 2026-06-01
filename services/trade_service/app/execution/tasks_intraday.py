@@ -1,11 +1,11 @@
 """Intraday entry optimizer — Celery task (every 5 min during market hours)."""
 from __future__ import annotations
 
-import asyncio
 import json
 from datetime import date
 from typing import Any
 
+from shared.async_bridge import run_async
 from shared.celery_app import celery_app
 from shared.config import get_settings
 from shared.utils import get_logger, today_trading, now_market
@@ -112,7 +112,7 @@ def evaluate_entry_windows(self, trading_date: str | None = None) -> dict:
 
     Scheduled by Beat every 5 min during market hours (offset from capture).
     """
-    return asyncio.run(_evaluate_async(trading_date))
+    return run_async(_evaluate_async(trading_date))
 
 
 async def _evaluate_async(trading_date: str | None = None) -> dict:

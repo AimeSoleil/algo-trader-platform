@@ -1,10 +1,10 @@
 """Manual data collection & full-pipeline dry-run — triggered via REST API."""
 from __future__ import annotations
 
-import asyncio
 from datetime import date
 from time import perf_counter
 
+from shared.async_bridge import run_async
 from shared.celery_app import celery_app
 from shared.utils import get_logger, today_trading
 
@@ -50,7 +50,7 @@ def manual_collect(
         retry=getattr(self.request, "retries", 0),
     )
     try:
-        return asyncio.run(
+        return run_async(
             _manual_collect_async(self, symbols, start_date, end_date, data_types)
         )
     except Exception as exc:

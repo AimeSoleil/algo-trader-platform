@@ -1,10 +1,10 @@
 """Option daily aggregation — intraday snapshots → option_daily + option_iv_daily."""
 from __future__ import annotations
 
-import asyncio
 from datetime import date
 from time import perf_counter
 
+from shared.async_bridge import run_async
 from shared.celery_app import celery_app
 from shared.utils import get_logger, resolve_trading_date_arg, today_trading
 
@@ -34,7 +34,7 @@ def aggregate_option_daily(self, trading_date: str | None = None, prev_result=No
         retry=getattr(self.request, "retries", 0),
     )
     try:
-        return asyncio.run(_aggregate_option_daily_async(resolved_trading_date))
+        return run_async(_aggregate_option_daily_async(resolved_trading_date))
     except Exception as exc:
         logger.error("aggregate_option_daily.failed", error=str(exc))
         raise self.retry(exc=exc, countdown=60) from exc

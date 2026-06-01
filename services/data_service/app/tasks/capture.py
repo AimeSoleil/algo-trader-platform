@@ -1,10 +1,10 @@
 """Post-market data capture — 1m bars + daily bars → DB."""
 from __future__ import annotations
 
-import asyncio
 from datetime import date, datetime
 from time import perf_counter
 
+from shared.async_bridge import run_async
 from shared.celery_app import celery_app
 from shared.config import get_settings
 from shared.pipeline import chunk_symbols
@@ -64,7 +64,7 @@ def capture_post_market_chunk(self, symbols: list[str], trading_date: str) -> di
         retry=getattr(self.request, "retries", 0),
     )
     try:
-        return asyncio.run(_capture_post_market_chunk_async(symbols, trading_date))
+        return run_async(_capture_post_market_chunk_async(symbols, trading_date))
     except Exception as exc:
         logger.error("capture_post_market_chunk.failed", error=str(exc))
         raise self.retry(exc=exc, countdown=120) from exc

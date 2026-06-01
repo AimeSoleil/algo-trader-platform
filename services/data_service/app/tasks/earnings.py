@@ -5,6 +5,7 @@ import asyncio
 from datetime import date, datetime, timedelta, timezone
 from time import perf_counter
 
+from shared.async_bridge import run_async
 from shared.celery_app import celery_app
 from shared.config import get_settings
 from shared.redis_pool import get_redis
@@ -72,7 +73,7 @@ def refresh_earnings_cache(self) -> dict:
     ``earnings_proximity_days`` is populated when signals are computed.
     """
     try:
-        return asyncio.run(_refresh_earnings_cache_async())
+        return run_async(_refresh_earnings_cache_async())
     except Exception as exc:
         logger.error("earnings_cache.failed", error=str(exc))
         raise self.retry(exc=exc, countdown=120) from exc
