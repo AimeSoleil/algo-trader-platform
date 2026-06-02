@@ -21,7 +21,7 @@ _adapter = None
 
 
 def _get_adapter():
-    """Return a cached LLMAdapter instance (reuses OpenAI client + skill bundle)."""
+    """Return a cached LLMAdapter instance."""
     global _adapter
     if _adapter is None:
         from services.analysis_service.app.llm.adapter import LLMAdapter

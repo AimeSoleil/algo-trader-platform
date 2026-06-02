@@ -368,7 +368,7 @@ def _build_task_section(*, is_chunk: bool = False, signal_date: date | None = No
             f"This is a **subset** of the full watchlist processed in parallel. "
             f"Benchmark symbols ({benchmark_str}) are also used as shared market context. "
             f"If any of them appear in this chunk's signal data, they remain tradable and may receive plans.\n\n"
-            f"Follow the trading-analysis skill workflow. Generate trading plans for "
+            f"Use the embedded analysis rules in this prompt. Generate trading plans for "
             f"ALL actionable symbols provided in the signal data. Design concrete "
             f"strategies with fully defined legs for each.\n\n"
             f"If the Current Portfolio section shows open positions, evaluate each for "
@@ -378,7 +378,7 @@ def _build_task_section(*, is_chunk: bool = False, signal_date: date | None = No
     return (
         f"## Task\n\n"
         f"Generate a Trading Blueprint for **{target_date}**.\n\n"
-        f"Follow the trading-analysis skill workflow. Select 1-3 optimal underlyings "
+        f"Use the embedded analysis rules in this prompt. Select 1-3 optimal underlyings "
         f"from the signal data, design concrete strategies with fully defined legs.\n\n"
         f"If the Current Portfolio section shows open positions, evaluate each for "
         f"hold / increase / decrease / close before proposing new trades.\n\n"

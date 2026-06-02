@@ -887,9 +887,20 @@ RISK MANAGEMENT (Priority 5 — MANDATORY)
 BLUEPRINT JSON SCHEMA
 ────────────────────────────────────────────────────────
 market_regime:str, market_analysis:str(2-3 sentences)
-symbol_plans[]: underlying, strategy_type, direction, legs[{expiry,strike,option_type,side=buy|sell,quantity}], entry_conditions[{field,operator,value,description}], exit_conditions[], adjustment_rules[{trigger:{field,operator,value,timeframe,description},action:hedge_delta|roll_strike|close_leg|add_leg|close_all,params:{},description}], max_position_size(FLOAT 0.0-1.5, position sizing ratio: 1.0=full, 0.5=half, 0.7=70%), max_contracts(INTEGER ≥1, number of contract sets to trade), stop_loss_amount, take_profit_amount, max_loss_per_trade, reasoning(MUST reference agents), confidence(0-1)
+symbol_plans[]: underlying, strategy_type, direction, legs[{expiry,strike,option_type,side=buy|sell,quantity,price_tolerance(FLOAT decimal fraction; 0.005=0.5%, 0.015=1.5%)}], entry_conditions[{field,operator,value,description}], exit_conditions[], adjustment_rules[{trigger:{field,operator,value,timeframe,description},action:hedge_delta|roll_strike|close_leg|add_leg|close_all,params:{},description}], max_position_size(FLOAT 0.0-1.5, position sizing ratio: 1.0=full, 0.5=half, 0.7=70%), max_contracts(INTEGER ≥1, number of contract sets to trade), stop_loss_amount, take_profit_amount, max_loss_per_trade, reasoning(MUST reference agents), confidence(0-1)
 Top-level: max_total_positions, max_daily_loss, max_margin_usage, portfolio_delta_limit, portfolio_gamma_limit
 max_total_positions MUST be >= symbol_plans length. Set it large enough to cover every emitted plan; do not use 5 as a default if more valid trade symbols remain.
+
+## PRICE TOLERANCE GUIDELINES
+- Every leg SHOULD include `price_tolerance` as a decimal fraction, not a percent string. Example: `0.005` = 0.5%, `0.03` = 3.0%.
+- Choose a single numeric tolerance per leg using this baseline:
+    - Liquid ETF / blue chip: 0.005-0.015
+    - Medium liquidity: 0.015-0.03
+    - Illiquid (last resort): 0.03-0.04
+    - High volatility: widen the selected baseline by about 0.01 when needed
+    - Buying (`side=buy`): prefer the tighter end, usually 0.005-0.02
+    - Selling (`side=sell`): allow the wider end, usually 0.01-0.03
+- Use tighter tolerances when spreads are narrow and liquidity is strong; use wider tolerances only when liquidity or volatility clearly justifies it.
 
 ## Enums
 StrategyType: single_leg|vertical_spread|iron_condor|iron_butterfly|butterfly|calendar_spread|diagonal_spread|straddle|strangle|covered_call|protective_put|collar
@@ -945,6 +956,7 @@ Example: {"field":"time","operator":"between","value":[10.0,11.0],"description":
 - `legs[].expiry` MUST be on or after the next trading day specified in the prompt; never output historical expiry dates.
 - `legs[].strike` MUST be a numeric strike price, never symbolic text like `0.30_delta`.
 - `legs[].side` MUST be exactly `buy` or `sell`. Never output `long` or `short`.
+- `legs[].price_tolerance` SHOULD be a numeric decimal fraction, not prose. Example: output `0.015`, not `1.5% tolerance`.
 - `entry_conditions[].value`, `exit_conditions[].value`, and `adjustment_rules[].trigger.value` MUST be numeric or `[low, high]` numeric lists only.
 - NEVER output symbolic references like `vwap`, `short_strike`, `long_strike`, `atm`, or field names inside any `value` field.
 

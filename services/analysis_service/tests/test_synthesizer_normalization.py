@@ -4,7 +4,11 @@ from types import SimpleNamespace
 
 from shared.models.blueprint import LLMTradingBlueprint
 
-from services.analysis_service.app.llm.agents.synthesizer_agent import SynthesizerAgent, _normalize_blueprint_payload
+from services.analysis_service.app.llm.agents.synthesizer_agent import (
+    SynthesizerAgent,
+    _normalize_blueprint_payload,
+    _SYNTHESIZER_SYSTEM_PROMPT,
+)
 
 
 def test_normalize_blueprint_payload_records_dropped_condition_samples():
@@ -124,6 +128,37 @@ def test_normalize_blueprint_payload_normalizes_leg_side_aliases():
     assert blueprint.symbol_plans[0].legs[1].side == "sell"
 
 
+def test_blueprint_option_leg_price_tolerance_accepts_percent_strings():
+    blueprint = LLMTradingBlueprint.model_validate(
+        {
+            "trading_date": "2026-04-29",
+            "generated_at": "2026-04-28T03:39:57",
+            "market_regime": "trending_calm",
+            "symbol_plans": [
+                {
+                    "underlying": "SPY",
+                    "strategy_type": "single_leg",
+                    "direction": "bullish",
+                    "legs": [
+                        {
+                            "expiry": "2026-06-05",
+                            "strike": 720,
+                            "option_type": "call",
+                            "side": "buy",
+                            "quantity": 1,
+                            "price_tolerance": "1.5%",
+                        },
+                    ],
+                    "max_loss_per_trade": 500,
+                    "confidence": 0.7,
+                },
+            ],
+        }
+    )
+
+    assert blueprint.symbol_plans[0].legs[0].price_tolerance == 0.015
+
+
 def test_normalize_blueprint_payload_expands_max_total_positions_to_cover_all_plans():
     payload = {
         "trading_date": "2026-04-29",
@@ -216,6 +251,10 @@ def test_synthesizer_prompt_scales_max_total_positions_to_trade_symbol_count(mon
 
     assert '"max_total_positions":6' in prompt
     assert "Generate plans for as many of them as support a valid setup" in prompt
+
+    assert "Every leg SHOULD include `price_tolerance` as a decimal fraction" in _SYNTHESIZER_SYSTEM_PROMPT
+    assert "Liquid ETF / blue chip: 0.005-0.015" in _SYNTHESIZER_SYSTEM_PROMPT
+    assert "Buying (`side=buy`): prefer the tighter end" in _SYNTHESIZER_SYSTEM_PROMPT
 
 
 def test_normalize_blueprint_payload_clamps_global_risk_limits_to_policy_caps():

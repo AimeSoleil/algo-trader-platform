@@ -8,12 +8,15 @@ from time import perf_counter
 from shared.async_bridge import run_async
 from shared.celery_app import celery_app
 from shared.config import get_settings
+from shared.notifier.base import EventType, NotificationEvent, Severity
+from shared.notifier.helpers import notify_sync
 from shared.redis_pool import get_redis
 from shared.utils import get_logger, market_tz
 
 logger = get_logger("data_tasks")
 
 EARNINGS_HASH_KEY = "earnings:next_date"
+_RETRY_COUNTDOWN_SECONDS = 120
 
 # Symbols that never have earnings reports: ETFs, bond funds, commodity funds,
 # crypto ETFs, and index tickers (^ prefix handled separately in the filter).
@@ -37,6 +40,68 @@ def _seconds_until_midnight_et() -> int:
     now = datetime.now(market_tz())
     midnight = (now + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
     return max(int((midnight - now).total_seconds()), 3600)
+
+
+def _eligible_symbols() -> list[str]:
+    settings = get_settings()
+    return [
+        symbol for symbol in settings.common.watchlist.all
+        if not symbol.startswith("^")
+        and symbol not in _NO_EARNINGS_SYMBOLS
+    ]
+
+
+def _notify_refresh_started(symbol_count: int) -> None:
+    notify_sync(NotificationEvent(
+        event_type=EventType.EARNINGS_CACHE_REFRESH_STARTED,
+        title="Earnings Cache Refresh Started",
+        message=f"Refreshing next-earnings cache for {symbol_count} symbols.",
+        severity=Severity.INFO,
+        payload={
+            "cache_key": EARNINGS_HASH_KEY,
+            "symbols": str(symbol_count),
+        },
+    ))
+
+
+def _notify_refresh_finished(symbol_count: int, result: dict[str, int | float]) -> None:
+    updated = int(result.get("updated", 0))
+    failed = int(result.get("failed", 0))
+    elapsed_s = result.get("elapsed_s", 0)
+    notify_sync(NotificationEvent(
+        event_type=EventType.EARNINGS_CACHE_REFRESH_FINISHED,
+        title="Earnings Cache Refresh Finished",
+        message=(
+            "Next-earnings cache refresh finished: "
+            f"{updated} updated, {failed} unavailable, {elapsed_s}s elapsed."
+        ),
+        severity=Severity.INFO,
+        payload={
+            "cache_key": EARNINGS_HASH_KEY,
+            "symbols": str(symbol_count),
+            "updated": str(updated),
+            "failed": str(failed),
+            "elapsed_s": str(elapsed_s),
+        },
+    ))
+
+
+def _notify_refresh_failed(symbol_count: int, error: Exception) -> None:
+    notify_sync(NotificationEvent(
+        event_type=EventType.EARNINGS_CACHE_REFRESH_FAILED,
+        title="Earnings Cache Refresh Failed",
+        message=(
+            "Next-earnings cache refresh failed: "
+            f"{error}. Retry queued in {_RETRY_COUNTDOWN_SECONDS}s."
+        ),
+        severity=Severity.ERROR,
+        payload={
+            "cache_key": EARNINGS_HASH_KEY,
+            "symbols": str(symbol_count),
+            "error": str(error),
+            "retry_in_s": str(_RETRY_COUNTDOWN_SECONDS),
+        },
+    ))
 
 
 async def fetch_and_cache_earnings(symbols: list[str]) -> dict[str, date | None]:
@@ -72,21 +137,22 @@ def refresh_earnings_cache(self) -> dict:
     Runs daily before the signal pipeline so that
     ``earnings_proximity_days`` is populated when signals are computed.
     """
+    symbols: list[str] = []
+
     try:
-        return run_async(_refresh_earnings_cache_async())
+        symbols = _eligible_symbols()
+        _notify_refresh_started(len(symbols))
+        result = run_async(_refresh_earnings_cache_async(symbols))
+        _notify_refresh_finished(len(symbols), result)
+        return result
     except Exception as exc:
+        _notify_refresh_failed(len(symbols), exc)
         logger.error("earnings_cache.failed", error=str(exc))
-        raise self.retry(exc=exc, countdown=120) from exc
+        raise self.retry(exc=exc, countdown=_RETRY_COUNTDOWN_SECONDS) from exc
 
 
-async def _refresh_earnings_cache_async() -> dict:
-    settings = get_settings()
-    symbols = [
-        s for s in settings.common.watchlist.all
-        if not s.startswith("^")
-        and s not in _NO_EARNINGS_SYMBOLS
-    ]
-
+async def _refresh_earnings_cache_async(symbols: list[str] | None = None) -> dict:
+    symbols = symbols or _eligible_symbols()
     t0 = perf_counter()
     results = await fetch_and_cache_earnings(symbols)
 

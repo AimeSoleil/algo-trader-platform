@@ -40,6 +40,20 @@ def _normalize_numeric_value(value: Any) -> float | list[float] | None:
     return None
 
 
+def _normalize_percentage_fraction(value: Any) -> float | None:
+    if isinstance(value, (int, float)):
+        return float(value)
+    if not isinstance(value, str):
+        return None
+
+    parsed = _extract_float(value)
+    if parsed is None:
+        return None
+    if "%" in value:
+        return parsed / 100.0
+    return parsed
+
+
 def _normalize_expiry_value(value: Any) -> Any:
     if not isinstance(value, str):
         return value
@@ -397,7 +411,10 @@ class OptionLeg(BaseModel):
     side: Literal["buy", "sell"]
     quantity: int = 1
     target_entry_price: float | None = None  # 目标入场价（限价）
-    price_tolerance: float = 0.05  # 价格容忍度（滑点范围）
+    price_tolerance: float = Field(
+        0.01,
+        description="价格容忍度（小数比例）；例如 0.005=0.5%，0.01=1%",
+    )
 
     @field_validator("expiry", mode="before")
     @classmethod
@@ -408,6 +425,12 @@ class OptionLeg(BaseModel):
     @classmethod
     def _coerce_strike(cls, v: Any) -> Any:
         normalized = _normalize_numeric_value(v)
+        return normalized if normalized is not None else v
+
+    @field_validator("price_tolerance", mode="before")
+    @classmethod
+    def _coerce_price_tolerance(cls, v: Any) -> Any:
+        normalized = _normalize_percentage_fraction(v)
         return normalized if normalized is not None else v
 
     @property
