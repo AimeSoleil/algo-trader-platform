@@ -483,6 +483,7 @@ class LLMSettings(BaseSettings):
     # ── Orchestrator — symbol chunking for context window management ──
     orchestrator_chunk_size: int = 7
     orchestrator_max_parallel: int = 3
+    max_output_plans: int = Field(default=10, ge=1)
 
     # ── Specialist flow parallel gate (pipeline-level) ──
     specialist_parallel_limit: int = 1
@@ -504,60 +505,6 @@ class AnalysisServiceSettings(BaseSettings):
     llm: LLMSettings = Field(default_factory=LLMSettings)
 
 
-# ── Trade Service ────────────────────────────────────────────
-
-class StopLossSettings(BaseSettings):
-    enabled: bool = True
-    check_interval_seconds: int = 60
-    portfolio_loss_limit: float = 2000.0
-    position_loss_limit: float = 500.0
-    cooldown_seconds: int = 60
-
-class PaperBrokerSettings(BaseSettings):
-    initial_cash: float = 100_000.0
-
-class FutuBrokerSettings(BaseSettings):
-    host: str = "127.0.0.1"
-    port: int = 11111
-    trader_id: str = ""
-    trd_env: str = "SIMULATE"
-    market: str = "US"
-
-class BrokerSettings(BaseSettings):
-    type: str = "paper"
-    paper: PaperBrokerSettings = Field(default_factory=PaperBrokerSettings)
-    futu: FutuBrokerSettings = Field(default_factory=FutuBrokerSettings)
-
-class RiskSettings(BaseSettings):
-    class BlueprintLimitsSettings(BaseSettings):
-        max_daily_loss: float = 2000.0
-        max_margin_usage: float = Field(default=0.5, ge=0.0, le=1.0)
-        portfolio_delta_limit: float = Field(default=0.5, ge=0.0)
-        portfolio_gamma_limit: float = Field(default=0.1, ge=0.0)
-
-    stop_loss: StopLossSettings = Field(default_factory=StopLossSettings)
-    blueprint_limits: BlueprintLimitsSettings = Field(default_factory=BlueprintLimitsSettings)
-
-class IntradayOptimizerSettings(BaseSettings):
-    """trade_service.intraday_optimizer — 盘中入场优化器."""
-    enabled: bool = False
-    entry_score_threshold: float = 0.65
-    lookback_bars: int = 6                     # 5m bars (30 min)
-    stock_lookback_bars: int = 6              # 5m bars (aligned with option lookback)
-    preferred_windows: list[str] = ["10:00-11:30", "14:00-15:30"]
-    blackout_minutes_after_open: int = 15
-    execution_mode: str = "auto"               # auto | notify
-    notify_min_score: float = 0.55
-
-class TradeServiceSettings(BaseSettings):
-    """trade_service 顶级配置."""
-    execution_interval: int = 300
-    trade_start_time: str = "09:20"        # 盘前加载蓝图 + 启动执行 tick
-    broker: BrokerSettings = Field(default_factory=BrokerSettings)
-    risk: RiskSettings = Field(default_factory=RiskSettings)
-    intraday_optimizer: IntradayOptimizerSettings = Field(default_factory=IntradayOptimizerSettings)
-
-
 # ── Root Settings ────────────────────────────────────────────
 
 class Settings(BaseSettings):
@@ -574,7 +521,6 @@ class Settings(BaseSettings):
     data_service: DataServiceSettings = Field(default_factory=DataServiceSettings)
     signal_service: SignalServiceSettings = Field(default_factory=SignalServiceSettings)
     analysis_service: AnalysisServiceSettings = Field(default_factory=AnalysisServiceSettings)
-    trade_service: TradeServiceSettings = Field(default_factory=TradeServiceSettings)
 
     @classmethod
     def settings_customise_sources(

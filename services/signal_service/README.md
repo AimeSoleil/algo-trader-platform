@@ -103,12 +103,12 @@ Signal Service 有 Redis L1 查询缓存：
 - Base URL: `http://localhost:8002`
 - Docs: `http://localhost:8002/docs`
 - Health: `GET /api/v1/health`
-- Legacy health redirect: `GET /health`
 
 ### Query APIs
 
 - `GET /api/v1/signals`
-- `GET /api/v1/signals/{symbol}`
+
+单标的查询使用 `GET /api/v1/signals?symbols=AAPL`。
 
 统一查询支持：
 

@@ -34,6 +34,7 @@ def _mock_settings() -> SimpleNamespace:
     return SimpleNamespace(
         analysis_service=SimpleNamespace(
             llm=SimpleNamespace(
+                max_output_plans=10,
                 max_retries=3,
                 backoff_base_seconds=0,
                 backoff_max_seconds=0,
@@ -46,16 +47,6 @@ def _mock_settings() -> SimpleNamespace:
                     enabled=False,
                     allowed_strategy_types=[],
                 ),
-            )
-        ),
-        trade_service=SimpleNamespace(
-            risk=SimpleNamespace(
-                blueprint_limits=SimpleNamespace(
-                    max_daily_loss=2_000.0,
-                    max_margin_usage=0.5,
-                    portfolio_delta_limit=0.5,
-                    portfolio_gamma_limit=0.1,
-                )
             )
         ),
     )

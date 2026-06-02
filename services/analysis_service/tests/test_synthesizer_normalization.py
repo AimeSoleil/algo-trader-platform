@@ -159,7 +159,7 @@ def test_blueprint_option_leg_price_tolerance_accepts_percent_strings():
     assert blueprint.symbol_plans[0].legs[0].price_tolerance == 0.015
 
 
-def test_normalize_blueprint_payload_expands_max_total_positions_to_cover_all_plans():
+def test_normalize_blueprint_payload_normalizes_max_total_positions_to_plan_count():
     payload = {
         "trading_date": "2026-04-29",
         "generated_at": "2026-04-28T03:39:57",
@@ -195,16 +195,12 @@ def test_normalize_blueprint_payload_expands_max_total_positions_to_cover_all_pl
         ],
     }
 
-    normalized, stats = _normalize_blueprint_payload(
-        payload,
-        signal_date=None,
-        minimum_max_total_positions=3,
-    )
+    normalized, stats = _normalize_blueprint_payload(payload, signal_date=None)
 
     assert normalized["max_total_positions"] == 3
     assert len(normalized["symbol_plans"]) == 3
     assert [p["underlying"] for p in normalized["symbol_plans"]] == ["SPY", "QQQ", "IWM"]
-    assert stats["max_total_positions_expanded"] == 1
+    assert stats["max_total_positions_normalized"] == 1
 
     blueprint = LLMTradingBlueprint.model_validate(normalized)
 
@@ -212,20 +208,121 @@ def test_normalize_blueprint_payload_expands_max_total_positions_to_cover_all_pl
     assert len(blueprint.symbol_plans) == 3
 
 
-def test_synthesizer_prompt_scales_max_total_positions_to_trade_symbol_count(monkeypatch):
+def test_normalize_blueprint_payload_trims_symbol_plans_to_configured_cap():
+    payload = {
+        "trading_date": "2026-04-29",
+        "generated_at": "2026-04-28T03:39:57",
+        "model_provider": "closeai",
+        "model_version": "claude-sonnet-4-20250514",
+        "market_regime": "trending_calm",
+        "max_total_positions": 20,
+        "symbol_plans": [
+            {
+                "underlying": f"SYM{i:02d}",
+                "strategy_type": "single_leg",
+                "direction": "bullish",
+                "legs": [{"expiry": "2026-06-05", "strike": 100 + i, "option_type": "call", "side": "buy", "quantity": 1}],
+                "max_loss_per_trade": 500,
+                "confidence": 0.7,
+            }
+            for i in range(12)
+        ],
+    }
+
+    normalized, stats = _normalize_blueprint_payload(payload, signal_date=None, max_output_plans=10)
+
+    assert normalized["max_total_positions"] == 10
+    assert len(normalized["symbol_plans"]) == 10
+    assert [plan["underlying"] for plan in normalized["symbol_plans"]] == [
+        "SYM00", "SYM01", "SYM02", "SYM03", "SYM04", "SYM05", "SYM06", "SYM07", "SYM08", "SYM09",
+    ]
+    assert stats["symbol_plans_trimmed_to_max_output_plans"] == 2
+    assert stats["max_total_positions_normalized"] == 1
+
+
+def test_normalize_blueprint_payload_sorts_trimmed_plans_by_score_then_quality_confidence():
+    payload = {
+        "trading_date": "2026-04-29",
+        "generated_at": "2026-04-28T03:39:57",
+        "market_regime": "trending_calm",
+        "symbol_plans": [
+            {
+                "underlying": "AAPL",
+                "strategy_type": "single_leg",
+                "direction": "bullish",
+                "legs": [{"expiry": "2026-06-05", "strike": 185, "option_type": "call", "side": "buy", "quantity": 1}],
+                "max_loss_per_trade": 500,
+                "confidence": 0.82,
+                "data_quality_score": 0.70,
+            },
+            {
+                "underlying": "MSFT",
+                "strategy_type": "single_leg",
+                "direction": "bullish",
+                "legs": [{"expiry": "2026-06-05", "strike": 430, "option_type": "call", "side": "buy", "quantity": 1}],
+                "max_loss_per_trade": 500,
+                "confidence": 0.68,
+                "data_quality_score": 0.95,
+            },
+            {
+                "underlying": "NVDA",
+                "strategy_type": "single_leg",
+                "direction": "bullish",
+                "legs": [{"expiry": "2026-06-05", "strike": 1200, "option_type": "call", "side": "buy", "quantity": 1}],
+                "max_loss_per_trade": 500,
+                "confidence": 0.74,
+                "data_quality_score": 0.90,
+                "score": 0.91,
+            },
+            {
+                "underlying": "TSLA",
+                "strategy_type": "single_leg",
+                "direction": "bullish",
+                "legs": [{"expiry": "2026-06-05", "strike": 210, "option_type": "call", "side": "buy", "quantity": 1}],
+                "max_loss_per_trade": 500,
+                "confidence": 0.93,
+                "data_quality_score": 0.92,
+            },
+        ],
+    }
+
+    normalized, stats = _normalize_blueprint_payload(payload, signal_date=None, max_output_plans=2)
+
+    assert [plan["underlying"] for plan in normalized["symbol_plans"]] == ["NVDA", "TSLA"]
+    assert normalized["max_total_positions"] == 2
+    assert stats["symbol_plans_trimmed_to_max_output_plans"] == 2
+
+
+def test_normalize_blueprint_payload_does_not_trim_when_output_cap_disabled():
+    payload = {
+        "trading_date": "2026-04-29",
+        "generated_at": "2026-04-28T03:39:57",
+        "market_regime": "trending_calm",
+        "symbol_plans": [
+            {
+                "underlying": f"SYM{i:02d}",
+                "strategy_type": "single_leg",
+                "direction": "bullish",
+                "legs": [{"expiry": "2026-06-05", "strike": 100 + i, "option_type": "call", "side": "buy", "quantity": 1}],
+                "max_loss_per_trade": 500,
+                "confidence": 0.7,
+            }
+            for i in range(12)
+        ],
+    }
+
+    normalized, stats = _normalize_blueprint_payload(payload, signal_date=None, max_output_plans=None)
+
+    assert normalized["max_total_positions"] == 12
+    assert len(normalized["symbol_plans"]) == 12
+    assert stats["symbol_plans_trimmed_to_max_output_plans"] == 0
+
+
+def test_synthesizer_prompt_caps_max_total_positions_to_configured_limit(monkeypatch):
     settings = SimpleNamespace(
-        trade_service=SimpleNamespace(
-            risk=SimpleNamespace(
-                blueprint_limits=SimpleNamespace(
-                    max_daily_loss=2000.0,
-                    max_margin_usage=0.5,
-                    portfolio_delta_limit=0.5,
-                    portfolio_gamma_limit=0.1,
-                )
-            )
-        ),
         analysis_service=SimpleNamespace(
             llm=SimpleNamespace(
+                max_output_plans=10,
                 precision_first=SimpleNamespace(
                     enabled=True,
                     allowed_strategy_types=["single_leg", "vertical_spread"],
@@ -238,7 +335,7 @@ def test_synthesizer_prompt_scales_max_total_positions_to_trade_symbol_count(mon
         lambda: settings,
     )
 
-    trade_symbols = ["AAPL", "MSFT", "NVDA", "TSLA", "AMZN", "META"]
+    trade_symbols = [f"SYM{i:02d}" for i in range(12)]
     prompt = SynthesizerAgent()._build_prompt(
         agent_outputs={},
         signals_summary=[{"symbol": symbol, "close_price": 100.0, "volume": 1_000_000, "volatility_regime": "normal"} for symbol in trade_symbols],
@@ -249,15 +346,52 @@ def test_synthesizer_prompt_scales_max_total_positions_to_trade_symbol_count(mon
         trade_symbols=trade_symbols,
     )
 
-    assert '"max_total_positions":6' in prompt
-    assert "Generate plans for as many of them as support a valid setup" in prompt
+    assert '"max_total_positions":10' in prompt
+    assert '"max_daily_loss"' not in prompt
+    assert '"max_margin_usage"' not in prompt
+    assert '"portfolio_delta_limit"' not in prompt
+    assert '"portfolio_gamma_limit"' not in prompt
+    assert "Generate at most 10 symbol_plans total" in prompt
+
+
+def test_synthesizer_prompt_does_not_apply_global_cap_when_disabled(monkeypatch):
+    settings = SimpleNamespace(
+        analysis_service=SimpleNamespace(
+            llm=SimpleNamespace(
+                max_output_plans=10,
+                precision_first=SimpleNamespace(
+                    enabled=True,
+                    allowed_strategy_types=["single_leg", "vertical_spread"],
+                )
+            )
+        ),
+    )
+    monkeypatch.setattr(
+        "services.analysis_service.app.llm.agents.synthesizer_agent.get_settings",
+        lambda: settings,
+    )
+
+    trade_symbols = [f"SYM{i:02d}" for i in range(12)]
+    prompt = SynthesizerAgent()._build_prompt(
+        agent_outputs={},
+        signals_summary=[{"symbol": symbol, "close_price": 100.0, "volume": 1_000_000, "volatility_regime": "normal"} for symbol in trade_symbols],
+        current_positions=None,
+        previous_execution=None,
+        critic_feedback=None,
+        signal_date=None,
+        trade_symbols=trade_symbols,
+        apply_output_cap=False,
+    )
+
+    assert '"max_total_positions":12' in prompt
+    assert "Generate at most 12 symbol_plans total" in prompt
 
     assert "Every leg SHOULD include `price_tolerance` as a decimal fraction" in _SYNTHESIZER_SYSTEM_PROMPT
     assert "Liquid ETF / blue chip: 0.005-0.015" in _SYNTHESIZER_SYSTEM_PROMPT
     assert "Buying (`side=buy`): prefer the tighter end" in _SYNTHESIZER_SYSTEM_PROMPT
 
 
-def test_normalize_blueprint_payload_clamps_global_risk_limits_to_policy_caps():
+def test_normalize_blueprint_payload_removes_legacy_risk_limit_fields():
     payload = {
         "trading_date": "2026-04-29",
         "generated_at": "2026-04-28T03:39:57",
@@ -282,14 +416,11 @@ def test_normalize_blueprint_payload_clamps_global_risk_limits_to_policy_caps():
 
     normalized, stats = _normalize_blueprint_payload(payload, signal_date=None)
 
-    assert normalized["max_daily_loss"] == 2000.0
-    assert normalized["max_margin_usage"] == 0.5
-    assert normalized["portfolio_delta_limit"] == 0.5
-    assert normalized["portfolio_gamma_limit"] == 0.1
-    assert stats["max_daily_loss_clamped"] == 1
-    assert stats["max_margin_usage_clamped"] == 1
-    assert stats["portfolio_delta_limit_clamped"] == 1
-    assert stats["portfolio_gamma_limit_clamped"] == 1
+    assert "max_daily_loss" not in normalized
+    assert "max_margin_usage" not in normalized
+    assert "portfolio_delta_limit" not in normalized
+    assert "portfolio_gamma_limit" not in normalized
+    assert stats["legacy_top_level_fields_removed"] == 4
 
 
 def test_normalize_blueprint_payload_repairs_mislabeled_four_leg_vertical_spread():

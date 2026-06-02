@@ -180,7 +180,6 @@ class CriticAgent:
         signals_summary: list[dict[str, Any]],
     ) -> str:
         parts: list[str] = []
-        risk_limits = get_settings().trade_service.risk.blueprint_limits
 
         parts.append("## Blueprint to Review\n")
         parts.append(json.dumps(blueprint_json, separators=(",", ":"), ensure_ascii=False))
@@ -194,25 +193,11 @@ class CriticAgent:
         for s in signals_summary:
             parts.append(f"- {s.get('symbol', '?')}: close={s.get('close_price', '?')}")
 
-        parts.append("\n## Global Risk Policy Caps\n")
-        parts.append(
-            json.dumps(
-                {
-                    "max_daily_loss": risk_limits.max_daily_loss,
-                    "max_margin_usage": risk_limits.max_margin_usage,
-                    "portfolio_delta_limit": risk_limits.portfolio_delta_limit,
-                    "portfolio_gamma_limit": risk_limits.portfolio_gamma_limit,
-                },
-                separators=(",", ":"),
-                ensure_ascii=False,
-            )
-        )
-
         parts.append(
             "\n## Task\n"
             "Review the blueprint above. Check for:\n"
             "1. Rule violations (inconsistencies with agent analyses)\n"
-            "2. Risk breaches (portfolio limits, missing stop-losses)\n"
+            "2. Risk breaches (missing stop-losses or invalid plan risk fields)\n"
             "3. Logic errors (wrong legs count, invalid conditions)\n"
             "4. Missing justification in reasoning fields\n\n"
             "Output your verdict as JSON. No markdown fences."
@@ -229,7 +214,7 @@ CHECK PRIORITY (highest → lowest)
 ────────────────────────────────────────────────────────
 1. Hard Exclusion Violations (symbol should have been excluded)
 2. Strategy Structure Errors (legs, strikes, DTE)
-3. Risk Compliance (portfolio limits, stop-losses)
+3. Plan Risk Compliance (stop-losses, max loss fields)
 4. Agent Consistency (specialist signals vs blueprint decisions)
 5. Cross-Validation (new fields: event risk, liquidity, cost, sizing)
 6. Logical Completeness (conditions, reasoning)
@@ -245,11 +230,8 @@ CHECKLIST
 - straddle: 2 (same strike, C+P) | strangle: 2 (diff strikes, C+P)
 
 2. Risk Compliance:
-- portfolio_delta_limit must NOT exceed configured global risk policy cap
-- portfolio_gamma_limit must NOT exceed configured global risk policy cap
-- max_daily_loss must NOT exceed configured global risk policy cap
-- max_margin_usage must NOT exceed configured global risk policy cap
 - Every plan: stop_loss_amount > 0, max_loss_per_trade > 0, stop_loss_amount < max_loss_per_trade, confidence 0-1
+- Ignore legacy top-level portfolio cap fields during review; audit symbol_plans and max_total_positions instead.
 
 3. Agent Consistency:
 - Chain hard_block=true OR Chain liquidity_tier="L5" → symbol must NOT appear in symbol_plans
@@ -259,13 +241,13 @@ CHECKLIST
   Cross-Asset effective_size_modifier (cannot exceed it)
 - If Trend reports trade_allowed=false, that plan must not appear.
 - If Trend reports confidence_cap, blueprint confidence must not exceed it.
-- If Trend reports simple_structures_only=true, avoid complex multi-leg strategies.
+- If Trend reports simple_structures_only=true, keep the plan inside the configured Precision-First Strategy Scope.
 - If Flow or Chain reports trade_allowed=false, that plan must not appear.
 - If Flow or Chain reports confidence_cap, blueprint confidence must not exceed it.
-- If Flow or Chain reports simple_structures_only=true, avoid complex multi-leg strategies.
+- If Flow or Chain reports simple_structures_only=true, keep the plan inside the configured Precision-First Strategy Scope.
 - If Volatility or Spread reports trade_allowed=false, that plan must not appear.
 - If Volatility or Spread reports confidence_cap, blueprint confidence must not exceed it.
-- If Volatility or Spread reports simple_structures_only=true, avoid complex multi-leg strategies.
+- If Volatility or Spread reports simple_structures_only=true, keep the plan inside the configured Precision-First Strategy Scope.
 
 4. Logical Completeness:
 - Every leg: expiry, strike, option_type (call/put), side (buy/sell)
@@ -310,8 +292,8 @@ CHECKLIST
   (The CrossAsset agent already internalizes correlation_significance and data_freshness
   into its own confidence — use it directly rather than referencing raw signal fields.)
 - If Cross-Asset regime_transition=true AND regime_days < 3 → plans should be
-  neutral/defensive, not aggressive directional.
-- If Cross-Asset effective_size_modifier ≤ 0.5 → max_position_size should be ≤ 0.5.
+    neutral/defensive; directional plans become too aggressive once confidence > 0.5 or max_position_size > 0.5.
+- If Cross-Asset effective_size_modifier ≤ 0.5 → max_position_size should be ≤ that effective_size_modifier.
 
 11. Cost Realism Guard:
 - If Spread effective_rr < 1.0 → that setup must not appear in symbol_plans.
@@ -320,8 +302,10 @@ CHECKLIST
   (significant cost drag — reasoning should acknowledge transaction costs).
 
 12. Event Risk Cross-Check:
-- If ≥3 specialist agents flag event_risk_present=true for a symbol, the blueprint should
-  reflect this: tighter stops, reduced max_position_size, or explicit acknowledgment in reasoning.
+- If ≥2 specialist agents flag event_risk_present=true and Cross-Asset is event_driven,
+    non-earnings plays must keep confidence ≤ 0.5.
+- If ≥3 specialist agents flag event_risk_present=true for a symbol, max_position_size should be ≤ 0.8.
+    If confidence still exceeds 0.5, reasoning should explicitly acknowledge the elevated event risk.
 - If event risk is flagged but the plan uses earnings-sensitive strategies (calendar, butterfly)
   without acknowledging gamma crush risk → severity=warning.
 - If earnings_proximity_days ≤ 1, only explicit earnings plays (straddle/strangle) should appear.
@@ -341,7 +325,7 @@ CHECKLIST
 
 15. Confirming Indicators vs Confidence:
 - If both Flow and Chain confirming_indicators_count ≤ 1 for a symbol, but blueprint
-  confidence > 0.6 → severity=warning ("high confidence with minimal confirming indicators").
+    confidence > 0.5 → severity=error ("high confidence with minimal confirming indicators").
 - Single-indicator setups rarely justify high conviction.
 
 ────────────────────────────────────────────────────────

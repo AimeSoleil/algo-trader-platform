@@ -7,8 +7,6 @@ from __future__ import annotations
 
 import json
 
-import pytest
-
 from shared.models.signal import (
     CrossAssetIndicators,
     DataQuality,
@@ -86,21 +84,6 @@ class TestCrossAssetSerialization:
         assert "vix_percentile_60d" in ca
         assert "vix_percentile_52w" not in ca
         assert "vix_correlation_20d" in ca
-
-    def test_legacy_vix_percentile_input_is_migrated_to_60d_field(self):
-        from services.analysis_service.app.llm.prompts import _serialize_one_signal
-
-        raw = _make_signal_features().model_dump(mode="python")
-        raw["cross_asset_indicators"] = {"vix_percentile_52w": 0.37}
-
-        sf = SignalFeatures.model_validate(raw)
-        text = _serialize_one_signal(sf)
-        data = json.loads(text.split("\n", 1)[1])
-
-        ca = data.get("cross_asset", {})
-        assert sf.cross_asset_indicators.vix_percentile_60d == pytest.approx(0.37)
-        assert ca["vix_percentile_60d"] == pytest.approx(0.37)
-        assert "vix_percentile_52w" not in ca
 
     def test_sparse_filtering_removes_zero_values(self):
         from services.analysis_service.app.llm.prompts import _serialize_one_signal
@@ -303,6 +286,7 @@ def test_synthesizer_system_prompt_allows_iron_condor_for_clean_range_bound_setu
 
     assert "prefer single_leg or vertical_spread for directional theses" in _SYNTHESIZER_SYSTEM_PROMPT
     assert "iron_condor is also acceptable" in _SYNTHESIZER_SYSTEM_PROMPT
+    assert "keep that symbol INSIDE the configured" in _SYNTHESIZER_SYSTEM_PROMPT
 
 
 def test_synthesizer_system_prompt_gates_calendar_to_contango_and_earnings_buffer():
@@ -310,6 +294,33 @@ def test_synthesizer_system_prompt_gates_calendar_to_contango_and_earnings_buffe
 
     assert "calendar_spread is also acceptable" in _SYNTHESIZER_SYSTEM_PROMPT
     assert "calendar_spread specifically requires positive term_structure_slope and earnings_proximity_days > 5" in _SYNTHESIZER_SYSTEM_PROMPT
+
+
+def test_synthesizer_and_critic_prompts_align_with_new_deterministic_caps():
+    from services.analysis_service.app.llm.agents.critic_agent import _CRITIC_SYSTEM_PROMPT as critic_prompt
+    from services.analysis_service.app.llm.agents.synthesizer_agent import _SYNTHESIZER_SYSTEM_PROMPT
+
+    assert "reduce max_position_size to 0.8 or lower" in _SYNTHESIZER_SYSTEM_PROMPT
+    assert "confidence would exceed 0.5 or max_position_size would exceed 0.5" in _SYNTHESIZER_SYSTEM_PROMPT
+    assert "max_position_size should be ≤ that effective_size_modifier" in critic_prompt
+    assert "confidence > 0.5 → severity=error" in critic_prompt
+
+
+def test_synthesizer_and_critic_prompts_drop_blueprint_risk_cap_contract():
+    from services.analysis_service.app.llm.agents.critic_agent import _CRITIC_SYSTEM_PROMPT as critic_prompt
+    from services.analysis_service.app.llm.agents.synthesizer_agent import _SYNTHESIZER_SYSTEM_PROMPT
+
+    assert "portfolio_delta_limit must NOT exceed configured global risk policy cap" not in _SYNTHESIZER_SYSTEM_PROMPT
+    assert "portfolio_gamma_limit must NOT exceed configured global risk policy cap" not in _SYNTHESIZER_SYSTEM_PROMPT
+    assert "max_daily_loss must NOT exceed configured global risk policy cap" not in _SYNTHESIZER_SYSTEM_PROMPT
+    assert "max_margin_usage must NOT exceed configured global risk policy cap" not in _SYNTHESIZER_SYSTEM_PROMPT
+    assert "Top-level: max_total_positions, max_daily_loss, max_margin_usage, portfolio_delta_limit, portfolio_gamma_limit" not in _SYNTHESIZER_SYSTEM_PROMPT
+    assert "Top-level: max_total_positions" in _SYNTHESIZER_SYSTEM_PROMPT
+    assert "portfolio_delta_limit must NOT exceed configured global risk policy cap" not in critic_prompt
+    assert "portfolio_gamma_limit must NOT exceed configured global risk policy cap" not in critic_prompt
+    assert "max_daily_loss must NOT exceed configured global risk policy cap" not in critic_prompt
+    assert "max_margin_usage must NOT exceed configured global risk policy cap" not in critic_prompt
+    assert "Ignore legacy top-level portfolio cap fields during review" in critic_prompt
 
 
 def test_volatility_system_prompt_lists_supported_contango_and_backwardation_regimes():

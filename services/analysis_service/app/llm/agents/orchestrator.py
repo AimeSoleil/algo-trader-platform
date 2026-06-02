@@ -207,6 +207,10 @@ class AgentOrchestrator:
         settings = get_settings()
         chunk_size = settings.analysis_service.llm.orchestrator_chunk_size
         max_parallel = settings.analysis_service.llm.orchestrator_max_parallel
+        try:
+            max_output_plans = max(1, int(getattr(settings.analysis_service.llm, "max_output_plans", 10)))
+        except (TypeError, ValueError):
+            max_output_plans = 10
         precision_first_cfg = getattr(settings.analysis_service.llm, "precision_first", None)
         precision_first_enabled = bool(getattr(precision_first_cfg, "enabled", False))
         allowed_strategy_types = list(getattr(precision_first_cfg, "allowed_strategy_types", []) or [])
@@ -516,6 +520,8 @@ class AgentOrchestrator:
             p for p in blueprint.symbol_plans
             if p.underlying.upper() in trade_syms
         ]
+        blueprint.symbol_plans = blueprint.symbol_plans[:max_output_plans]
+        blueprint.max_total_positions = len(blueprint.symbol_plans)
         blueprint.reasoning_context = {
             **(blueprint.reasoning_context or {}),
             "pre_synthesis_filter": pre_synthesis_filter,
@@ -602,6 +608,10 @@ class AgentOrchestrator:
     ) -> LLMTradingBlueprint:
         """Merge multiple chunk blueprints into one final reviewed blueprint."""
         settings = get_settings()
+        try:
+            max_output_plans = max(1, int(getattr(settings.analysis_service.llm, "max_output_plans", 10)))
+        except (TypeError, ValueError):
+            max_output_plans = 10
         precision_first_cfg = getattr(settings.analysis_service.llm, "precision_first", None)
         precision_first_enabled = bool(getattr(precision_first_cfg, "enabled", False))
         allowed_strategy_types = list(getattr(precision_first_cfg, "allowed_strategy_types", []) or [])
@@ -639,10 +649,6 @@ class AgentOrchestrator:
                 "chunk_index": idx,
                 "chunk_id": (bp.reasoning_context or {}).get("analysis_chunk_id"),
                 "max_total_positions": bp.max_total_positions,
-                "max_daily_loss": bp.max_daily_loss,
-                "max_margin_usage": bp.max_margin_usage,
-                "portfolio_delta_limit": bp.portfolio_delta_limit,
-                "portfolio_gamma_limit": bp.portfolio_gamma_limit,
             }
             for idx, bp in enumerate(chunk_blueprints)
         ]
@@ -717,11 +723,11 @@ class AgentOrchestrator:
                     "error": str(exc),
                 }
 
-        selected_plans, final_limits, selection_metadata = self._portfolio_selector.select(
+        selected_plans, selection_metadata = self._portfolio_selector.select(
             candidates=merged_plan_candidates,
             trade_symbols=trade_symbols,
             chunk_limits=chunk_limits,
-            risk_policy=settings.trade_service.risk.blueprint_limits,
+            max_output_plans=max_output_plans,
             current_positions=current_positions,
             previous_execution=previous_execution,
             llm_review=llm_post_merge_review,
@@ -734,11 +740,7 @@ class AgentOrchestrator:
         }
 
         blueprint.symbol_plans = selected_plans
-        blueprint.max_total_positions = final_limits["max_total_positions"]
-        blueprint.max_daily_loss = final_limits["max_daily_loss"]
-        blueprint.max_margin_usage = final_limits["max_margin_usage"]
-        blueprint.portfolio_delta_limit = final_limits["portfolio_delta_limit"]
-        blueprint.portfolio_gamma_limit = final_limits["portfolio_gamma_limit"]
+        blueprint.max_total_positions = len(selected_plans)
 
         all_contexts = [bp.reasoning_context for bp in chunk_blueprints if bp.reasoning_context]
         blueprint.reasoning_context = {
@@ -902,6 +904,7 @@ class AgentOrchestrator:
             usage_tracker=usage_tracker,
             trade_symbols=trade_symbols,
             model=synth_model,
+            apply_output_cap=not is_chunk,
         )
 
         logger.info(
@@ -974,6 +977,7 @@ class AgentOrchestrator:
                 usage_tracker=usage_tracker,
                 trade_symbols=trade_symbols,
                 model=synth_model,
+                apply_output_cap=not is_chunk,
             )
             logger.info(
                 "orchestrator.phase_completed",
@@ -1347,6 +1351,7 @@ class AgentOrchestrator:
             model_provider=provider_name,
             model_version=model_version,
             market_regime="neutral",
+            max_total_positions=0,
             symbol_plans=[],
             reasoning_context=reasoning_context,
         )

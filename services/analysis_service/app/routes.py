@@ -65,13 +65,13 @@ async def get_blueprint_by_id_explicit(
 async def get_blueprint(
     trading_date: str,
     symbols: str | None = Query(None, description="Comma-separated symbols to filter, e.g. AAPL,NVDA"),
-    by_pass_cache: bool = False,
+    bypass_cache: bool = Query(False, description="Skip Redis cache and read directly from DB"),
 ):
     """查询 blueprint；ISO 日期按 trading_date 查询，其余 path 按 blueprint id 查询。"""
     from services.analysis_service.app.queries import query_blueprint, query_blueprint_by_id
 
     if _ISO_DATE_PATH_RE.fullmatch(trading_date):
-        result = await query_blueprint(trading_date, by_pass_cache=by_pass_cache)
+        result = await query_blueprint(trading_date, bypass_cache=bypass_cache)
     else:
         result = await _query_blueprint_by_id_or_404(trading_date)
 

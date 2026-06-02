@@ -103,46 +103,6 @@ async def query_signals(
         limit=limit,
         offset=offset,
     )
-
-
-# ── Backward-compatible single-symbol alias ────────────────
-
-
-@router.get("/signals/{symbol}")
-async def get_signal_features(
-    symbol: str,
-    trading_date: date | None = Query(None, description="Trading date (YYYY-MM-DD). Defaults to today."),
-    bypass_cache: bool = Query(False, alias="by_pass_cache", description="Skip Redis cache"),
-    volatility_regime: str | None = Query(None, description="Filter: high / normal / low"),
-    trend: str | None = Query(None, description="Filter stock trend: bullish / bearish / neutral"),
-    sort_by: str | None = Query(None, description="Sort field name inside features (e.g. close_price, daily_return)"),
-    sort_order: str = Query("asc", description="Sort order: asc / desc"),
-):
-    """查询单个标的的信号特征（向后兼容快捷入口，内部代理到 /signals）。支持更多过滤。"""
-    from services.signal_service.app.queries import query_signals as _query
-    result = await _query(
-        symbols=[symbol],
-        start_date=trading_date,
-        end_date=trading_date,
-        bypass_cache=bypass_cache,
-        volatility_regime=volatility_regime,
-        trend=trend,
-        sort_by=sort_by,
-        sort_order=sort_order,
-        limit=1,
-        offset=0,
-    )
-    data = result.get("data", [])
-    if not data:
-        queried_start = result.get("filters_applied", {}).get("start_date", str(trading_date or today_trading()))
-        return {
-            "error": f"No signals for {symbol} on {queried_start}",
-            "hint": "Use GET /signals?symbols={symbol} (no date) to auto-resolve the latest available date.",
-            "_from_cache": False,
-        }
-    return data[0]
-
-
 @router.post("/signals/compute", status_code=202, response_model=SignalComputeResponse)
 async def trigger_signal_compute(req: SignalComputeRequest):
     """手动触发当日、单日期或日期范围的批量信号计算任务。

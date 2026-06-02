@@ -177,7 +177,6 @@ Manual 任务 `manual_analyze`：
 - Base URL: `http://localhost:8003`
 - Docs: `http://localhost:8003/docs`
 - Health: `GET /api/v1/health`
-- Legacy health redirect: `GET /health`
 
 ### Routes
 
@@ -193,7 +192,7 @@ Manual 任务 `manual_analyze`：
 - `GET /api/v1/analysis/blueprint/{trading_date}`
   - 当 path 为 `YYYY-MM-DD` 时，按交易日查询 blueprint
   - 支持 `symbols=AAPL,NVDA` 过滤 `symbol_plans`
-  - 支持 `by_pass_cache=true`
+  - 支持 `bypass_cache=true`
 
 - `GET /api/v1/analysis/blueprint/reasoning/{blueprint_id}`
   - 查询完整 reasoning context

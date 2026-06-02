@@ -106,6 +106,22 @@ analysis_service:
     assert settings.analysis_service.llm.coarse_ranking.weights.earnings_buffer == 0.10
 
 
+def test_max_output_plans_loads_from_yaml(tmp_path: Path) -> None:
+    yaml_path = tmp_path / "config.yaml"
+    yaml_path.write_text(
+        """
+analysis_service:
+  llm:
+    max_output_plans: 12
+""".strip(),
+        encoding="utf-8",
+    )
+
+    settings = Settings.from_yaml(yaml_path)
+
+    assert settings.analysis_service.llm.max_output_plans == 12
+
+
 def test_watchlist_all_uses_data_signal_universe_plus_benchmarks(tmp_path: Path) -> None:
     yaml_path = tmp_path / "config.yaml"
     yaml_path.write_text(

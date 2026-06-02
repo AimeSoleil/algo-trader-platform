@@ -1,7 +1,7 @@
 """Shared JSON parsing utilities for LLM responses.
 
 All LLM providers (OpenAI, DeepSeek, CloseAI) and all consumers (specialist agents,
-synthesizer, critic, legacy providers) funnel through the two helpers here
+synthesizer, critic, provider adapters) funnel through the two helpers here
 so that JSON extraction, clean-up, and repair logic lives in one place.
 
 Typical LLM quirks handled:

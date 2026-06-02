@@ -15,10 +15,10 @@ from dataclasses import dataclass, field
 from datetime import date as _date_type
 from typing import Any
 
-from services.analysis_service.app.evaluation.greeks_validator import compute_position_greeks
+from shared.config import get_settings
 
 
-_SIMPLE_STRATEGY_TYPES = frozenset({"single_leg", "vertical_spread"})
+_DEFAULT_SIMPLE_STRATEGY_TYPES = frozenset({"single_leg", "vertical_spread"})
 _SPREAD_STRATEGY_TYPES = frozenset({
     "vertical_spread", "iron_condor", "iron_butterfly",
     "butterfly", "calendar_spread", "diagonal_spread",
@@ -83,23 +83,40 @@ def _signal_spot_price(signal: dict[str, Any]) -> float | None:
     return spot if spot > 0 else None
 
 
-def _signal_default_iv(signal: dict[str, Any]) -> float:
-    """Choose a reasonable IV input for deterministic Greeks checks."""
-    option_indicators = signal.get("option_indicators", {})
-    if not isinstance(option_indicators, dict):
-        return 0.30
+def _bollinger_position(signal: dict[str, Any], stock_indicators: dict[str, Any]) -> float | None:
+    spot = _signal_spot_price(signal)
+    if spot is None:
+        return None
 
-    current_iv = option_indicators.get("current_iv")
-    if isinstance(current_iv, (int, float)) and current_iv > 0:
-        return float(current_iv)
+    upper = stock_indicators.get("bollinger_upper")
+    lower = stock_indicators.get("bollinger_lower")
+    if not isinstance(upper, (int, float)) or not isinstance(lower, (int, float)):
+        return None
 
-    atm_iv = option_indicators.get("atm_iv", {})
-    if isinstance(atm_iv, dict):
-        values = [float(value) for value in atm_iv.values() if isinstance(value, (int, float)) and value > 0]
-        if values:
-            return sum(values) / len(values)
+    upper_bound = float(upper)
+    lower_bound = float(lower)
+    if upper_bound <= lower_bound:
+        return None
 
-    return 0.30
+    return (spot - lower_bound) / (upper_bound - lower_bound)
+
+
+def _configured_simple_strategy_types() -> frozenset[str]:
+    """Return the configured precision-first allowlist for simple-structure gates."""
+    try:
+        precision_first = get_settings().analysis_service.llm.precision_first
+    except Exception:
+        return _DEFAULT_SIMPLE_STRATEGY_TYPES
+
+    if not getattr(precision_first, "enabled", False):
+        return _DEFAULT_SIMPLE_STRATEGY_TYPES
+
+    configured = frozenset(
+        str(strategy_type).strip().lower()
+        for strategy_type in getattr(precision_first, "allowed_strategy_types", [])
+        if str(strategy_type).strip()
+    )
+    return configured or _DEFAULT_SIMPLE_STRATEGY_TYPES
 
 
 def check_blueprint(
@@ -127,7 +144,7 @@ def check_blueprint(
         modifiers, etc.).
     account_size:
         Account size in dollars used to compute daily-loss caps.
-        Default 100_000 preserves legacy $2000/$3000 behaviour.
+        Default 100_000 keeps the checker aligned with the configured 2-3% daily-loss bands.
     context:
         Optional dict with market context (e.g. ``trend_strength``).
 
@@ -139,12 +156,6 @@ def check_blueprint(
     result = CheckResult()
     signal_features = signal_features or {}
     agent_outputs = agent_outputs or {}
-    context = context or {}
-
-    soft_limit = account_size * 0.02
-    hard_limit = account_size * 0.03
-    _check_portfolio_risk(blueprint, result, context=context,
-                          soft_limit=soft_limit, hard_limit=hard_limit)
     _check_duplicate_symbols(blueprint, result)
     for plan in blueprint.get("symbol_plans", []):
         _check_plan_risk(plan, result)
@@ -165,6 +176,7 @@ def check_blueprint(
             _check_confidence_quality_gate(plan, sig, result)
             _check_cross_asset_quality_guards(plan, sig, result)
         if agent_outputs:
+            _check_cross_asset_agent_guards(plan, agent_outputs, result)
             _check_trend_trade_gate(plan, agent_outputs, result)
             _check_flow_trade_gate(plan, agent_outputs, result)
             _check_chain_hard_block(plan, agent_outputs, result)
@@ -177,108 +189,8 @@ def check_blueprint(
             _check_event_risk_consensus(plan, agent_outputs, result)
             _check_confirming_indicators(plan, agent_outputs, result)
 
-    if signal_features:
-        _check_computed_portfolio_delta(blueprint, signal_features, result)
-
     result.passed = result.error_count == 0
     return result
-
-
-# ---------------------------------------------------------------------------
-# Portfolio-level checks (risk-management.md)
-# ---------------------------------------------------------------------------
-
-
-def _check_portfolio_risk(
-    bp: dict,
-    result: CheckResult,
-    *,
-    context: dict[str, Any] | None = None,
-    soft_limit: float = 2000.0,
-    hard_limit: float = 3000.0,
-) -> None:
-    """Validate portfolio-level risk constraints."""
-    context = context or {}
-    trend_strength = context.get("trend_strength")
-
-    # --- Delta limit (A3: adaptive based on trend_strength) ---
-    delta_limit = bp.get("portfolio_delta_limit", 0.5)
-    if trend_strength is not None:
-        if trend_strength > 0.7:
-            delta_warn, delta_err = 0.8, 0.9
-        elif trend_strength < 0.3:
-            delta_warn, delta_err = 0.4, 0.7
-        else:
-            delta_warn, delta_err = 0.5, 0.8
-    else:
-        delta_warn, delta_err = 0.5, 0.8
-
-    if delta_limit > delta_err:
-        result.issues.append(RuleIssue(
-            severity="error",
-            category="risk_breach",
-            rule="portfolio_delta_limit",
-            description=f"portfolio_delta_limit={delta_limit} exceeds max {delta_err}",
-        ))
-    elif delta_limit > delta_warn:
-        result.issues.append(RuleIssue(
-            severity="warning",
-            category="risk_breach",
-            rule="portfolio_delta_limit_elevated",
-            description=f"portfolio_delta_limit={delta_limit} > {delta_warn} (needs strong trend justification)",
-        ))
-
-    # --- Gamma limit (A3: only error if short-gamma with short DTE) ---
-    gamma_limit = bp.get("portfolio_gamma_limit", 0.1)
-    if gamma_limit > 0.1:
-        has_short_gamma_short_dte = False
-        today = _date_type.today()
-        for plan in bp.get("symbol_plans", []):
-            for leg in plan.get("legs", []):
-                if leg.get("side") == "sell":
-                    expiry_str = leg.get("expiry", "")
-                    if expiry_str:
-                        try:
-                            dte = (_date_type.fromisoformat(expiry_str) - today).days
-                        except (ValueError, TypeError):
-                            continue
-                        if dte <= 7:
-                            has_short_gamma_short_dte = True
-                            break
-            if has_short_gamma_short_dte:
-                break
-
-        if has_short_gamma_short_dte:
-            result.issues.append(RuleIssue(
-                severity="error",
-                category="risk_breach",
-                rule="portfolio_gamma_limit",
-                description=f"portfolio_gamma_limit={gamma_limit} exceeds max 0.1 (short gamma with DTE≤7)",
-            ))
-        else:
-            result.issues.append(RuleIssue(
-                severity="warning",
-                category="risk_breach",
-                rule="portfolio_gamma_limit",
-                description=f"portfolio_gamma_limit={gamma_limit} exceeds 0.1 — elevated gamma",
-            ))
-
-    # --- Daily loss (A2: account-scaled) ---
-    max_loss = bp.get("max_daily_loss", 0.0)
-    if max_loss > hard_limit:
-        result.issues.append(RuleIssue(
-            severity="error",
-            category="risk_breach",
-            rule="max_daily_loss",
-            description=f"max_daily_loss=${max_loss} exceeds ${hard_limit:.0f} hard limit (3% of account)",
-        ))
-    elif max_loss > soft_limit:
-        result.issues.append(RuleIssue(
-            severity="warning",
-            category="risk_breach",
-            rule="max_daily_loss",
-            description=f"max_daily_loss=${max_loss} exceeds ${soft_limit:.0f} soft limit (2% of account)",
-        ))
 
 
 # ---------------------------------------------------------------------------
@@ -475,14 +387,12 @@ def _check_counter_trend(plan: dict, signal: dict, result: CheckResult) -> None:
     A4: downgrade to warning if 2+ confluence signals present AND stop_loss is set.
     """
     sym = plan.get("underlying", "UNKNOWN")
-    # Prefer SignalFeatures.model_dump schema; keep legacy fallback for tests/tools.
     trend = signal.get("stock_indicators", {})
     if not isinstance(trend, dict):
         trend = {}
-    if not trend:
-        legacy = signal.get("stock_trend", {})
-        if isinstance(legacy, dict):
-            trend = legacy
+    option_indicators = signal.get("option_indicators", {})
+    if not isinstance(option_indicators, dict):
+        option_indicators = {}
     adx = trend.get("adx_14", 0)
     trend_dir = trend.get("trend", trend.get("trend_direction", "neutral"))
     plan_dir = plan.get("direction", "neutral")
@@ -495,14 +405,11 @@ def _check_counter_trend(plan: dict, signal: dict, result: CheckResult) -> None:
         if is_counter:
             # A4: check confluence signals
             confluence_count = 0
-            pcr = signal.get("option_chain", {}).get("pcr_volume", 0)
+            pcr = option_indicators.get("pcr_volume", 0)
             if pcr > 1.5 or pcr < 0.5:
                 confluence_count += 1
-            bb_pos = signal.get("trend", {}).get("bb_position")
+            bb_pos = _bollinger_position(signal, trend)
             if bb_pos is not None and (bb_pos > 0.95 or bb_pos < 0.05):
-                confluence_count += 1
-            vol_ratio = signal.get("flow", {}).get("volume_ratio", 1)
-            if vol_ratio < 0.8:
                 confluence_count += 1
 
             has_stop = bool(plan.get("stop_loss_amount"))
@@ -524,14 +431,9 @@ def _check_counter_trend(plan: dict, signal: dict, result: CheckResult) -> None:
 def _check_liquidity(plan: dict, signal: dict, result: CheckResult) -> None:
     """Bid-ask spread ratio check (A5: strategy-aware thresholds)."""
     sym = plan.get("underlying", "UNKNOWN")
-    # Prefer SignalFeatures.model_dump schema; keep legacy fallback for tests/tools.
     chain = signal.get("option_indicators", {})
     if not isinstance(chain, dict):
         chain = {}
-    if not chain:
-        legacy = signal.get("option_chain", {})
-        if isinstance(legacy, dict):
-            chain = legacy
     bid_ask_ratio = chain.get("bid_ask_spread_ratio", 0)
     strategy = plan.get("strategy_type", "")
 
@@ -1075,73 +977,78 @@ def _check_cross_asset_quality_guards(
         ))
 
 
-def _check_computed_portfolio_delta(
-    bp: dict[str, Any],
-    signal_features: dict[str, dict[str, Any]],
-    result: CheckResult,
+def _check_cross_asset_agent_guards(
+    plan: dict, agent_outputs: dict[str, Any], result: CheckResult,
 ) -> None:
-    """Validate aggregate position delta against the declared portfolio limit."""
-    symbol_plans = bp.get("symbol_plans", [])
-    if not symbol_plans:
+    """Consume downstream Cross-Asset sizing/confidence guards from agent output."""
+    sym = plan.get("underlying", "UNKNOWN")
+    cross_data = _agent_sym(agent_outputs, "cross_asset", sym)
+    if cross_data is None:
         return
 
+    plan_conf = plan.get("confidence", 0)
+    cross_conf = cross_data.get("confidence")
     try:
-        delta_limit = float(bp.get("portfolio_delta_limit", 0.5))
+        cross_conf_val = float(cross_conf) if cross_conf is not None else None
     except (TypeError, ValueError):
-        return
+        cross_conf_val = None
 
-    net_delta = 0.0
-    contributing_symbols: list[str] = []
-    for plan in symbol_plans:
-        sym = plan.get("underlying", "").upper()
-        signal = signal_features.get(sym)
-        if not isinstance(signal, dict):
-            continue
-
-        spot = _signal_spot_price(signal)
-        if spot is None:
-            continue
-
-        legs = plan.get("legs", [])
-        if not isinstance(legs, list) or not legs:
-            continue
-
-        try:
-            max_contracts = max(1, int(plan.get("max_contracts", 1)))
-        except (TypeError, ValueError):
-            max_contracts = 1
-
-        scaled_legs: list[dict[str, Any]] = []
-        for leg in legs:
-            if not isinstance(leg, dict):
-                continue
-            scaled_leg = dict(leg)
-            try:
-                quantity = max(1, int(scaled_leg.get("quantity", 1)))
-            except (TypeError, ValueError):
-                quantity = 1
-            scaled_leg["quantity"] = quantity * max_contracts
-            scaled_legs.append(scaled_leg)
-
-        if not scaled_legs:
-            continue
-
-        greeks = compute_position_greeks(
-            legs=scaled_legs,
-            spot=spot,
-            default_iv=_signal_default_iv(signal),
-        )
-        net_delta += greeks["delta"]
-        contributing_symbols.append(sym)
-
-    if contributing_symbols and abs(net_delta) > delta_limit:
+    if cross_conf_val is not None and cross_conf_val < 0.4 and plan_conf > 0.4:
         result.issues.append(RuleIssue(
             severity="error",
             category="risk_breach",
-            rule="computed_portfolio_delta_limit",
+            symbol=sym,
+            rule="cross_asset_agent_confidence_cap",
             description=(
-                f"Computed net delta={net_delta:.2f} exceeds portfolio_delta_limit={delta_limit:.2f} "
-                f"across {contributing_symbols}"
+                f"Cross-Asset agent confidence={cross_conf_val:.2f} but plan confidence="
+                f"{plan_conf:.2f} exceeds the 0.40 downstream cap"
+            ),
+        ))
+
+    eff_mod = cross_data.get("effective_size_modifier")
+    max_pos = plan.get("max_position_size")
+    try:
+        eff_val = float(eff_mod) if eff_mod is not None else None
+    except (TypeError, ValueError):
+        eff_val = None
+
+    if (
+        eff_val is not None
+        and eff_val <= 0.5
+        and isinstance(max_pos, (int, float))
+        and max_pos > eff_val
+    ):
+        result.issues.append(RuleIssue(
+            severity="error",
+            category="risk_breach",
+            symbol=sym,
+            rule="cross_asset_effective_size_modifier_cap",
+            description=(
+                f"Cross-Asset effective_size_modifier={eff_val:.2f} requires max_position_size "
+                f"<= {eff_val:.2f}, but plan uses {max_pos:.2f}"
+            ),
+        ))
+
+    regime_days = cross_data.get("regime_days")
+    if (
+        cross_data.get("regime_transition") is True
+        and isinstance(regime_days, int)
+        and regime_days < 3
+        and plan.get("direction", "neutral") in {"bullish", "bearish"}
+        and (
+            plan_conf > 0.5
+            or (isinstance(max_pos, (int, float)) and max_pos > 0.5)
+        )
+    ):
+        result.issues.append(RuleIssue(
+            severity="error",
+            category="risk_breach",
+            symbol=sym,
+            rule="cross_asset_regime_transition_directional_aggression",
+            description=(
+                f"Cross-Asset regime_transition=true with regime_days={regime_days} requires neutral or "
+                f"defensive positioning, but plan remains directional with confidence={plan_conf:.2f} "
+                f"and max_position_size={float(max_pos) if isinstance(max_pos, (int, float)) else 1.0:.2f}"
             ),
         ))
 
@@ -1303,6 +1210,7 @@ def _check_agent_trade_gate(
     """Consume structured trade gate fields from specialist agents."""
     sym = plan.get("underlying", "UNKNOWN")
     strategy = plan.get("strategy_type", "")
+    simple_strategy_types = _configured_simple_strategy_types()
     if apply_to_strategies is not None and strategy not in apply_to_strategies:
         return
 
@@ -1344,14 +1252,15 @@ def _check_agent_trade_gate(
             ),
         ))
 
-    if sym_data.get("simple_structures_only") and strategy not in _SIMPLE_STRATEGY_TYPES:
+    if sym_data.get("simple_structures_only") and strategy not in simple_strategy_types:
         result.issues.append(RuleIssue(
             severity="error",
             category="strategy_mismatch",
             symbol=sym,
             rule=f"{agent_name}_simple_structures_only",
             description=(
-                f"{label} agent requires simple structures only, but strategy_type={strategy}.{blocked_clause}"
+                f"{label} agent requires the configured precision-first strategy scope "
+                f"{sorted(simple_strategy_types)}, but strategy_type={strategy}.{blocked_clause}"
             ),
         ))
 
@@ -1490,10 +1399,10 @@ _EVENT_RISK_AGENTS = ("volatility", "flow", "chain", "spread", "cross_asset", "t
 def _check_event_risk_consensus(
     plan: dict, agent_outputs: dict[str, Any], result: CheckResult,
 ) -> None:
-    """Warn when multiple agents flag event risk but plan doesn't mitigate.
+    """Enforce event-risk size and confidence caps from the synthesizer contract.
 
     Agent prompt source:
-    - Synthesizer ER1: ≥3 agents flag event_risk_present → tighten stops, reduce size
+    - Synthesizer ER1: ≥3 agents flag event_risk_present → max_position_size ≤ 0.8
     - Synthesizer ER2: ≥2 agents + CrossAsset="event_driven" → cap confidence ≤ 0.5
     """
     sym = plan.get("underlying", "UNKNOWN")
@@ -1503,10 +1412,47 @@ def _check_event_risk_consensus(
         if sym_data and sym_data.get("event_risk_present"):
             event_count += 1
 
+    cross_data = _agent_sym(agent_outputs, "cross_asset", sym)
+    correlation_regime = ""
+    if cross_data is not None:
+        correlation_regime = str(cross_data.get("correlation_regime") or "").strip().lower()
+
+    plan_conf = plan.get("confidence", 0)
+    strategy = plan.get("strategy_type", "")
+
+    if (
+        event_count >= 2
+        and correlation_regime == "event_driven"
+        and strategy not in {"straddle", "strangle"}
+        and plan_conf > 0.5
+    ):
+        result.issues.append(RuleIssue(
+            severity="error",
+            category="risk_breach",
+            symbol=sym,
+            rule="event_risk_consensus_confidence_cap",
+            description=(
+                f"{event_count} agents flagged event_risk_present and Cross-Asset marked event_driven, "
+                f"but non-earnings strategy {strategy or 'unknown'} uses confidence={plan_conf:.2f} > 0.50"
+            ),
+        ))
+
     if event_count < 3:
         return
 
-    plan_conf = plan.get("confidence", 0)
+    max_pos = plan.get("max_position_size")
+    if not isinstance(max_pos, (int, float)) or max_pos > 0.8:
+        result.issues.append(RuleIssue(
+            severity="error",
+            category="risk_breach",
+            symbol=sym,
+            rule="event_risk_consensus_position_size",
+            description=(
+                f"{event_count} agents flagged event_risk_present but max_position_size="
+                f"{float(max_pos) if isinstance(max_pos, (int, float)) else 1.0:.2f} exceeds the 0.80 cap"
+            ),
+        ))
+
     if plan_conf > 0.5:
         result.issues.append(RuleIssue(
             severity="warning",
@@ -1529,11 +1475,11 @@ def _check_event_risk_consensus(
 def _check_confirming_indicators(
     plan: dict, agent_outputs: dict[str, Any], result: CheckResult,
 ) -> None:
-    """Warn if both Flow and Chain have low confirming indicators but high confidence.
+    """Enforce the directional confidence cap when confirmation is thin.
 
     Agent prompt source:
     - Synthesizer CI1: both Flow + Chain confirming_indicators_count ≤ 1
-      + confidence > 0.6 → cap directional confidence ≤ 0.5
+      → cap directional confidence ≤ 0.5
     """
     sym = plan.get("underlying", "UNKNOWN")
     direction = plan.get("direction", "neutral")
@@ -1552,15 +1498,14 @@ def _check_confirming_indicators(
 
     if flow_ci <= 1 and chain_ci <= 1:
         plan_conf = plan.get("confidence", 0)
-        if plan_conf > 0.6:
+        if plan_conf > 0.5:
             result.issues.append(RuleIssue(
-                severity="warning",
+                severity="error",
                 category="risk_breach",
                 symbol=sym,
                 rule="low_confirming_indicators",
                 description=(
                     f"Flow confirming_indicators={flow_ci}, Chain confirming_indicators="
-                    f"{chain_ci} (both ≤1) but plan confidence={plan_conf:.2f} > 0.60 — "
-                    f"single-indicator risk"
+                    f"{chain_ci} (both ≤1) but plan confidence={plan_conf:.2f} exceeds the 0.50 cap"
                 ),
             ))
