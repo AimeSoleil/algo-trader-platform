@@ -293,6 +293,7 @@ analysis_service:
   daily_task_chunk_size: 5            # Daily pipeline analysis fan-out chunk size (one Celery analysis task per chunk)
   llm:
     provider: "deepseek"                # openai / closeai / deepseek
+    max_output_plans: 10                 # max number of symbol_plans emitted in one blueprint
     openai:
       api_key: ""                       # or env: ANALYSIS_SERVICE__LLM__OPENAI__API_KEY
       model: "claude-opus-4.6"
@@ -349,48 +350,4 @@ analysis_service:
     orchestrator_max_parallel: 2          # 30+ symbols 容错档：降低 chunk 并行，压低 provider 峰值
     specialist_parallel_limit: 2          # max parallel specialists (pipeline-level gate)
     max_retries: 0                        # 30+ symbols 容错档：为瞬时 provider / parse 失败保留一次重试
-
-
-# ── Trade Service — 交易执行与风控 ──────────────────────────
-
-trade_service:
-  execution_interval: 300              # 执行检查间隔（秒）= 5分钟
-  trade_start_time: "09:25"            # 盘前加载蓝图 + 启动执行 tick
-
-  broker:
-    type: "paper"                      # paper | futu
-    paper:
-      initial_cash: 100000.0
-    futu:
-      host: "127.0.0.1"
-      port: 11111
-      trader_id: ""
-      trd_env: "SIMULATE"              # SIMULATE | REAL
-      market: "US"
-
-  risk:
-    stop_loss:
-      enabled: true
-      check_interval_seconds: 60
-      portfolio_loss_limit: 2000.0
-      position_loss_limit: 500.0
-      cooldown_seconds: 60
-    blueprint_limits:
-      max_daily_loss: 2000.0
-      max_margin_usage: 0.5
-      portfolio_delta_limit: 0.5
-      portfolio_gamma_limit: 0.1
-
-  # ── 盘中入场优化器 ──
-  intraday_optimizer:
-    enabled: false                       # 启用后接管 entry 逻辑（tick loop 仅保留 exit/stop-loss）
-    entry_score_threshold: 0.65          # 综合评分 >= 此值触发入场
-    lookback_bars: 6                     # 5m 期权快照回溯条数（30 min）
-    stock_lookback_bars: 6               # 5m K 线回溯条数（与 option lookback 对齐）
-    preferred_windows:                   # 偏好入场时段（ET）
-      - "10:00-11:30"
-      - "14:00-15:30"
-    blackout_minutes_after_open: 15      # 开盘后黑名单（分钟）
-    execution_mode: "auto"               # auto = 自动下单（纸盘）/ notify = 发 Discord 通知
-    notify_min_score: 0.55               # notify 模式下最低通知分数
 

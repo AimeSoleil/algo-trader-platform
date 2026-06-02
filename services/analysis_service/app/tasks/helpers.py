@@ -46,13 +46,11 @@ def _parse_signal_features(raw: object) -> SignalFeatures:
 
 
 async def _fetch_current_positions(td: date) -> dict:
-    """Fetch current positions from Portfolio Service.
+    """Infer current positions from recent completed blueprints.
 
-    Fallback priority:
-      1. Live open positions from ``positions`` table (via portfolio service logic).
-      2. If none found — derive positions from yesterday's *completed* blueprint
-         (i.e. the plans that were entered but not yet exited).
-      3. If neither available — return an empty-positions dict.
+    In the blueprint-only architecture there is no live trading portfolio
+    service. Current exposure is derived from recent completed/active
+    blueprints when they contain entered-but-not-exited plans.
     """
     logger.debug(
         "blueprint.fetch_positions.start",
@@ -60,30 +58,7 @@ async def _fetch_current_positions(td: date) -> dict:
         stage="start",
         trading_date=str(td),
     )
-    # ── Attempt 1: live positions from trade service portfolio module ──
-    try:
-        from services.trade_service.app.portfolio.service import get_positions
-
-        positions_data = await get_positions()
-        logger.debug(
-            "blueprint.fetch_positions.portfolio_result",
-            log_event="positions_fetch",
-            stage="trade_service_portfolio",
-            count=positions_data.get("count", 0),
-        )
-        if positions_data.get("count", 0) > 0:
-            logger.info(
-                "blueprint.positions_from_portfolio",
-                count=positions_data["count"],
-            )
-            return {
-                "source": "trade_service_portfolio",
-                **positions_data,
-            }
-    except Exception as e:
-        logger.warning("blueprint.portfolio_fetch_failed", error=str(e))
-
-    # ── Attempt 2: infer from recent blueprint ──
+    # ── Infer from recent blueprint ──
     # Walk back up to 3 days for weekends / holidays
     for lookback in range(4):
         check_date = td - timedelta(days=1 + lookback)
@@ -139,8 +114,8 @@ async def _fetch_current_positions(td: date) -> dict:
 def _infer_positions_from_blueprint(bp_data: dict) -> dict:
     """Extract entered-but-not-exited plans from a completed blueprint.
 
-    These serve as a proxy for "current positions" when the portfolio
-    service has no live data.
+    These serve as the only source of "current positions" in the
+    blueprint-only architecture.
     """
     positions: list[dict] = []
     for plan in bp_data.get("symbol_plans", []):

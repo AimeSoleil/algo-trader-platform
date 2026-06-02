@@ -38,13 +38,13 @@ def _build_blueprint_response(row) -> dict:
 
 async def query_blueprint(
     trading_date_str: str,
-    by_pass_cache: bool = False,
+    bypass_cache: bool = False,
 ) -> dict:
     """从 Redis / DB 查询蓝图"""
     td = date.fromisoformat(trading_date_str)
 
     # L1: Redis cache
-    if not by_pass_cache:
+    if not bypass_cache:
         cached = await get_cached_blueprint(td)
         if cached:
             return {**cached, "_from_cache": True}

@@ -1,6 +1,6 @@
 # Celery Worker
 
-`celery_worker` 不是一个独立业务服务，而是平台所有后台任务共用的 Celery 运行镜像与入口配置。它承载 data、signal、analysis、trade 相关任务，也负责 Beat 定时调度和 Flower 监控。
+`celery_worker` 不是一个独立业务服务，而是平台所有后台任务共用的 Celery 运行镜像与入口配置。它承载 data、signal、analysis 相关任务，也负责 Beat 定时调度和 Flower 监控。
 
 ## Scope
 
@@ -45,12 +45,6 @@ Celery app 当前 include 了这些任务模块：
 - analysis service
   - blueprint
   - analyze
-- trade service
-  - execution tasks
-  - intraday tasks
-  - portfolio tasks
-  - daily report task
-
 这意味着任意一个 worker 容器都能 import 全部任务模块，但实际消费哪个任务由队列决定。
 
 ## Queues And Routing
@@ -60,9 +54,6 @@ Celery app 当前 include 了这些任务模块：
 - `data_service.tasks.*` → `data`
 - `signal_service.tasks.*` → `signal`
 - `analysis_service.tasks.*` → `analysis`
-- `trade_service.tasks.*` → `data`
-
-注意：trade tasks 目前也走 `data` 队列，不是单独的 `trade` 队列。
 
 ## Worker Roles
 
@@ -79,8 +70,7 @@ Celery app 当前 include 了这些任务模块：
 负责：
 
 - data service 全部后台任务
-- trade service 当前的 Celery tasks
-- 例如 post-market pipeline、aggregation、manual collect、intraday optimizer、daily report
+- 例如 post-market pipeline、aggregation、manual collect
 
 ### `celery-signal`
 
@@ -122,8 +112,6 @@ Beat 调度定义在 `shared/celery_app.py`。
 - `intraday-stock-capture`
 - `intraday-stock-capture-close`
 - `refresh-earnings-cache`
-- `intraday-entry-optimizer`
-- `daily-trading-report`（启用 notifier 时）
 
 这意味着 Celery 层是整个平台时间驱动自动化的核心入口。
 
@@ -152,7 +140,7 @@ Celery 通用运行参数来自：
 
 `services/celery_worker/Dockerfile` 是一个通用多阶段镜像：
 
-- builder stage 安装 shared + data + signal + analysis + trade 所有包
+- builder stage 安装 shared + data + signal + analysis 所有包
 - runtime stage 复制全部代码与已安装依赖
 - 默认 ENTRYPOINT 是 `celery -A shared.celery_app.celery_app`
 

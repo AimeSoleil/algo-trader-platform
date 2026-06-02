@@ -24,7 +24,7 @@ def test_get_blueprint_by_id_uses_non_guid_id(monkeypatch):
             "_from_cache": False,
         }
 
-    async def fake_query_blueprint(trading_date_str: str, by_pass_cache: bool = False) -> dict:
+    async def fake_query_blueprint(trading_date_str: str, bypass_cache: bool = False) -> dict:
         seen["by_date"] = trading_date_str
         return {"error": "wrong route"}
 
@@ -70,7 +70,7 @@ def test_get_blueprint_by_date_still_uses_date_route(monkeypatch):
         seen["by_id"] = requested_id
         return {"error": "wrong route"}
 
-    async def fake_query_blueprint(trading_date_str: str, by_pass_cache: bool = False) -> dict:
+    async def fake_query_blueprint(trading_date_str: str, bypass_cache: bool = False) -> dict:
         seen["by_date"] = trading_date_str
         return {
             "id": "bp-123",

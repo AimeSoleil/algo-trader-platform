@@ -4,27 +4,21 @@
 
 - 盘中持续采集市场数据
 - 盘后统一计算 signals 和次日 blueprint
-- 次日盘中按 blueprint 做机械执行和风控
+- 输出可审计的 analysis blueprint 供研究、复盘或外部执行系统消费
 
 如果只用一句话概括这个项目：
 
-**data 负责采集，signal 负责特征，analysis 负责生成交易计划，trade 负责执行，gateway 负责统一入口，celery 负责把整条链路自动跑起来。**
-
-> [!WARNING]
-> `trade_service` 目前仍处于持续开发阶段，尚未完成完整测试与实盘级验证。
-> 当前 README 中关于 trade 的内容应理解为“当前设计与实现方向”，而不是已经完全稳定、可直接用于真实资金交易的最终状态。
+**data 负责采集，signal 负责特征，analysis 负责生成交易蓝图，celery 负责把整条链路自动跑起来。**
 
 ## 1. 平台总览
 
-平台由 6 个核心模块组成：
+平台当前围绕 4 个核心模块组成：
 
 | 模块 | 目录 | 默认端口 | 角色 |
 | --- | --- | ---: | --- |
 | Data Service | `services/data_service` | 8001 | 市场数据采集、盘后聚合、下游流水线协调 |
 | Signal Service | `services/signal_service` | 8002 | 日级特征与信号计算 |
 | Analysis Service | `services/analysis_service` | 8003 | Agentic LLM blueprint 生成与校验 |
-| Trade Service | `services/trade_service` | 8004 | blueprint 加载、执行、风控、持仓与绩效；当前仍在开发中，未完整测试 |
-| Gateway Service | `services/gateway_service` | 8000 | 统一 API 入口、文档聚合、反向代理 |
 | Celery Worker | `services/celery_worker` | n/a | worker / beat / flower 的通用运行镜像 |
 
 基础设施：
@@ -32,27 +26,25 @@
 | 组件 | 默认端口 | 用途 |
 | --- | ---: | --- |
 | TimescaleDB | 5432 | 时序数据：stock bars、option snapshots、option daily |
-| PostgreSQL | 5433 | 业务数据：signal features、blueprints、positions、orders |
+| PostgreSQL | 5433 | 业务数据：signal features、blueprints、analysis 相关状态 |
 | Redis | 6379 | 缓存、分布式锁、RedBeat、运行态共享 |
 | RabbitMQ | 5672 / 15672 | Celery broker 与管理界面 |
 | Prometheus | 9090 | 指标采集 |
 | Grafana | 3300 | 监控面板 |
 | Flower | 5555 | Celery 任务与 worker 监控 |
 
-## 2. 从 data 到 trade 的完整链路
+## 2. 从 data 到 analysis 的完整链路
 
 ### 架构图
 
 ```mermaid
 flowchart LR
    user[Developer / Operator / API Client]
-   gateway[Gateway Service\n统一入口 /docs /proxy]
 
    subgraph services[Core Services]
       data[Data Service\n采集 盘后聚合 下游触发]
       signal[Signal Service\n特征与信号计算]
       analysis[Analysis Service\nMulti-Agent Blueprint 生成]
-      trade[Trade Service\n执行 风控 持仓 绩效]
    end
 
    subgraph orchestration[Async Orchestration]
@@ -75,16 +67,13 @@ flowchart LR
 
    market[Market Data Providers]
 
-   user --> gateway
-   gateway --> data
-   gateway --> signal
-   gateway --> analysis
-   gateway --> trade
+   user --> data
+   user --> signal
+   user --> analysis
 
    market --> data
    data --> signal
    signal --> analysis
-   analysis --> trade
 
    beat --> redis
    beat --> rabbit
@@ -92,24 +81,18 @@ flowchart LR
    worker --> data
    worker --> signal
    worker --> analysis
-   worker --> trade
    flower --> rabbit
 
    data --> tsdb
    signal --> pg
    analysis --> pg
-   trade --> pg
-   trade --> tsdb
    data --> redis
    signal --> redis
    analysis --> redis
-   trade --> redis
 
-   prom --> gateway
    prom --> data
    prom --> signal
    prom --> analysis
-   prom --> trade
    prom --> flower
    grafana --> prom
 
@@ -120,7 +103,7 @@ flowchart LR
    classDef observability fill:#f3ebff,stroke:#7b61c9,color:#432b7a,stroke-width:1.5px;
 
    class user,market edge;
-   class gateway,data,signal,analysis,trade service;
+   class data,signal,analysis service;
    class rabbit,redis,worker,beat,flower orchestration;
    class tsdb,pg storage;
    class prom,grafana observability;
@@ -132,15 +115,13 @@ flowchart LR
 2. `data_service` 盘后聚合期权日级数据，并采集股票收盘数据
 3. `signal_service` 基于 stock / option / benchmark / VIX 数据计算 `signal_features`
 4. `analysis_service` 基于 `signal_features` 运行多 agent pipeline，生成 `LLMTradingBlueprint`
-5. `trade_service` 加载 blueprint，盘中按规则引擎、风控和 broker 执行
-6. `gateway_service` 为所有服务提供统一入口和统一文档
-7. `celery_worker` 和 `celery-beat` 负责自动调度这整条链路
+5. `celery_worker` 和 `celery-beat` 负责自动调度这整条链路
 
 ### Watchlist 分层
 
 当前 watchlist 分成三层语义：
 
-- `common.watchlist.for_data_signal`：统一的 tradable + analysis universe。data、signal、analysis、trade 都以这组 symbol 为主集合。
+- `common.watchlist.for_data_signal`：统一的 data + signal + analysis universe。上游采集、特征计算和 blueprint 生成都以这组 symbol 为主集合。
 - `common.watchlist.for_trade_benchmark`：analysis 的 benchmark context，并且必须是 `for_data_signal` 的子集；这些 benchmark symbol 仍然可交易。
 - `common.watchlist.for_signal_benchmark`：signal 的 beta / 相关性 benchmark，可以扩展到 `for_data_signal` 之外。
 
@@ -148,8 +129,7 @@ flowchart LR
 
 ### 如何读这张图
 
-- 左到右的主链路是业务链：`data -> signal -> analysis -> trade`
-- `gateway` 不参与业务计算，但它是统一 HTTP 入口
+- 左到右的主链路是业务链：`data -> signal -> analysis`
 - `celery + rabbitmq + redis + beat` 负责自动化调度和异步执行
 - `timescaledb` 放时序行情，`postgresql` 放业务状态，职责拆分清晰
 - `prometheus + grafana + flower` 负责把服务状态和任务状态可视化
@@ -164,22 +144,20 @@ flowchart LR
 
 ## 3. 核心设计思想
 
-### 3.1 盘后智能，盘中机械
+### 3.1 盘后智能，蓝图输出
 
-平台不是在盘中实时用 LLM 做决策。
-
-需要单独说明的是：这个设计方向已经在仓库中落地了主体框架，但 `trade_service` 仍在开发中，因此“盘中机械执行”这一段目前更适合理解为目标架构，而不是已经完全验收完毕的生产能力。
+平台不是在盘中实时用 LLM 做决策，也不再尝试承担实盘执行职责。
 
 当前设计是：
 
 - 盘后用批量数据做相对“重”的分析和 blueprint 生成
-- 盘中只执行规则、评分、风控和下单
+- 输出结构化蓝图，供人工研究、复盘或外部执行系统消费
 
 这样做的原因：
 
 - 降低盘中延迟与不确定性
 - 避免把 LLM 放在最敏感的实时交易路径上
-- 让分析可审计、执行可重复、风控可验证
+- 让分析可审计、可复盘、可验证
 
 ### 3.2 双数据库模型
 
@@ -188,11 +166,9 @@ flowchart LR
 
 这是为了把“高吞吐时序读写”和“业务查询/事务逻辑”分开。
 
-### 3.3 微服务 + 统一网关
+### 3.3 微服务化分析流水线
 
-每个核心域是独立服务，但对使用者来说通常只需要访问 gateway：
-
-- `http://localhost:8000/docs`
+每个核心域仍然保持独立服务，但主交互面已经收敛为 data、signal、analysis 三条服务接口与 Celery 驱动的自动化流水线。
 
 ### 3.4 任务驱动自动化
 
@@ -211,7 +187,6 @@ sequenceDiagram
    participant D as Data Service
    participant S as Signal Service
    participant A as Analysis Service
-   participant T as Trade Service
    participant C as Celery / Beat
 
    Note over C,D: T 日盘中
@@ -219,8 +194,6 @@ sequenceDiagram
       C->>D: 触发盘中采集任务
       M-->>D: 股票 / 期权最新市场数据
       D-->>D: 写入 TimescaleDB / 更新缓存
-      C->>T: 触发 intraday entry optimizer / 风控检查
-      T-->>T: 根据已加载 blueprint 执行盘中规则
    end
 
    Note over C,D: T 日盘后
@@ -231,29 +204,19 @@ sequenceDiagram
    S-->>S: 分块计算 signal_features
    S->>A: 触发 generate_daily_blueprint
    A-->>A: specialists -> synthesizer -> critic -> validation
-   A->>T: 次日 blueprint 可被加载
-
-   Note over T,C: T+1 交易日
-   C->>T: 开盘前 / 开盘时加载当日 blueprint
-   T-->>T: 建立运行时状态与风险边界
-   loop 盘中持续执行
-      C->>T: 定时执行 entry / risk / stoploss / rebalance
-      T-->>M: 通过 broker / market connection 执行交易
-      T-->>T: 更新持仓、订单、绩效与运行状态
-   end
+   A-->>A: 写入 blueprint 供次日研究 / 外部执行
 ```
 
 ### 如何读这张时间线
 
-- 第一段是 T 日盘中，重点是“持续采集”和“已有 blueprint 的机械执行”并行发生
+- 第一段是 T 日盘中，重点是持续采集股票和期权数据
 - 第二段是 T 日盘后，重点是由 data 发起统一 pipeline，并最终产出 T+1 blueprint
-- 第三段是 T+1 交易日，trade service 读取 blueprint 后只做执行、风控和状态更新
+- 产出物是结构化蓝图，而不是平台内建的自动交易动作
 
 ### 盘中
 
 - 每 5 分钟采集期权链快照
 - 每 5 分钟采集股票盘中数据
-- 每 5 分钟运行 intraday entry optimizer
 
 ### 盘后
 
@@ -287,8 +250,6 @@ algo-trader-platform/
 │   ├── data_service/
 │   ├── signal_service/
 │   ├── analysis_service/
-│   ├── trade_service/
-│   ├── gateway_service/
 │   └── celery_worker/
 ├── shared/                  # 共享配置、DB、Celery、模型、工具
 ├── docker-compose.yml       # 基础设施
@@ -303,8 +264,6 @@ algo-trader-platform/
 - [services/data_service/README.md](services/data_service/README.md)
 - [services/signal_service/README.md](services/signal_service/README.md)
 - [services/analysis_service/README.md](services/analysis_service/README.md)
-- [services/trade_service/README.md](services/trade_service/README.md)
-- [services/gateway_service/README.md](services/gateway_service/README.md)
 - [services/celery_worker/README.md](services/celery_worker/README.md)
 - [scripts/README.md](scripts/README.md)
 
@@ -361,16 +320,6 @@ uv run uvicorn services.signal_service.app.main:app --host 0.0.0.0 --port 8002 -
 
 # Terminal 3
 uv run uvicorn services.analysis_service.app.main:app --host 0.0.0.0 --port 8003 --reload
-
-# Terminal 4
-uv run uvicorn services.trade_service.app.main:app --host 0.0.0.0 --port 8004 --reload
-
-# Terminal 5
-export GATEWAY_DATA_URL=http://127.0.0.1:8001
-export GATEWAY_SIGNAL_URL=http://127.0.0.1:8002
-export GATEWAY_ANALYSIS_URL=http://127.0.0.1:8003
-export GATEWAY_TRADE_URL=http://127.0.0.1:8004
-uv run uvicorn services.gateway_service.app.main:app --host 0.0.0.0 --port 8000 --reload
 ```
 
 ### 7.5 启动 Celery workers
@@ -560,14 +509,14 @@ docker compose logs -f
 - `.env` 没设置好
 - 环境变量没有覆盖 `config.yaml`
 
-### blueprint 生成了，但 trade 没动作
+### blueprint 生成了，但结果不符合预期
 
 需要依次检查：
 
-1. blueprint 是否为 `pending` 而不是 `cancelled`
-2. trade service 是否已启动
-3. runtime 是否已加载 blueprint
-4. 盘中调度器和相关 Celery 任务是否在跑
+1. blueprint 是否已成功写入 `llm_trading_blueprint`
+2. 对应的 `signal_features` 是否完整、非过期
+3. analysis worker 与 provider 配置是否可用
+4. post-market pipeline、signal chunk 和 blueprint 任务是否都已跑完
 
 ## 15. 下一步阅读建议
 
@@ -576,7 +525,5 @@ docker compose logs -f
 1. [services/data_service/README.md](services/data_service/README.md)
 2. [services/signal_service/README.md](services/signal_service/README.md)
 3. [services/analysis_service/README.md](services/analysis_service/README.md)
-4. [services/trade_service/README.md](services/trade_service/README.md)
-5. [services/gateway_service/README.md](services/gateway_service/README.md)
-6. [services/celery_worker/README.md](services/celery_worker/README.md)
-7. [scripts/README.md](scripts/README.md)
+4. [services/celery_worker/README.md](services/celery_worker/README.md)
+5. [scripts/README.md](scripts/README.md)

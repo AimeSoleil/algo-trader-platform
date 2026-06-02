@@ -16,7 +16,7 @@ def _build_test_client() -> TestClient:
     return TestClient(app)
 
 
-def test_trigger_signal_compute_single_date_remains_backward_compatible():
+def test_trigger_signal_compute_single_date_dispatches_one_task():
     client = _build_test_client()
 
     with patch(

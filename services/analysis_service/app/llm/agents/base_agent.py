@@ -310,7 +310,7 @@ class AnalysisAgent(ABC):
         provider:
             LLM provider instance injected by the Orchestrator.
             If ``None``, falls back to a default OpenAI provider
-            (for backward compatibility / standalone testing only).
+            (for standalone testing only).
 
         Returns
         -------

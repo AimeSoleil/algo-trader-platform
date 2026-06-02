@@ -323,15 +323,39 @@ def _normalize_adjustment_rules(items: Any) -> tuple[list[dict[str, Any]], int, 
     return normalized_items, dropped, dropped_samples
 
 
+def _plan_sort_metric(
+    plan: dict[str, Any],
+    key: str,
+    *,
+    default: float,
+) -> float:
+    value = plan.get(key, default)
+    normalized_value = _normalize_numeric_value(value)
+    if isinstance(normalized_value, list) or normalized_value is None:
+        return default
+    return float(normalized_value)
+
+
+def _plan_output_sort_key(plan: dict[str, Any], original_index: int) -> tuple[float, float, float, int]:
+    """Rank trimmed single-pass plans by explicit score or combined quality-confidence."""
+    quality_score = _plan_sort_metric(plan, "data_quality_score", default=1.0)
+    confidence = _plan_sort_metric(plan, "confidence", default=0.0)
+    explicit_score = _plan_sort_metric(plan, "score", default=float("-inf"))
+    combined_score = explicit_score if explicit_score != float("-inf") else quality_score * confidence
+    return (
+        combined_score,
+        quality_score,
+        confidence,
+        -original_index,
+    )
+
+
 def _normalize_blueprint_payload(
     data: dict[str, Any],
     signal_date: date | None,
     *,
-    minimum_max_total_positions: int | None = None,
+    max_output_plans: int | None = 10,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
-    settings = get_settings()
-    risk_limits = settings.trade_service.risk.blueprint_limits
-
     normalized_data = dict(data)
     stats = {
         "legs_expiry_normalized": 0,
@@ -339,11 +363,9 @@ def _normalize_blueprint_payload(
         "legs_side_normalized": 0,
         "strategy_type_repaired": 0,
         "strategy_type_repair_samples": [],
-        "max_total_positions_expanded": 0,
-        "max_daily_loss_clamped": 0,
-        "max_margin_usage_clamped": 0,
-        "portfolio_delta_limit_clamped": 0,
-        "portfolio_gamma_limit_clamped": 0,
+        "max_total_positions_normalized": 0,
+        "symbol_plans_trimmed_to_max_output_plans": 0,
+        "legacy_top_level_fields_removed": 0,
         "entry_conditions_dropped": 0,
         "entry_conditions_dropped_samples": [],
         "exit_conditions_dropped": 0,
@@ -351,6 +373,13 @@ def _normalize_blueprint_payload(
         "adjustment_rules_dropped": 0,
         "adjustment_rules_dropped_samples": [],
     }
+
+    normalized_max_output_plans: int | None = None
+    if max_output_plans is not None:
+        try:
+            normalized_max_output_plans = max(1, int(max_output_plans))
+        except (TypeError, ValueError):
+            normalized_max_output_plans = 10
 
     symbol_plans = normalized_data.get("symbol_plans")
     if not isinstance(symbol_plans, list):
@@ -420,67 +449,41 @@ def _normalize_blueprint_payload(
 
         normalized_plans.append(normalized_plan)
 
-    max_total_positions = normalized_data.get("max_total_positions", 5)
+    if normalized_max_output_plans is not None and len(normalized_plans) > normalized_max_output_plans:
+        normalized_plans = [
+            plan
+            for _, plan in sorted(
+                enumerate(normalized_plans),
+                key=lambda item: _plan_output_sort_key(item[1], item[0]),
+                reverse=True,
+            )
+        ]
+        stats["symbol_plans_trimmed_to_max_output_plans"] = len(normalized_plans) - normalized_max_output_plans
+        normalized_plans = normalized_plans[:normalized_max_output_plans]
+
+    raw_max_total_positions = normalized_data.get("max_total_positions")
     try:
-        max_total_positions_int = max(1, int(max_total_positions))
+        requested_max_total_positions = int(raw_max_total_positions)
     except (TypeError, ValueError):
-        max_total_positions_int = 5
+        requested_max_total_positions = None
 
-    required_max_total_positions = len(normalized_plans)
-    if minimum_max_total_positions is not None:
-        try:
-            required_max_total_positions = max(required_max_total_positions, int(minimum_max_total_positions))
-        except (TypeError, ValueError):
-            pass
-    if required_max_total_positions > max_total_positions_int:
-        stats["max_total_positions_expanded"] = required_max_total_positions - max_total_positions_int
-        max_total_positions_int = required_max_total_positions
+    normalized_max_total_positions = len(normalized_plans)
+    if requested_max_total_positions != normalized_max_total_positions:
+        stats["max_total_positions_normalized"] = 1
 
-    def _coerce_risk_limit(
-        key: str,
-        policy_cap: float,
-        *,
-        fallback: float,
-        non_negative: bool = True,
-    ) -> None:
-        raw = normalized_data.get(key, fallback)
-        try:
-            value = float(raw)
-        except (TypeError, ValueError):
-            value = fallback
-
-        if non_negative and value < 0:
-            value = 0.0
-        if value > policy_cap:
-            value = policy_cap
-
-        if value != raw:
-            stats[f"{key}_clamped"] += 1
-        normalized_data[key] = value
-
-    _coerce_risk_limit(
-        "max_daily_loss",
-        risk_limits.max_daily_loss,
-        fallback=risk_limits.max_daily_loss,
-    )
-    _coerce_risk_limit(
-        "max_margin_usage",
-        risk_limits.max_margin_usage,
-        fallback=risk_limits.max_margin_usage,
-    )
-    _coerce_risk_limit(
-        "portfolio_delta_limit",
-        risk_limits.portfolio_delta_limit,
-        fallback=risk_limits.portfolio_delta_limit,
-    )
-    _coerce_risk_limit(
-        "portfolio_gamma_limit",
-        risk_limits.portfolio_gamma_limit,
-        fallback=risk_limits.portfolio_gamma_limit,
-    )
-
-    normalized_data["max_total_positions"] = max_total_positions_int
+    normalized_data["max_total_positions"] = normalized_max_total_positions
     normalized_data["symbol_plans"] = normalized_plans
+
+    for legacy_key in (
+        "max_daily_loss",
+        "max_margin_usage",
+        "portfolio_delta_limit",
+        "portfolio_gamma_limit",
+    ):
+        if legacy_key in normalized_data:
+            stats["legacy_top_level_fields_removed"] += 1
+            normalized_data.pop(legacy_key, None)
+
     return normalized_data, stats
 
 
@@ -505,6 +508,7 @@ class SynthesizerAgent:
         usage_tracker: LLMUsageTracker | None = None,
         trade_symbols: list[str] | None = None,
         model: str | None = None,
+        apply_output_cap: bool = True,
     ) -> LLMTradingBlueprint:
         """Produce a trading blueprint from specialist agent analyses.
 
@@ -535,6 +539,7 @@ class SynthesizerAgent:
             critic_feedback,
             signal_date=signal_date,
             trade_symbols=trade_symbols,
+            apply_output_cap=apply_output_cap,
         )
 
         max_retries = settings.analysis_service.llm.max_retries
@@ -566,11 +571,20 @@ class SynthesizerAgent:
                 if isinstance(sp, dict):
                     data["symbol_plans"] = list(sp.values())
 
-                minimum_max_total_positions = len(trade_symbols) if trade_symbols else len(signals_summary)
+                if apply_output_cap:
+                    try:
+                        max_output_plans: int | None = max(
+                            1,
+                            int(getattr(settings.analysis_service.llm, "max_output_plans", 10)),
+                        )
+                    except (TypeError, ValueError):
+                        max_output_plans = 10
+                else:
+                    max_output_plans = None
                 data, normalize_stats = _normalize_blueprint_payload(
                     data,
                     signal_date,
-                    minimum_max_total_positions=minimum_max_total_positions,
+                    max_output_plans=max_output_plans,
                 )
                 if any(normalize_stats.values()):
                     logger.warning(
@@ -673,13 +687,21 @@ class SynthesizerAgent:
         *,
         signal_date: date | None = None,
         trade_symbols: list[str] | None = None,
+        apply_output_cap: bool = True,
     ) -> str:
         parts: list[str] = []
         target_trading_date = next_trading_day(from_date=signal_date).isoformat()
         settings = get_settings()
-        risk_limits = settings.trade_service.risk.blueprint_limits
         precision_first = settings.analysis_service.llm.precision_first
-        target_max_total_positions = max(1, len(trade_symbols or signals_summary))
+        available_symbol_count = max(1, len(trade_symbols or signals_summary))
+        if apply_output_cap:
+            try:
+                max_output_plans = max(1, int(getattr(settings.analysis_service.llm, "max_output_plans", 10)))
+            except (TypeError, ValueError):
+                max_output_plans = 10
+            target_max_total_positions = min(max_output_plans, available_symbol_count)
+        else:
+            target_max_total_positions = available_symbol_count
 
         # Agent analyses
         parts.append("## Specialist Agent Analyses\n")
@@ -725,7 +747,7 @@ class SynthesizerAgent:
             parts.append(
                 f"\n## Trade Symbols\n\n"
                 f"Generate symbol_plans ONLY for these trade symbols: {sym_list}\n"
-                "Generate plans for as many of them as support a valid setup after applying all hard exclusions and risk rules.\n"
+                f"Generate at most {target_max_total_positions} symbol_plans total after applying all hard exclusions and risk rules.\n"
                 f"Other symbols (benchmarks) are provided as cross-asset context only — "
                 f"do NOT create plans for them."
             )
@@ -738,15 +760,11 @@ class SynthesizerAgent:
                 "If a symbol requires a more complex structure to express the thesis, omit the symbol instead of using a disallowed strategy."
             )
 
-        parts.append("\n## Global Risk Policy Caps\n")
+        parts.append("\n## Blueprint Output Targets\n")
         parts.append(
             json.dumps(
                 {
                     "max_total_positions": target_max_total_positions,
-                    "max_daily_loss": risk_limits.max_daily_loss,
-                    "max_margin_usage": risk_limits.max_margin_usage,
-                    "portfolio_delta_limit": risk_limits.portfolio_delta_limit,
-                    "portfolio_gamma_limit": risk_limits.portfolio_gamma_limit,
                 },
                 separators=(",", ":"),
                 ensure_ascii=False,
@@ -760,6 +778,7 @@ class SynthesizerAgent:
             "Synthesize the specialist analyses into a complete Trading Blueprint JSON.\n"
             "Resolve any conflicts between agents (e.g. Flow rejects Trend's direction).\n"
             "Apply risk-management constraints to all plans.\n"
+            "Keep symbol_plans count at or below max_total_positions.\n"
             "Output ONLY valid JSON conforming to the blueprint schema.\n"
             "No markdown fences, no extra text."
         )
@@ -802,6 +821,8 @@ HE3. Spread effective_rr < 1.0 after costs → exclude that spread setup.
     If effective_rr is null (cannot be estimated) → OMIT that spread setup. Do not guess cost realism.
 HE4. Every symbol_plan must have confidence ≥ 0.3. If you cannot justify 0.3+, omit.
 HE5. It is BETTER to output fewer high-quality plans than many low-confidence ones.
+HE5a. If any relevant specialist sets simple_structures_only=true, keep that symbol INSIDE the configured
+     Precision-First Strategy Scope listed above. Do not invent structures outside the configured allowlist.
 HE6. Precision-first default: prefer single_leg or vertical_spread for directional theses.
     In clearly range-bound, liquid, non-event setups, iron_condor is also acceptable.
     In liquid, non-event setups with positive contango and earnings_proximity_days > 5,
@@ -822,7 +843,8 @@ CR1. Flow rejects direction with confidence ≥ 0.6 → OMIT that directional pl
 CR2. Cross-Asset risk_off_signal=true → reduce size by effective_size_modifier.
 CR3. Trend vs Volatility disagree on direction → prefer HIGHER confidence agent.
      If BOTH confidence < 0.5 → output neutral/SKIP.
-CR4. Chain liquidity_tier in ["L4", "L5"] → simpler strategies only (single_leg, vertical_spread).
+CR4. Chain liquidity_tier in ["L4", "L5"] → stay within the configured Precision-First Strategy Scope;
+    do not escalate to structures outside that configured allowlist.
 CR5. Spread arb_opportunity=true + Chain liquidity_tier in ["L1", "L2"] → prioritize arb.
 CR6. If symbol has conflicting signals with no clear edge → do NOT force a trade. Omit.
 
@@ -840,7 +862,8 @@ AS3. If both Trend and Flow confidence < 0.5 → do NOT enter directional trades
 
 ## Event Risk Consensus
 ER1. If ≥3 specialist agents flag event_risk_present=true → treat as confirmed event risk:
-     tighten stops, reduce max_position_size by 20%, note in reasoning.
+    reduce max_position_size to 0.8 or lower and explicitly acknowledge the event risk in reasoning.
+    If confidence still ends up > 0.5, justify why the setup remains tradable.
 ER2. If ≥2 agents flag event_risk + CrossAsset correlation_regime="event_driven" → cap
      confidence ≤ 0.5 unless explicit earnings play (straddle/strangle).
 
@@ -868,28 +891,24 @@ CQ1. If Cross-Asset agent confidence < 0.4 → cap symbol_plan confidence at ≤
      (The CrossAsset agent already internalizes correlation_significance and data_freshness
      into its own confidence score — use it directly rather than referencing raw signal fields.)
 CQ2. If Cross-Asset regime_transition=true AND regime_days < 3 → prefer neutral/defensive
-     structures; avoid aggressive directional plans.
-CQ3. If Cross-Asset effective_size_modifier ≤ 0.5 → constrain max_position_size accordingly
-     and avoid increasing exposure.
+    structures; do not keep a directional plan if confidence would exceed 0.5 or max_position_size would exceed 0.5.
+CQ3. If Cross-Asset effective_size_modifier ≤ 0.5 → cap max_position_size at that exact
+    effective_size_modifier and avoid increasing exposure above it.
 
 ────────────────────────────────────────────────────────
-RISK MANAGEMENT (Priority 5 — MANDATORY)
+RISK MANAGEMENT (Priority 5 — PLAN-LEVEL ONLY)
 ────────────────────────────────────────────────────────
-- portfolio_delta_limit must NOT exceed configured global risk policy cap
-- portfolio_gamma_limit must NOT exceed configured global risk policy cap
-- max_daily_loss must NOT exceed configured global risk policy cap
-- max_margin_usage must NOT exceed configured global risk policy cap
 - Every plan: stop_loss_amount + max_loss_per_trade required, and stop_loss_amount must be < max_loss_per_trade
-- Risk/trade ≤ 2% equity
-- Correlated positions (same sector | corr > 0.7) → reduce combined 30%
+- Omit symbols you cannot express with defined risk, concrete exits, and a credible max_loss_per_trade.
 
 ────────────────────────────────────────────────────────
 BLUEPRINT JSON SCHEMA
 ────────────────────────────────────────────────────────
 market_regime:str, market_analysis:str(2-3 sentences)
 symbol_plans[]: underlying, strategy_type, direction, legs[{expiry,strike,option_type,side=buy|sell,quantity,price_tolerance(FLOAT decimal fraction; 0.005=0.5%, 0.015=1.5%)}], entry_conditions[{field,operator,value,description}], exit_conditions[], adjustment_rules[{trigger:{field,operator,value,timeframe,description},action:hedge_delta|roll_strike|close_leg|add_leg|close_all,params:{},description}], max_position_size(FLOAT 0.0-1.5, position sizing ratio: 1.0=full, 0.5=half, 0.7=70%), max_contracts(INTEGER ≥1, number of contract sets to trade), stop_loss_amount, take_profit_amount, max_loss_per_trade, reasoning(MUST reference agents), confidence(0-1)
-Top-level: max_total_positions, max_daily_loss, max_margin_usage, portfolio_delta_limit, portfolio_gamma_limit
-max_total_positions MUST be >= symbol_plans length. Set it large enough to cover every emitted plan; do not use 5 as a default if more valid trade symbols remain.
+Top-level: max_total_positions
+max_total_positions should equal symbol_plans length and must not exceed the Blueprint Output Targets cap.
+Legacy portfolio-level risk cap fields are not part of the agent output contract; focus on symbol_plans plus max_total_positions.
 
 ## PRICE TOLERANCE GUIDELINES
 - Every leg SHOULD include `price_tolerance` as a decimal fraction, not a percent string. Example: `0.005` = 0.5%, `0.03` = 3.0%.

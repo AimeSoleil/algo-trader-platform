@@ -1,6 +1,6 @@
 """DeepSeek provider for the agent pipeline.
 
-Uses DeepSeek's OpenAI-compatible Chat Completions API at
+Uses DeepSeek's Chat Completions API endpoint at
 https://api.deepseek.com/chat/completions with official model names such as
 ``deepseek-v4-pro`` and ``deepseek-v4-flash``.
 """

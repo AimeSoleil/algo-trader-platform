@@ -122,6 +122,68 @@ class _LLMProvider:
 
 
 @pytest.mark.asyncio
+async def test_generate_single_pass_disables_synthesizer_output_cap_for_chunk_batches(monkeypatch):
+    settings = SimpleNamespace(
+        analysis_service=SimpleNamespace(
+            llm=SimpleNamespace(
+                agent_models_override=SimpleNamespace(synthesizer=None, critic=None),
+                max_critic_revisions=0,
+            ),
+        ),
+    )
+
+    monkeypatch.setattr(
+        "services.analysis_service.app.llm.agents.orchestrator.get_settings",
+        lambda: settings,
+    )
+
+    orchestrator = AgentOrchestrator(provider=_Provider())
+    captured: dict[str, object] = {}
+
+    async def _fake_run_specialists(self, *args, **kwargs):
+        return {}
+
+    def _fake_compact_for_synthesis(self, agent_outputs, trade_sym_set):
+        return {}
+
+    def _fake_compute_consensus(self, agent_outputs, trade_sym_set):
+        return {}
+
+    def _fake_classify_market_condition(self, agent_outputs):
+        return "neutral"
+
+    async def _fake_synthesize(**kwargs):
+        captured["apply_output_cap"] = kwargs["apply_output_cap"]
+        return _make_blueprint(
+            [("AAPL", 0.75)],
+            max_total_positions=1,
+            analysis_chunk_id="chunk-0",
+        )
+
+    monkeypatch.setattr(AgentOrchestrator, "_run_specialists", _fake_run_specialists)
+    monkeypatch.setattr(AgentOrchestrator, "_compact_for_synthesis", _fake_compact_for_synthesis)
+    monkeypatch.setattr(AgentOrchestrator, "_compute_consensus", _fake_compute_consensus)
+    monkeypatch.setattr(AgentOrchestrator, "_classify_market_condition", _fake_classify_market_condition)
+    monkeypatch.setattr(orchestrator._synthesizer, "synthesize", _fake_synthesize)
+
+    blueprint = await orchestrator._generate_single_pass(
+        signal_features=[_make_sf("AAPL")],
+        current_positions=None,
+        previous_execution=None,
+        provider=_Provider(),
+        signal_date=None,
+        is_chunk=True,
+        analysis_chunk_id="chunk-0",
+        usage_tracker=None,
+        trade_symbols=["AAPL"],
+        market_snapshot=None,
+    )
+
+    assert captured["apply_output_cap"] is False
+    assert [plan.underlying for plan in blueprint.symbol_plans] == ["AAPL"]
+
+
+@pytest.mark.asyncio
 async def test_chunked_merge_keeps_all_ranked_plans(monkeypatch):
     settings = SimpleNamespace(
         analysis_service=SimpleNamespace(
@@ -132,17 +194,15 @@ async def test_chunked_merge_keeps_all_ranked_plans(monkeypatch):
                     enabled=True,
                     allowed_strategy_types=["single_leg", "vertical_spread"],
                 ),
-            )
-        ),
-        trade_service=SimpleNamespace(
+            ),
             risk=SimpleNamespace(
                 blueprint_limits=SimpleNamespace(
-                    max_daily_loss=2_000.0,
-                    max_margin_usage=0.5,
-                    portfolio_delta_limit=0.5,
-                    portfolio_gamma_limit=0.1,
+                    max_daily_loss=9_999.0,
+                    max_margin_usage=0.9,
+                    portfolio_delta_limit=0.95,
+                    portfolio_gamma_limit=0.4,
                 )
-            )
+            ),
         ),
         common=SimpleNamespace(
             watchlist=SimpleNamespace(
@@ -197,17 +257,88 @@ async def test_chunked_merge_keeps_all_ranked_plans(monkeypatch):
     ])
 
     assert blueprint.max_total_positions == 4
-    assert blueprint.max_daily_loss == 2_000.0
-    assert blueprint.max_margin_usage == 0.5
-    assert blueprint.portfolio_delta_limit == 0.5
-    assert blueprint.portfolio_gamma_limit == 0.1
     assert len(blueprint.symbol_plans) == 4
     assert [plan.underlying for plan in blueprint.symbol_plans] == ["MSFT", "NVDA", "AAPL", "TSLA"]
     assert [plan.confidence for plan in blueprint.symbol_plans] == [0.91, 0.87, 0.55, 0.42]
     assert blueprint.reasoning_context is not None
     assert blueprint.reasoning_context["post_merge_phase"]["selected_symbols"] == ["MSFT", "NVDA", "AAPL", "TSLA"]
     assert blueprint.reasoning_context["post_merge_phase"]["selection_mode"] == "dedupe_and_rank_all"
-    assert blueprint.reasoning_context["post_merge_phase"]["final_limit_sources"]["max_daily_loss"]["source"] == "risk_policy"
+    assert blueprint.reasoning_context["post_merge_phase"]["chunk_limit_proposals"] == [
+        {"chunk_index": 0, "chunk_id": "chunk-0", "max_total_positions": 2},
+        {"chunk_index": 1, "chunk_id": "chunk-1", "max_total_positions": 2},
+    ]
+    assert blueprint.reasoning_context["post_merge_phase"]["output_targets"]["max_total_positions"] == {
+        "value": 4,
+        "source": "selected_plan_count",
+        "configured_cap": 10,
+        "chunk_proposals": [2, 2],
+    }
+    assert "final_limit_sources" not in blueprint.reasoning_context["post_merge_phase"]
+
+
+@pytest.mark.asyncio
+async def test_chunked_merge_caps_output_plans_to_configured_max(monkeypatch):
+    settings = SimpleNamespace(
+        analysis_service=SimpleNamespace(
+            llm=SimpleNamespace(
+                orchestrator_chunk_size=2,
+                orchestrator_max_parallel=2,
+                max_output_plans=2,
+                precision_first=SimpleNamespace(
+                    enabled=True,
+                    allowed_strategy_types=["single_leg", "vertical_spread"],
+                ),
+            ),
+        ),
+        common=SimpleNamespace(
+            watchlist=SimpleNamespace(
+                for_data_signal=["AAPL", "MSFT", "NVDA", "TSLA"],
+                for_trade_benchmark=[],
+            )
+        ),
+    )
+
+    monkeypatch.setattr(
+        "services.analysis_service.app.llm.agents.orchestrator.get_settings",
+        lambda: settings,
+    )
+
+    orchestrator = AgentOrchestrator(provider=_Provider())
+
+    async def _fake_generate_single_pass(self, **kwargs):
+        trade_symbols = kwargs["trade_symbols"]
+        if trade_symbols == ["AAPL", "MSFT"]:
+            return _make_blueprint(
+                [("AAPL", 0.91), ("MSFT", 0.88)],
+                max_total_positions=2,
+                analysis_chunk_id="chunk-0",
+            )
+        if trade_symbols == ["NVDA", "TSLA"]:
+            return _make_blueprint(
+                [("NVDA", 0.85), ("TSLA", 0.82)],
+                max_total_positions=2,
+                analysis_chunk_id="chunk-1",
+            )
+        raise AssertionError(f"unexpected trade_symbols: {trade_symbols}")
+
+    monkeypatch.setattr(AgentOrchestrator, "_generate_single_pass", _fake_generate_single_pass)
+
+    blueprint = await orchestrator.generate([
+        _make_sf("AAPL"),
+        _make_sf("MSFT"),
+        _make_sf("NVDA"),
+        _make_sf("TSLA"),
+    ])
+
+    assert blueprint.max_total_positions == 2
+    assert [plan.underlying for plan in blueprint.symbol_plans] == ["AAPL", "MSFT"]
+    assert blueprint.reasoning_context["post_merge_phase"]["filtered_symbols"] == ["NVDA", "TSLA"]
+    assert blueprint.reasoning_context["post_merge_phase"]["output_targets"]["max_total_positions"] == {
+        "value": 2,
+        "source": "configured_max_output_plans",
+        "configured_cap": 2,
+        "chunk_proposals": [2, 2],
+    }
 
 
 @pytest.mark.asyncio
@@ -217,9 +348,7 @@ async def test_chunked_merge_prefers_higher_scoring_duplicate_symbol(monkeypatch
             llm=SimpleNamespace(
                 orchestrator_chunk_size=2,
                 orchestrator_max_parallel=2,
-            )
-        ),
-        trade_service=SimpleNamespace(
+            ),
             risk=SimpleNamespace(
                 blueprint_limits=SimpleNamespace(
                     max_daily_loss=2_000.0,
@@ -227,7 +356,7 @@ async def test_chunked_merge_prefers_higher_scoring_duplicate_symbol(monkeypatch
                     portfolio_delta_limit=0.5,
                     portfolio_gamma_limit=0.1,
                 )
-            )
+            ),
         ),
         common=SimpleNamespace(
             watchlist=SimpleNamespace(
@@ -289,9 +418,7 @@ async def test_chunked_merge_uses_portfolio_impact_heuristic(monkeypatch):
                     enabled=True,
                     allowed_strategy_types=["single_leg", "vertical_spread"],
                 ),
-            )
-        ),
-        trade_service=SimpleNamespace(
+            ),
             risk=SimpleNamespace(
                 blueprint_limits=SimpleNamespace(
                     max_daily_loss=2_000.0,
@@ -299,7 +426,7 @@ async def test_chunked_merge_uses_portfolio_impact_heuristic(monkeypatch):
                     portfolio_delta_limit=0.5,
                     portfolio_gamma_limit=0.1,
                 )
-            )
+            ),
         ),
         common=SimpleNamespace(
             watchlist=SimpleNamespace(
@@ -362,9 +489,7 @@ async def test_chunked_merge_penalizes_same_direction_existing_holding_and_conce
             llm=SimpleNamespace(
                 orchestrator_chunk_size=1,
                 orchestrator_max_parallel=2,
-            )
-        ),
-        trade_service=SimpleNamespace(
+            ),
             risk=SimpleNamespace(
                 blueprint_limits=SimpleNamespace(
                     max_daily_loss=2_000.0,
@@ -372,7 +497,7 @@ async def test_chunked_merge_penalizes_same_direction_existing_holding_and_conce
                     portfolio_delta_limit=0.5,
                     portfolio_gamma_limit=0.1,
                 )
-            )
+            ),
         ),
         common=SimpleNamespace(
             watchlist=SimpleNamespace(
@@ -452,9 +577,7 @@ async def test_chunked_merge_applies_llm_post_merge_ranking(monkeypatch):
                     enabled=True,
                     allowed_strategy_types=["single_leg", "vertical_spread"],
                 ),
-            )
-        ),
-        trade_service=SimpleNamespace(
+            ),
             risk=SimpleNamespace(
                 blueprint_limits=SimpleNamespace(
                     max_daily_loss=2_000.0,
@@ -462,7 +585,7 @@ async def test_chunked_merge_applies_llm_post_merge_ranking(monkeypatch):
                     portfolio_delta_limit=0.5,
                     portfolio_gamma_limit=0.1,
                 )
-            )
+            ),
         ),
         common=SimpleNamespace(
             watchlist=SimpleNamespace(
@@ -478,7 +601,7 @@ async def test_chunked_merge_applies_llm_post_merge_ranking(monkeypatch):
     )
 
     orchestrator = AgentOrchestrator(provider=_LLMProvider())
-    captured_review_inputs: dict[str, object] = {}
+    captured_review_inputs = {}
 
     async def _fake_generate_single_pass(self, **kwargs):
         trade_symbols = kwargs["trade_symbols"]
@@ -537,7 +660,7 @@ async def test_chunked_merge_applies_llm_post_merge_ranking(monkeypatch):
         _make_sf("NVDA"),
     ])
 
-    assert [plan.underlying for plan in blueprint.symbol_plans] == ["AAPL", "MSFT", "NVDA"]
+    assert [plan.underlying for plan in blueprint.symbol_plans] == ["AAPL", "NVDA", "MSFT"]
     llm_review = blueprint.reasoning_context["post_merge_phase"]["llm_review"]
     assert llm_review["status"] == "applied"
     assert llm_review["ranking"] == ["AAPL", "MSFT", "NVDA"]
@@ -545,9 +668,10 @@ async def test_chunked_merge_applies_llm_post_merge_ranking(monkeypatch):
     assert captured_review_inputs["candidate_count"] == 3
     assert captured_review_inputs["selector_metadata"]["ranking_method"] == "precision_first_confidence_quality_portfolio_impact_weighted"
     assert "max_total_positions" not in captured_review_inputs["selector_metadata"]
-    assert captured_review_inputs["selector_metadata"]["deterministic_sort_priority"][0] == "precision_first_score"
+    assert captured_review_inputs["selector_metadata"]["deterministic_sort_priority"][0] == "machine_readable_gate_ok"
     review_candidates = {item["symbol"]: item for item in captured_review_inputs["candidate_summaries"]}
     assert review_candidates["AAPL"]["precision_first_score"] > review_candidates["MSFT"]["precision_first_score"]
+    assert review_candidates["MSFT"]["machine_readable_gate_ok"] is False
     assert review_candidates["MSFT"]["precision_first_breakdown"]["trade_blocked_agents"] == []
     assert review_candidates["MSFT"]["precision_first_breakdown"]["confidence_caps"]["trend"] == 0.86
     assert review_candidates["MSFT"]["precision_first_breakdown"]["blocked_reasons"] == ["counter_trend_setup"]
@@ -566,9 +690,7 @@ async def test_chunked_merge_precision_first_prefers_simple_allowed_strategy(mon
                     enabled=True,
                     allowed_strategy_types=["single_leg", "vertical_spread"],
                 ),
-            )
-        ),
-        trade_service=SimpleNamespace(
+            ),
             risk=SimpleNamespace(
                 blueprint_limits=SimpleNamespace(
                     max_daily_loss=2_000.0,
@@ -576,7 +698,7 @@ async def test_chunked_merge_precision_first_prefers_simple_allowed_strategy(mon
                     portfolio_delta_limit=0.5,
                     portfolio_gamma_limit=0.1,
                 )
-            )
+            ),
         ),
         common=SimpleNamespace(
             watchlist=SimpleNamespace(
@@ -634,9 +756,7 @@ async def test_chunked_merge_precision_first_prefers_fewer_gate_conflicts(monkey
                     enabled=True,
                     allowed_strategy_types=["single_leg", "vertical_spread"],
                 ),
-            )
-        ),
-        trade_service=SimpleNamespace(
+            ),
             risk=SimpleNamespace(
                 blueprint_limits=SimpleNamespace(
                     max_daily_loss=2_000.0,
@@ -644,7 +764,7 @@ async def test_chunked_merge_precision_first_prefers_fewer_gate_conflicts(monkey
                     portfolio_delta_limit=0.5,
                     portfolio_gamma_limit=0.1,
                 )
-            )
+            ),
         ),
         common=SimpleNamespace(
             watchlist=SimpleNamespace(
@@ -711,9 +831,7 @@ async def test_chunked_generate_uses_market_snapshot_instead_of_benchmark_chunk_
             llm=SimpleNamespace(
                 orchestrator_chunk_size=2,
                 orchestrator_max_parallel=2,
-            )
-        ),
-        trade_service=SimpleNamespace(
+            ),
             risk=SimpleNamespace(
                 blueprint_limits=SimpleNamespace(
                     max_daily_loss=2_000.0,
@@ -721,7 +839,7 @@ async def test_chunked_generate_uses_market_snapshot_instead_of_benchmark_chunk_
                     portfolio_delta_limit=0.5,
                     portfolio_gamma_limit=0.1,
                 )
-            )
+            ),
         ),
         common=SimpleNamespace(
             watchlist=SimpleNamespace(
@@ -780,9 +898,7 @@ async def test_chunked_generate_skips_non_validation_batch_failures(monkeypatch)
             llm=SimpleNamespace(
                 orchestrator_chunk_size=1,
                 orchestrator_max_parallel=2,
-            )
-        ),
-        trade_service=SimpleNamespace(
+            ),
             risk=SimpleNamespace(
                 blueprint_limits=SimpleNamespace(
                     max_daily_loss=2_000.0,
@@ -790,7 +906,7 @@ async def test_chunked_generate_skips_non_validation_batch_failures(monkeypatch)
                     portfolio_delta_limit=0.5,
                     portfolio_gamma_limit=0.1,
                 )
-            )
+            ),
         ),
         common=SimpleNamespace(
             watchlist=SimpleNamespace(
@@ -845,9 +961,7 @@ async def test_chunked_generate_validation_error_skips_chunk_and_continues_later
             llm=SimpleNamespace(
                 orchestrator_chunk_size=1,
                 orchestrator_max_parallel=1,
-            )
-        ),
-        trade_service=SimpleNamespace(
+            ),
             risk=SimpleNamespace(
                 blueprint_limits=SimpleNamespace(
                     max_daily_loss=2_000.0,
@@ -855,7 +969,7 @@ async def test_chunked_generate_validation_error_skips_chunk_and_continues_later
                     portfolio_delta_limit=0.5,
                     portfolio_gamma_limit=0.1,
                 )
-            )
+            ),
         ),
         common=SimpleNamespace(
             watchlist=SimpleNamespace(
@@ -914,9 +1028,7 @@ async def test_chunked_merge_validation_error_from_post_merge_review_is_not_swal
                     enabled=True,
                     allowed_strategy_types=["single_leg", "vertical_spread"],
                 ),
-            )
-        ),
-        trade_service=SimpleNamespace(
+            ),
             risk=SimpleNamespace(
                 blueprint_limits=SimpleNamespace(
                     max_daily_loss=2_000.0,
@@ -924,7 +1036,7 @@ async def test_chunked_merge_validation_error_from_post_merge_review_is_not_swal
                     portfolio_delta_limit=0.5,
                     portfolio_gamma_limit=0.1,
                 )
-            )
+            ),
         ),
         common=SimpleNamespace(
             watchlist=SimpleNamespace(
@@ -969,9 +1081,7 @@ async def test_pre_synthesis_filter_keeps_wide_spread_symbols_for_ranking(monkey
             llm=SimpleNamespace(
                 orchestrator_chunk_size=5,
                 orchestrator_max_parallel=2,
-            )
-        ),
-        trade_service=SimpleNamespace(
+            ),
             risk=SimpleNamespace(
                 blueprint_limits=SimpleNamespace(
                     max_daily_loss=2_000.0,
@@ -979,7 +1089,7 @@ async def test_pre_synthesis_filter_keeps_wide_spread_symbols_for_ranking(monkey
                     portfolio_delta_limit=0.5,
                     portfolio_gamma_limit=0.1,
                 )
-            )
+            ),
         ),
         common=SimpleNamespace(
             watchlist=SimpleNamespace(
@@ -1039,9 +1149,7 @@ async def test_pre_synthesis_filter_drops_symbol_with_no_precision_first_strateg
                     enabled=True,
                     allowed_strategy_types=["single_leg", "vertical_spread", "iron_condor", "calendar_spread"],
                 ),
-            )
-        ),
-        trade_service=SimpleNamespace(
+            ),
             risk=SimpleNamespace(
                 blueprint_limits=SimpleNamespace(
                     max_daily_loss=2_000.0,
@@ -1049,7 +1157,7 @@ async def test_pre_synthesis_filter_drops_symbol_with_no_precision_first_strateg
                     portfolio_delta_limit=0.5,
                     portfolio_gamma_limit=0.1,
                 )
-            )
+            ),
         ),
         common=SimpleNamespace(
             watchlist=SimpleNamespace(
@@ -1099,9 +1207,7 @@ async def test_pre_synthesis_coarse_ranking_orders_all_symbols_for_analysis(monk
             llm=SimpleNamespace(
                 orchestrator_chunk_size=10,
                 orchestrator_max_parallel=2,
-            )
-        ),
-        trade_service=SimpleNamespace(
+            ),
             risk=SimpleNamespace(
                 blueprint_limits=SimpleNamespace(
                     max_daily_loss=2_000.0,
@@ -1109,7 +1215,7 @@ async def test_pre_synthesis_coarse_ranking_orders_all_symbols_for_analysis(monk
                     portfolio_delta_limit=0.5,
                     portfolio_gamma_limit=0.1,
                 )
-            )
+            ),
         ),
         common=SimpleNamespace(
             watchlist=SimpleNamespace(
@@ -1177,9 +1283,7 @@ async def test_pre_synthesis_coarse_ranking_uses_configured_weights_for_ordering
                         earnings_buffer=0.1,
                     ),
                 ),
-            )
-        ),
-        trade_service=SimpleNamespace(
+            ),
             risk=SimpleNamespace(
                 blueprint_limits=SimpleNamespace(
                     max_daily_loss=2_000.0,
@@ -1187,7 +1291,7 @@ async def test_pre_synthesis_coarse_ranking_uses_configured_weights_for_ordering
                     portfolio_delta_limit=0.5,
                     portfolio_gamma_limit=0.1,
                 )
-            )
+            ),
         ),
         common=SimpleNamespace(
             watchlist=SimpleNamespace(
@@ -1247,9 +1351,7 @@ async def test_pre_synthesis_filter_returns_valid_empty_blueprint_when_everythin
             llm=SimpleNamespace(
                 orchestrator_chunk_size=5,
                 orchestrator_max_parallel=2,
-            )
-        ),
-        trade_service=SimpleNamespace(
+            ),
             risk=SimpleNamespace(
                 blueprint_limits=SimpleNamespace(
                     max_daily_loss=2_000.0,
@@ -1257,7 +1359,7 @@ async def test_pre_synthesis_filter_returns_valid_empty_blueprint_when_everythin
                     portfolio_delta_limit=0.5,
                     portfolio_gamma_limit=0.1,
                 )
-            )
+            ),
         ),
         common=SimpleNamespace(
             watchlist=SimpleNamespace(

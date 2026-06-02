@@ -51,11 +51,6 @@ def create_celery_app() -> Celery:
             # analysis_service
             "services.analysis_service.app.tasks.blueprint",
             "services.analysis_service.app.tasks.analyze",
-            # trade_service
-            "services.trade_service.app.execution.tasks",
-            "services.trade_service.app.execution.tasks_intraday",
-            "services.trade_service.app.portfolio.tasks",
-            "services.trade_service.app.tasks.daily_report",
         ],
     )
 
@@ -79,7 +74,6 @@ def create_celery_app() -> Celery:
             "data_service.tasks.*": {"queue": "data"},
             "signal_service.tasks.*": {"queue": "signal"},
             "analysis_service.tasks.*": {"queue": "analysis"},
-            "trade_service.tasks.*": {"queue": "data"},
         },
         # ── RedBeat — distributed Beat scheduler ──────────────
         # Replaces the default file-based beat scheduler so that
@@ -99,12 +93,10 @@ def create_celery_app() -> Celery:
     # Timeline (ET, weekdays):
     #   09:30-15:55  intraday-option-capture (every 5 min)
     #   09:30-15:55  intraday-stock-capture  (every 5 min)
-    #   09:31-15:56  intraday-entry-optimizer (every 5 min, +1 min offset)
     #   16:00        intraday-option-capture-close (final tick)
     #   16:00        intraday-stock-capture-close  (final tick)
     #   16:50        refresh-earnings-cache  — update Redis earnings cache
     #   17:00        post-market-pipeline    — options agg + stock capture → downstream
-    #   (16:30)      daily-trading-report    — if notifier enabled
 
     intraday_interval = settings.data_service.worker.schedule.options_capture_every_minutes
 
@@ -203,25 +195,7 @@ def create_celery_app() -> Celery:
             "schedule": crontab(hour=_earn_h, minute=_earn_m, day_of_week="1-5"),
             "options": {"queue": "data"},
         },
-        "intraday-entry-optimizer": {
-            "task": "trade_service.tasks.evaluate_entry_windows",
-            "schedule": crontab(
-                minute="1,6,11,16,21,26,31,36,41,46,51,56",
-                hour=f"{_mkt_start_h}-{_mkt_end_h}",
-                day_of_week="1-5",
-            ),
-            "options": {"queue": "data"},
-        },
     }
-
-    # ── Daily trading report (if notifier enabled) ──
-    if settings.common.notifier.enabled:
-        _rpt_h, _rpt_m = map(int, settings.common.notifier.daily_report_time.split(":"))
-        app.conf.beat_schedule["daily-trading-report"] = {
-            "task": "trade_service.tasks.send_daily_report",
-            "schedule": crontab(hour=_rpt_h, minute=_rpt_m, day_of_week="1-5"),
-            "options": {"queue": "data"},
-        }
 
     return app
 

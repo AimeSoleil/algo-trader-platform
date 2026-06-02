@@ -4,7 +4,6 @@ from __future__ import annotations
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
-from fastapi.responses import RedirectResponse
 
 from shared.config import get_settings
 from shared.metrics import setup_metrics
@@ -75,6 +74,3 @@ async def health_check():
     return checks
 
 
-@app.get("/health", include_in_schema=False)
-async def health_check_legacy_redirect():
-    return RedirectResponse(url="/api/v1/health", status_code=307)

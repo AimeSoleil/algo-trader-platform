@@ -28,6 +28,8 @@ class PositionContext:
 class PortfolioSelector:
     """Deterministic post-merge selector for chunked blueprints."""
 
+    _DEFAULT_SIMPLE_STRUCTURE_TYPES = frozenset({"single_leg", "vertical_spread"})
+
     _STRATEGY_IMPACT_WEIGHTS = {
         "single_leg": 1.0,
         "vertical_spread": 0.75,
@@ -102,13 +104,13 @@ class PortfolioSelector:
         candidates: list[PlanCandidate],
         trade_symbols: set[str],
         chunk_limits: list[dict[str, Any]],
-        risk_policy: Any,
+        max_output_plans: int = 10,
         current_positions: dict | None = None,
         previous_execution: dict | None = None,
         llm_review: dict[str, Any] | None = None,
         precision_first_enabled: bool = False,
         allowed_strategy_types: list[str] | None = None,
-    ) -> tuple[list[SymbolPlan], dict[str, Any], dict[str, Any]]:
+    ) -> tuple[list[SymbolPlan], dict[str, Any]]:
         position_context = self._build_position_context(current_positions)
         llm_rank_positions = self._llm_rank_positions(llm_review)
         llm_selected_symbols = self._llm_selected_symbols(llm_review)
@@ -203,18 +205,15 @@ class PortfolioSelector:
             ),
             reverse=True,
         )
-        selected_candidates = ranked_plans
+        try:
+            normalized_max_output_plans = max(1, int(max_output_plans))
+        except (TypeError, ValueError):
+            normalized_max_output_plans = 10
+
+        selected_candidates = ranked_plans[:normalized_max_output_plans]
         selected_plans = [candidate.plan for candidate in selected_candidates]
         selected_symbols = [plan.underlying.upper() for plan in selected_plans]
-        filtered_symbols: list[str] = []
-
-        final_limits = {
-            "max_total_positions": len(selected_plans),
-            "max_daily_loss": float(risk_policy.max_daily_loss),
-            "max_margin_usage": float(risk_policy.max_margin_usage),
-            "portfolio_delta_limit": float(risk_policy.portfolio_delta_limit),
-            "portfolio_gamma_limit": float(risk_policy.portfolio_gamma_limit),
-        }
+        filtered_symbols = [candidate.plan.underlying.upper() for candidate in ranked_plans[normalized_max_output_plans:]]
 
         metadata = {
             "selector_version": "v3",
@@ -224,6 +223,7 @@ class PortfolioSelector:
             "trade_candidate_count": len(filtered_candidates),
             "deduped_plan_count": len(deduped_candidates),
             "output_plan_count": len(selected_plans),
+            "max_output_plans": normalized_max_output_plans,
             "selected_symbols": selected_symbols,
             "filtered_symbols": filtered_symbols,
             "ranked_symbols": [candidate.plan.underlying.upper() for candidate in ranked_plans],
@@ -249,34 +249,16 @@ class PortfolioSelector:
             "duplicate_symbols": duplicate_symbols,
             "decisions": decisions,
             "chunk_limit_proposals": chunk_limits,
-            "final_limit_sources": {
+            "output_targets": {
                 "max_total_positions": {
                     "value": len(selected_plans),
-                    "source": "selected_plan_count",
-                },
-                "max_daily_loss": {
-                    "value": final_limits["max_daily_loss"],
-                    "source": "risk_policy",
-                    "chunk_proposals": [limit.get("max_daily_loss") for limit in chunk_limits],
-                },
-                "max_margin_usage": {
-                    "value": final_limits["max_margin_usage"],
-                    "source": "risk_policy",
-                    "chunk_proposals": [limit.get("max_margin_usage") for limit in chunk_limits],
-                },
-                "portfolio_delta_limit": {
-                    "value": final_limits["portfolio_delta_limit"],
-                    "source": "risk_policy",
-                    "chunk_proposals": [limit.get("portfolio_delta_limit") for limit in chunk_limits],
-                },
-                "portfolio_gamma_limit": {
-                    "value": final_limits["portfolio_gamma_limit"],
-                    "source": "risk_policy",
-                    "chunk_proposals": [limit.get("portfolio_gamma_limit") for limit in chunk_limits],
+                    "source": "configured_max_output_plans" if filtered_symbols else "selected_plan_count",
+                    "configured_cap": normalized_max_output_plans,
+                    "chunk_proposals": [limit.get("max_total_positions") for limit in chunk_limits],
                 },
             },
         }
-        return selected_plans, final_limits, metadata
+        return selected_plans, metadata
 
     def _review_candidate_summary(
         self,
@@ -296,6 +278,10 @@ class PortfolioSelector:
             "symbol": candidate.plan.underlying.upper(),
             "strategy_type": candidate.plan.strategy_type.value,
             "direction": candidate.plan.direction.value,
+            "machine_readable_gate_ok": self._machine_readable_gate_ok(
+                candidate,
+                allowed_strategy_types=allowed_strategy_types,
+            ),
             "confidence": round(candidate.plan.confidence, 6),
             "data_quality_score": round(candidate.quality_score, 6),
             "max_position_size": candidate.plan.max_position_size,
@@ -350,12 +336,17 @@ class PortfolioSelector:
         llm_priority = 0.0
         if symbol in llm_rank_positions:
             llm_priority = round(1.0 / (llm_rank_positions[symbol] + 1), 6)
+        machine_readable_gate_ok = 1.0 if self._machine_readable_gate_ok(
+            candidate,
+            allowed_strategy_types=allowed_strategy_types,
+        ) else 0.0
         precision_first_score = self._precision_first_score(
             candidate,
             precision_first_enabled=precision_first_enabled,
             allowed_strategy_types=allowed_strategy_types,
         )
         return (
+            machine_readable_gate_ok,
             precision_first_score,
             llm_priority,
             self._candidate_score(
@@ -392,6 +383,7 @@ class PortfolioSelector:
     ) -> dict[str, Any]:
         strategy_type = str(getattr(candidate.plan.strategy_type, "value", candidate.plan.strategy_type)).lower()
         allowed_set = {item.lower() for item in allowed_strategy_types}
+        simple_structure_types = self._configured_simple_structure_types(allowed_strategy_types)
 
         if not precision_first_enabled:
             return {
@@ -416,7 +408,6 @@ class PortfolioSelector:
             strategy_scope_penalty = 0.75
 
         complexity_penalty = self._PRECISION_FIRST_COMPLEXITY_PENALTIES.get(strategy_type, 0.24)
-        simple_structure_types = allowed_set or {"single_leg", "vertical_spread"}
         trade_blocked_agents: list[str] = []
         simple_structure_conflict_agents: list[str] = []
         confidence_caps: dict[str, float] = {}
@@ -484,6 +475,35 @@ class PortfolioSelector:
             "blocked_reasons": unique_blocked_reasons,
             "total_penalty": round(total_penalty, 6),
         }
+
+    def _machine_readable_gate_ok(self, candidate: PlanCandidate, *, allowed_strategy_types: list[str]) -> bool:
+        strategy_type = str(getattr(candidate.plan.strategy_type, "value", candidate.plan.strategy_type)).lower()
+        simple_structure_types = self._configured_simple_structure_types(allowed_strategy_types)
+
+        for agent_name in self._PRECISION_FIRST_AGENT_NAMES:
+            symbol_analysis = self._symbol_agent_analysis(candidate, agent_name)
+            if not symbol_analysis:
+                continue
+
+            if symbol_analysis.get("trade_allowed") is False:
+                return False
+
+            confidence_cap = symbol_analysis.get("confidence_cap")
+            if isinstance(confidence_cap, (int, float)) and candidate.plan.confidence > float(confidence_cap):
+                return False
+
+            if symbol_analysis.get("simple_structures_only") and strategy_type not in simple_structure_types:
+                return False
+
+        return True
+
+    def _configured_simple_structure_types(self, allowed_strategy_types: list[str]) -> frozenset[str]:
+        normalized = frozenset(
+            str(strategy_type).strip().lower()
+            for strategy_type in allowed_strategy_types
+            if str(strategy_type).strip()
+        )
+        return normalized or self._DEFAULT_SIMPLE_STRUCTURE_TYPES
 
     def _symbol_agent_analysis(self, candidate: PlanCandidate, agent_name: str) -> dict[str, Any] | None:
         agent_outputs = candidate.agent_outputs or {}
@@ -666,5 +686,5 @@ class PortfolioSelector:
     def _deterministic_sort_priority(self, precision_first_enabled: bool) -> list[str]:
         priority = ["selector_base_score", "confidence", "data_quality_score", "portfolio_impact_score", "original_order"]
         if precision_first_enabled:
-            return ["precision_first_score", *priority]
+            return ["machine_readable_gate_ok", "precision_first_score", *priority]
         return priority

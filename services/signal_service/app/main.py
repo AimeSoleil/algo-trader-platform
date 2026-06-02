@@ -4,7 +4,6 @@ from __future__ import annotations
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
-from fastapi.responses import RedirectResponse
 from sqlalchemy import text
 
 from shared.config import get_settings
@@ -80,6 +79,3 @@ async def health_check():
     return {"status": status, "service": "signal_service", "dependencies": deps}
 
 
-@app.get("/health", include_in_schema=False)
-async def health_check_legacy_redirect():
-    return RedirectResponse(url="/api/v1/health", status_code=307)

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import datetime
+from types import SimpleNamespace
 
 import pytest
 
@@ -54,38 +55,6 @@ def _blueprint(**overrides) -> dict:
     }
     d.update(overrides)
     return d
-
-
-# ---------------------------------------------------------------------------
-# Portfolio-level risk
-# ---------------------------------------------------------------------------
-
-
-class TestPortfolioRisk:
-    def test_valid_portfolio(self):
-        result = check_blueprint(_blueprint())
-        assert result.passed
-        assert result.error_count == 0
-
-    def test_delta_limit_exceeds_hard_cap(self):
-        result = check_blueprint(_blueprint(portfolio_delta_limit=0.9))
-        assert any(i.rule == "portfolio_delta_limit" for i in result.issues)
-        assert not result.passed
-
-    def test_delta_limit_elevated_warning(self):
-        result = check_blueprint(_blueprint(portfolio_delta_limit=0.6))
-        warnings = [i for i in result.issues if i.rule == "portfolio_delta_limit_elevated"]
-        assert len(warnings) == 1
-        assert warnings[0].severity == "warning"
-        assert result.passed  # warnings don't fail
-
-    def test_gamma_limit_exceeded(self):
-        result = check_blueprint(_blueprint(portfolio_gamma_limit=0.15))
-        assert any(i.rule == "portfolio_gamma_limit" for i in result.issues)
-
-    def test_daily_loss_exceeded(self):
-        result = check_blueprint(_blueprint(max_daily_loss=3100.0))
-        assert any(i.rule == "max_daily_loss" and i.severity == "error" for i in result.issues)
 
 
 # ---------------------------------------------------------------------------
@@ -853,6 +822,43 @@ class TestStructuredAgentTradeGates:
         )
         result = check_blueprint(
             _blueprint(symbol_plans=[_plan(
+                strategy_type="butterfly",
+                direction="neutral",
+                legs=[
+                    _leg(strike=145, option_type="call", side="buy"),
+                    _leg(strike=150, option_type="call", side="sell"),
+                    _leg(strike=155, option_type="call", side="buy"),
+                ],
+            )]),
+            agent_outputs=ao,
+        )
+        assert any(i.rule == "trend_simple_structures_only" for i in result.issues)
+
+    def test_trend_simple_structures_only_allows_configured_precision_first_strategy(self, monkeypatch):
+        settings = SimpleNamespace(
+            analysis_service=SimpleNamespace(
+                llm=SimpleNamespace(
+                    precision_first=SimpleNamespace(
+                        enabled=True,
+                        allowed_strategy_types=["single_leg", "vertical_spread", "iron_condor", "calendar_spread"],
+                    )
+                )
+            )
+        )
+        monkeypatch.setattr(
+            "services.analysis_service.app.evaluation.rule_checker.get_settings",
+            lambda: settings,
+        )
+
+        ao = _agent_outputs(
+            trend=[{
+                "symbol": "AAPL",
+                "simple_structures_only": True,
+                "blocked_reasons": ["divergence_reversal_warning"],
+            }],
+        )
+        result = check_blueprint(
+            _blueprint(symbol_plans=[_plan(
                 strategy_type="iron_condor",
                 direction="neutral",
                 legs=[
@@ -864,7 +870,7 @@ class TestStructuredAgentTradeGates:
             )]),
             agent_outputs=ao,
         )
-        assert any(i.rule == "trend_simple_structures_only" for i in result.issues)
+        assert not any(i.rule == "trend_simple_structures_only" for i in result.issues)
 
     def test_flow_trade_allowed_false_error(self):
         ao = _agent_outputs(
@@ -912,13 +918,12 @@ class TestStructuredAgentTradeGates:
         )
         result = check_blueprint(
             _blueprint(symbol_plans=[_plan(
-                strategy_type="iron_condor",
+                strategy_type="butterfly",
                 direction="neutral",
                 legs=[
-                    _leg(strike=140, option_type="put", side="buy"),
-                    _leg(strike=145, option_type="put", side="sell"),
-                    _leg(strike=155, option_type="call", side="sell"),
-                    _leg(strike=160, option_type="call", side="buy"),
+                    _leg(strike=145, option_type="call", side="buy"),
+                    _leg(strike=150, option_type="call", side="sell"),
+                    _leg(strike=155, option_type="call", side="buy"),
                 ],
             )]),
             agent_outputs=ao,
@@ -946,13 +951,12 @@ class TestStructuredAgentTradeGates:
         )
         result = check_blueprint(
             _blueprint(symbol_plans=[_plan(
-                strategy_type="iron_condor",
+                strategy_type="butterfly",
                 direction="neutral",
                 legs=[
-                    _leg(strike=140, option_type="put", side="buy"),
-                    _leg(strike=145, option_type="put", side="sell"),
-                    _leg(strike=155, option_type="call", side="sell"),
-                    _leg(strike=160, option_type="call", side="buy"),
+                    _leg(strike=145, option_type="call", side="buy"),
+                    _leg(strike=150, option_type="call", side="sell"),
+                    _leg(strike=155, option_type="call", side="buy"),
                 ],
             )]),
             agent_outputs=ao,
@@ -986,17 +990,17 @@ class TestStructuredAgentTradeGates:
 
 
 class TestEventRiskConsensus:
-    def test_three_agents_flag_event_risk_warning(self):
+    def test_three_agents_require_reduced_position_size(self):
         ao = _agent_outputs(
             volatility=[{"symbol": "AAPL", "event_risk_present": True}],
             flow=[{"symbol": "AAPL", "event_risk_present": True}],
             chain=[{"symbol": "AAPL", "event_risk_present": True}],
         )
         result = check_blueprint(
-            _blueprint(symbol_plans=[_plan(confidence=0.7)]),
+            _blueprint(symbol_plans=[_plan(confidence=0.7, max_position_size=1.0)]),
             agent_outputs=ao,
         )
-        assert any(i.rule == "event_risk_consensus" and i.severity == "warning" for i in result.issues)
+        assert any(i.rule == "event_risk_consensus_position_size" and i.severity == "error" for i in result.issues)
 
     def test_two_agents_flag_no_warning(self):
         ao = _agent_outputs(
@@ -1008,32 +1012,75 @@ class TestEventRiskConsensus:
             _blueprint(symbol_plans=[_plan(confidence=0.7)]),
             agent_outputs=ao,
         )
-        assert not any(i.rule == "event_risk_consensus" for i in result.issues)
+        assert not any(i.rule.startswith("event_risk_consensus") for i in result.issues)
 
-    def test_three_agents_low_confidence_ok(self):
+    def test_three_agents_with_reduced_size_pass_event_risk_check(self):
         ao = _agent_outputs(
             volatility=[{"symbol": "AAPL", "event_risk_present": True}],
             flow=[{"symbol": "AAPL", "event_risk_present": True}],
             chain=[{"symbol": "AAPL", "event_risk_present": True}],
         )
         result = check_blueprint(
-            _blueprint(symbol_plans=[_plan(confidence=0.4)]),
+            _blueprint(symbol_plans=[_plan(confidence=0.4, max_position_size=0.8)]),
             agent_outputs=ao,
         )
-        assert not any(i.rule == "event_risk_consensus" for i in result.issues)
+        assert not any(i.rule.startswith("event_risk_consensus") for i in result.issues)
+
+    def test_two_agents_plus_event_driven_caps_confidence_for_non_earnings_play(self):
+        ao = _agent_outputs(
+            volatility=[{"symbol": "AAPL", "event_risk_present": True}],
+            flow=[{"symbol": "AAPL", "event_risk_present": True}],
+            cross_asset=[{"symbol": "AAPL", "correlation_regime": "event_driven"}],
+        )
+        result = check_blueprint(
+            _blueprint(symbol_plans=[_plan(confidence=0.6, strategy_type="single_leg")]),
+            agent_outputs=ao,
+        )
+        assert any(i.rule == "event_risk_consensus_confidence_cap" and i.severity == "error" for i in result.issues)
+
+    def test_two_agents_plus_event_driven_allows_explicit_earnings_play(self):
+        ao = _agent_outputs(
+            volatility=[{"symbol": "AAPL", "event_risk_present": True}],
+            flow=[{"symbol": "AAPL", "event_risk_present": True}],
+            cross_asset=[{"symbol": "AAPL", "correlation_regime": "event_driven"}],
+        )
+        result = check_blueprint(
+            _blueprint(symbol_plans=[_plan(
+                strategy_type="straddle",
+                direction="neutral",
+                confidence=0.7,
+                legs=[
+                    _leg(strike=150, option_type="call", side="buy"),
+                    _leg(strike=150, option_type="put", side="buy"),
+                ],
+            )]),
+            agent_outputs=ao,
+        )
+        assert not any(i.rule == "event_risk_consensus_confidence_cap" for i in result.issues)
 
 
 class TestConfirmingIndicators:
-    def test_low_indicators_high_confidence_warning(self):
+    def test_low_indicators_above_half_confidence_error(self):
         ao = _agent_outputs(
             flow=[{"symbol": "AAPL", "confirming_indicators_count": 1}],
             chain=[{"symbol": "AAPL", "confirming_indicators_count": 0}],
         )
         result = check_blueprint(
-            _blueprint(symbol_plans=[_plan(confidence=0.8, direction="bullish")]),
+            _blueprint(symbol_plans=[_plan(confidence=0.55, direction="bullish")]),
             agent_outputs=ao,
         )
-        assert any(i.rule == "low_confirming_indicators" and i.severity == "warning" for i in result.issues)
+        assert any(i.rule == "low_confirming_indicators" and i.severity == "error" for i in result.issues)
+
+    def test_low_indicators_at_half_confidence_ok(self):
+        ao = _agent_outputs(
+            flow=[{"symbol": "AAPL", "confirming_indicators_count": 1}],
+            chain=[{"symbol": "AAPL", "confirming_indicators_count": 0}],
+        )
+        result = check_blueprint(
+            _blueprint(symbol_plans=[_plan(confidence=0.5, direction="bullish")]),
+            agent_outputs=ao,
+        )
+        assert not any(i.rule == "low_confirming_indicators" for i in result.issues)
 
     def test_enough_indicators_no_warning(self):
         ao = _agent_outputs(
@@ -1058,7 +1105,7 @@ class TestConfirmingIndicators:
         assert not any(i.rule == "low_confirming_indicators" for i in result.issues)
 
 
-class TestBackwardCompat:
+class TestBaselineBehavior:
     def test_no_agent_outputs_still_works(self):
         """check_blueprint without agent_outputs should work as before."""
         result = check_blueprint(_blueprint())
@@ -1130,36 +1177,58 @@ class TestCrossAssetQualityGuards:
         assert any(i.rule == "cross_asset_low_quality_position_size" for i in result.issues)
 
 
-class TestComputedPortfolioDelta:
-    def test_computed_portfolio_delta_exceeds_limit_error(self):
-        signals = {
-            "AAPL": {
-                "close_price": 100.0,
-                "stock_indicators": {},
-                "option_indicators": {"current_iv": 0.3},
-            },
-            "MSFT": {
-                "close_price": 100.0,
-                "stock_indicators": {},
-                "option_indicators": {"current_iv": 0.3},
-            },
-        }
-        result = check_blueprint(
-            _blueprint(
-                portfolio_delta_limit=0.5,
-                symbol_plans=[
-                    _plan(
-                        underlying="AAPL",
-                        strategy_type="single_leg",
-                        legs=[_leg(strike=100, option_type="call", side="buy")],
-                    ),
-                    _plan(
-                        underlying="MSFT",
-                        strategy_type="single_leg",
-                        legs=[_leg(strike=100, option_type="call", side="buy")],
-                    ),
-                ],
-            ),
-            signal_features=signals,
+class TestCrossAssetAgentGuards:
+    def test_cross_asset_agent_confidence_caps_plan_confidence(self):
+        ao = _agent_outputs(
+            cross_asset=[{"symbol": "AAPL", "confidence": 0.35}],
         )
-        assert any(i.rule == "computed_portfolio_delta_limit" and i.severity == "error" for i in result.issues)
+        result = check_blueprint(
+            _blueprint(symbol_plans=[_plan(confidence=0.55)]),
+            agent_outputs=ao,
+        )
+        assert any(i.rule == "cross_asset_agent_confidence_cap" and i.severity == "error" for i in result.issues)
+
+    def test_cross_asset_effective_size_modifier_caps_position_size(self):
+        ao = _agent_outputs(
+            cross_asset=[{"symbol": "AAPL", "effective_size_modifier": 0.4, "master_override": False}],
+        )
+        result = check_blueprint(
+            _blueprint(symbol_plans=[_plan(max_position_size=0.6)]),
+            agent_outputs=ao,
+        )
+        assert any(i.rule == "cross_asset_effective_size_modifier_cap" and i.severity == "error" for i in result.issues)
+
+    def test_cross_asset_regime_transition_blocks_aggressive_directional_plan(self):
+        ao = _agent_outputs(
+            cross_asset=[{"symbol": "AAPL", "regime_transition": True, "regime_days": 1}],
+        )
+        result = check_blueprint(
+            _blueprint(symbol_plans=[_plan(direction="bullish", confidence=0.7, max_position_size=0.8)]),
+            agent_outputs=ao,
+        )
+        assert any(
+            i.rule == "cross_asset_regime_transition_directional_aggression" and i.severity == "error"
+            for i in result.issues
+        )
+
+
+def test_portfolio_limit_fields_do_not_trigger_deterministic_failure():
+    result = check_blueprint(
+        _blueprint(
+            portfolio_delta_limit=0.95,
+            portfolio_gamma_limit=0.3,
+            max_daily_loss=10_000.0,
+        )
+    )
+
+    assert result.passed
+    assert not any(
+        issue.rule in {
+            "portfolio_delta_limit",
+            "portfolio_delta_limit_elevated",
+            "portfolio_gamma_limit",
+            "max_daily_loss",
+            "computed_portfolio_delta_limit",
+        }
+        for issue in result.issues
+    )

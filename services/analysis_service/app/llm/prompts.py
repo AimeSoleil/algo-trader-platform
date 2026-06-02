@@ -330,9 +330,7 @@ def _build_positions_section(current_positions: dict | None) -> str:
     lines: list[str] = ["## Current Portfolio"]
 
     # Source note
-    if source == "trade_service_portfolio":
-        lines.append(f"\n*Source: live portfolio — {count} open position(s).*")
-    elif source == "previous_blueprint":
+    if source == "previous_blueprint":
         bp_date = current_positions.get("blueprint_date", "?")
         lines.append(
             f"\n*Source: inferred from {bp_date} blueprint — {count} position(s) "

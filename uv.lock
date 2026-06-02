@@ -17,9 +17,7 @@ members = [
     "analysis-service",
     "celery-worker",
     "data-service",
-    "gateway-service",
     "signal-service",
-    "trade-service",
 ]
 
 [[package]]
@@ -898,25 +896,6 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/90/b2/2a3d1374b7780999d3184e171e25439a8358c47b481f68be883c14086b4c/frozendict-2.4.7.tar.gz", hash = "sha256:e478fb2a1391a56c8a6e10cc97c4a9002b410ecd1ac28c18d780661762e271bd", size = 317082, upload-time = "2025-11-11T22:40:14.251Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/38/74/f94141b38a51a553efef7f510fc213894161ae49b88bffd037f8d2a7cb2f/frozendict-2.4.7-py3-none-any.whl", hash = "sha256:972af65924ea25cf5b4d9326d549e69a9a4918d8a76a9d3a7cd174d98b237550", size = 16264, upload-time = "2025-11-11T22:40:12.836Z" },
-]
-
-[[package]]
-name = "gateway-service"
-version = "0.1.0"
-source = { virtual = "services/gateway_service" }
-dependencies = [
-    { name = "algo-trader-shared" },
-    { name = "fastapi" },
-    { name = "httpx" },
-    { name = "uvicorn", extra = ["standard"] },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "algo-trader-shared", editable = "shared" },
-    { name = "fastapi" },
-    { name = "httpx", specifier = ">=0.27" },
-    { name = "uvicorn", extras = ["standard"] },
 ]
 
 [[package]]
@@ -2603,29 +2582,6 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/09/a9/6ba95a270c6f1fbcd8dac228323f2777d886cb206987444e4bce66338dd4/tqdm-4.67.3.tar.gz", hash = "sha256:7d825f03f89244ef73f1d4ce193cb1774a8179fd96f31d7e1dcde62092b960bb", size = 169598, upload-time = "2026-02-03T17:35:53.048Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/16/e1/3079a9ff9b8e11b846c6ac5c8b5bfb7ff225eee721825310c91b3b50304f/tqdm-4.67.3-py3-none-any.whl", hash = "sha256:ee1e4c0e59148062281c49d80b25b67771a127c85fc9676d3be5f243206826bf", size = 78374, upload-time = "2026-02-03T17:35:50.982Z" },
-]
-
-[[package]]
-name = "trade-service"
-version = "0.1.0"
-source = { virtual = "services/trade_service" }
-dependencies = [
-    { name = "algo-trader-shared" },
-    { name = "apscheduler" },
-    { name = "celery", extra = ["redis"] },
-    { name = "fastapi" },
-    { name = "redis", extra = ["hiredis"] },
-    { name = "uvicorn", extra = ["standard"] },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "algo-trader-shared", editable = "shared" },
-    { name = "apscheduler", specifier = ">=3.10" },
-    { name = "celery", extras = ["redis"] },
-    { name = "fastapi" },
-    { name = "redis", extras = ["hiredis"] },
-    { name = "uvicorn", extras = ["standard"] },
 ]
 
 [[package]]
