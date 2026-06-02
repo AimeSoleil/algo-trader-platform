@@ -19,6 +19,7 @@ dependencies = [
     "structlog",
     "python-dotenv",
     "pyyaml",
+    "pandas-market-calendars>=4.4",
     "celery-redbeat>=2.3.3",
 ]
 

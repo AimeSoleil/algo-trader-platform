@@ -49,6 +49,7 @@ Signal Service 的主要流程是：
 特点：
 
 - 支持指定 `trading_date`
+- 支持指定 `start_date` / `end_date`
 - 支持指定 `symbols`
 - 使用并发 semaphore 控制单标的处理并发
 - 预加载 benchmark 和 VIX，避免重复查询
@@ -156,6 +157,16 @@ curl -X POST http://localhost:8002/api/v1/signals/compute \
   -H "Content-Type: application/json" \
   -d '{"trading_date": "2026-03-12"}'
 ```
+
+指定日期范围触发计算：
+
+```bash
+curl -X POST http://localhost:8002/api/v1/signals/compute \
+  -H "Content-Type: application/json" \
+  -d '{"start_date": "2026-03-10", "end_date": "2026-03-12"}'
+```
+
+日期范围请求会按 NYSE 市场日展开，只为范围内真实开市日分别返回一个 `task_id`，汇总在 `task_ids` 中；单日期请求仍会返回兼容的 `task_id`。
 
 ## Workers And Dependencies
 

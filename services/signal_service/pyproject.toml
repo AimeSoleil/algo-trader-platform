@@ -8,6 +8,7 @@ dependencies = [
     "fastapi",
     "uvicorn[standard]",
     "pandas>=2.0",
+    "pandas-market-calendars>=4.4",
     "numpy",
     "scipy",
     "celery[redis]",
