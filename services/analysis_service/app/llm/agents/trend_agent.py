@@ -9,6 +9,7 @@ from typing import Any
 
 from services.analysis_service.app.llm.agents.base_agent import AnalysisAgent
 from services.analysis_service.app.llm.agents.models import TrendAnalysis
+from services.analysis_service.app.trade_gate_semantics import format_trade_gate_taxonomy_prompt_text
 
 
 class TrendAgent(AnalysisAgent):
@@ -55,6 +56,8 @@ class TrendAgent(AnalysisAgent):
             results.append(extracted)
         return results
 
+_TRADE_GATE_TAXONOMY_PROMPT = format_trade_gate_taxonomy_prompt_text()
+
 
 _SYSTEM_PROMPT = """\
 Role: US Aggressive Trend & Options Strategist | Mandate: Capture Early Trend Signals (Balanced False Positive Tolerance)
@@ -77,6 +80,7 @@ VIX Thresholds: Normal<28, Elevated=28-35, High=35-45, Extreme>45 (relaxed)
 - Do NOT compute Z-scores, ADX deltas, or divergence flags from scratch; use the precomputed fields exactly as provided
 - Do NOT invent GEX, PCR, dealer positioning or any other metrics not explicitly provided
 - If iv_rank is null, keep it null and skip IV-rank-specific squeeze or penalty rules; do NOT replace it with 0
+""" + "\n\n" + _TRADE_GATE_TAXONOMY_PROMPT + """
 
 ## Indicator Rules (Pre-Computed Input Only)
 1. ADX(14): derive `adx_zone` from stock_trend.adx_z_score only: extreme if >1.8, trending if 0.8-1.8, transition if -0.8 to 0.8, range_bound if <-0.8. Trend easing = stock_trend.adx_change_2d <= -2.
@@ -104,7 +108,7 @@ H2. earnings_proximity_days=2-3: confidence_cap=0.4, simple_structures_only=true
 H3. cross_asset.vix_level>35: confidence -=0.15; simple_structures_only=true; only single_leg/vertical allowed; no squeeze strategies
 H4. cross_asset.vix_level>45: regime=neutral, trade_allowed=false, confidence=0.2, blocked_reasons=["vix_extreme"]
 H5. price.volume < stock_flow.liquidity_threshold: confidence -=0.15 (floor=0.15), false_positive_risk="high"
-H6. stock_trend.adx_z_score > 1.5 AND counter-trend or reversal thesis: trade_allowed=false, confidence=0.2, blocked_reasons=["counter_trend_strong_adx"]
+H6. stock_trend.adx_z_score > 1.5 AND counter-trend or reversal thesis: trade_allowed=true, confidence_cap=0.25, simple_structures_only=true, false_positive_risk="high", blocked_reasons=["counter_trend_strong_adx"]
 
 ## Regime Confirmation Rules (CORE CHANGE: ≥1 Indicator Required)
 1. Trending Up: stock_trend.adx_z_score > 0.8 AND at least 1 extra bullish confirmation from {Keltner upper breakout, Ichimoku bullish setup, LinReg>0}
@@ -149,7 +153,7 @@ Neutral: No strategies
 ## Output Schema (Aligned with Synthesizer & Critic)
 {"symbols":[{"symbol":"TICKER","regime":"trending_up|trending_down|range_bound|squeeze|reversal_confirmed|neutral","trend_direction":"bullish|bearish|neutral","trend_strength":0.0-1.0,"adx_zone":"trending|range_bound|transition|extreme","adx_z_score":0.0,"vix_level":0.0,"iv_rank":0.0-100.0|null,"earnings_proximity_days":null|number,"divergence_detected":false,"divergence_type":"rsi_macd_bullish|rsi_macd_bearish|null","false_positive_risk":"low|medium|high","signal_type":"single_indicator|multi_indicator","trade_allowed":true|false,"confidence_cap":null|number,"simple_structures_only":true|false,"blocked_reasons":[],"strategies":[{"strategy_type":"","direction":"","entry_conditions":"","exit_conditions":"","constraints":[],"confidence":0.0-0.85}],"reasoning":"","confidence":0.0-0.85}],"market_trend_summary":"Bullish/Bearish/Neutral | X% trending up, Y% trending down, Z% range-bound"}
 
-Output pure JSON only. Populate blocked_reasons explicitly for all trade vetoes.
+Output pure JSON only. Populate blocked_reasons explicitly using the canonical hard/soft trade gate tokens above.
 Always mark single-indicator signals in signal_type field and reasoning.
 iv_rank may be null; never replace with 0.
 """

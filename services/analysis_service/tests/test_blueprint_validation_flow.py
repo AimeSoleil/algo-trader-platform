@@ -71,6 +71,23 @@ def test_apply_deterministic_validation_prunes_offending_symbols_only():
     assert summary["passed"] is True
 
 
+def test_apply_deterministic_validation_builds_trade_gate_summary_for_pruned_symbols():
+    blueprint, summary = _apply_deterministic_validation(
+        _make_blueprint(["MSFT"]),
+        _signal_map(),
+        agent_outputs={
+            "trend": {"symbols": [{"symbol": "MSFT", "trade_allowed": False, "blocked_reasons": ["earnings_imminent"]}]},
+        },
+    )
+
+    assert blueprint.symbol_plans == []
+    trade_gate_summary = summary["trade_gate_summary"]
+    assert trade_gate_summary["hard_blocked_symbol_count"] == 1
+    assert trade_gate_summary["hard_trade_blocked_reasons"] == ["earnings_imminent"]
+    assert trade_gate_summary["symbols"][0]["symbol"] == "MSFT"
+    assert trade_gate_summary["symbols"][0]["trade_gate_status"] == "hard_blocked"
+
+
 def test_resolve_validation_agent_outputs_aggregates_chunk_contexts():
     resolved = _resolve_validation_agent_outputs({
         "chunk_contexts": [
@@ -382,4 +399,30 @@ def test_pre_synthesis_summary_text_lists_priority_preview():
     assert text == (
         "Pre-synthesis analysis priority: "
         "AAPL, MSFT, NVDA, TSLA, AMZN, +1 more."
+    )
+
+
+def test_pre_synthesis_summary_text_appends_trade_gate_rollup():
+    text = _format_pre_synthesis_summary_text({
+        "analysis_order": ["AAPL", "MSFT"],
+        "trade_gate_summary": {
+            "symbols": [
+                {
+                    "symbol": "TSLA",
+                    "trade_gate_status": "hard_blocked",
+                    "hard_trade_blocked_reasons": ["earnings_imminent"],
+                    "noncanonical_trade_blocked_reasons": [],
+                },
+                {
+                    "symbol": "NVDA",
+                    "trade_gate_status": "soft_consensus_blocked",
+                    "soft_trade_blocked_reasons": ["counter_trend_*", "conflicting_*"],
+                },
+            ]
+        },
+    })
+
+    assert text == (
+        "Pre-synthesis analysis priority: AAPL, MSFT. "
+        "Trade-gate summary: hard TSLA[earnings_imminent]; soft-consensus NVDA[counter_trend_*, conflicting_*]."
     )

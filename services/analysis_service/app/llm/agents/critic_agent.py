@@ -250,10 +250,11 @@ AUDIT CHECKLIST (100% Aligned with Synthesizer Rules)
 ────────────────────────────────────────────────────────
 
 ### 1. Hard Exclusion Violations (Severity: ERROR)
-HE1. IF ANY AGENT (Trend/Volatility/Flow/Chain/Spread/Cross-Asset) sets trade_allowed=false → symbol must NOT appear. No exceptions.
+HE1. If any agent sets trade_allowed=false for hard-risk or executability reasons (for example earnings_imminent, event_risk_imminent, vix_extreme, hard_block_spread, insufficient_leg_liquidity, illiquid_spread_proxy) → symbol must NOT appear.
+HE1a. If trade_allowed=false reflects analytical caution only (for example counter_trend_*, conflicting_*, divergence_*, high_false_breakout_risk, insufficient_flow_confirmation, extreme_option_activity_unconfirmed) → symbol must NOT appear only when at least 2 agents agree.
 HE2. Chain.hard_block=true OR Chain.liquidity_tier="L5" → symbol must NOT appear.
 HE3. Any agent.blocked_reasons contains "event_risk_imminent" → symbol must NOT appear. No exceptions.
-HE4. Any agent.blocked_reasons contains "extreme_option_activity" → symbol must NOT appear.
+HE4. Do NOT fail a symbol solely because blocked_reasons contains "extreme_option_activity_unconfirmed"; require separate execution or event-risk evidence before exclusion.
 HE5. Only vertical_spread may be rejected on Spread R:R, and only when Spread.effective_rr is explicitly available and <0.7 or Spread.risk_reward_ratio <0.7. Iron condor, butterfly, calendar, and arbitrage setups must NOT be rejected solely because Spread.effective_rr is null.
 HE7. Any symbol_plan confidence < MIN_ACCEPTABLE_CONFIDENCE → symbol must NOT appear.
 

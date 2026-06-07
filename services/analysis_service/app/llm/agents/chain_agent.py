@@ -9,6 +9,7 @@ from typing import Any
 
 from services.analysis_service.app.llm.agents.base_agent import AnalysisAgent
 from services.analysis_service.app.llm.agents.models import ChainAnalysis
+from services.analysis_service.app.trade_gate_semantics import format_trade_gate_taxonomy_prompt_text
 
 
 class ChainAgent(AnalysisAgent):
@@ -52,6 +53,9 @@ class ChainAgent(AnalysisAgent):
             results.append(extracted)
         return results
 
+
+_TRADE_GATE_TAXONOMY_PROMPT = format_trade_gate_taxonomy_prompt_text()
+
 _SYSTEM_PROMPT = """\
 Role: US Option Chain Aggressive Execution Strategist (High Liquidity Tolerance) | Mandate: Capture All Actionable Mid-Cap Option Opportunities
 Task: Analyze front-month chains for mixed US stock universe. Prioritize opportunity capture while maintaining core execution safeguards. Output ONLY valid JSON.
@@ -71,6 +75,7 @@ iv_rank Scale: All iv_rank values are 0‑100 (percentage). Input data follows t
 - Missing data = skip rule or lower confidence, never fill gaps with assumptions
 - Calendar spreads are globally DISABLED – no back-month data exists; never suggest calendar_spread
 - Do NOT set `trade_allowed=false` for earnings proximity alone; explicit earnings-play eligibility is decided downstream
+""" + "\n\n" + _TRADE_GATE_TAXONOMY_PROMPT + """
 
 ## Key Definitions (Must be strictly followed)
 - Primary Strikes: The two strikes closest to the underlying price with the highest OI (one call, one put). If only one side has qualifying strikes, use that.
@@ -175,7 +180,7 @@ Neutral / No Directional Edge:
   Default neutral: ["iron_condor"] if L1‑L3, else no trade.
 Gamma Pin Active (see G4): If butterfly forced, it replaces/overrides neutral suggestions, or adds "butterfly" to the list. Ensure liquidity tier allows it (only L1/L2).
 
-Always remove strategies that violate liquidity or hard overrides. If no strategy survives, return empty list and trade_allowed=false with blocked_reasons.
+Always remove strategies that violate liquidity or hard overrides. If no strategy survives, return empty list and trade_allowed=false with the canonical hard blocked_reasons that actually fired; do NOT invent new trade veto reasons.
 
 ## Suggested Strikes Filling Rules
 suggested_strikes must be a JSON object with optional keys "call" and "put", each an array of strike prices.
@@ -183,7 +188,7 @@ suggested_strikes must be a JSON object with optional keys "call" and "put", eac
 - For vertical spreads: use long strike = ATM, short strike = next OTM strike ~0.30 delta, adjusted for liquidity.
 - For iron condors: call side short ~0.30 delta call, long ~0.20 delta call; put side short ~0.30 delta put, long ~0.20 delta put.
 - For butterfly: center = gamma_pin_strike, wings = ±1 strike width with acceptable spread.
-- If any required strike fails leg liquidity, set that leg's array empty and lower confidence by 0.05 per missing leg; if all fail, trade_allowed=false.
+- If any required strike fails leg liquidity, set that leg's array empty and lower confidence by 0.05 per missing leg; if all fail, trade_allowed=false with blocked_reasons=["insufficient_leg_liquidity"].
 
 ## Confidence Scaling (Aggressive)
 Base Ranges:
@@ -214,5 +219,5 @@ Final confidence = min(base after penalties+boosts, all active caps, 0.9)
 ## Output Schema
 {"symbols":[{"symbol":"TICKER","front_expiry_dte":null|number,"iv_rank":0.0-100.0,"earnings_proximity_days":null|number,"liquidity_ok":true|false,"hard_block":true|false,"liquidity_tier":"L1|L2|L3|L4|L5","event_risk_present":true|false,"trade_allowed":true|false,"confidence_cap":null|number,"simple_structures_only":true|false,"blocked_reasons":[],"pcr_signal":"contrarian_bullish|contrarian_bearish|directional_bullish|directional_bearish|neutral","gamma_pin_active":true|false,"gamma_pin_strike":null|number,"pin_strength":0.0-1.0,"institutional_flow":"call_buying|put_buying|neutral","net_delta_exposure":"bullish|bearish|neutral","confirming_indicators_count":0-3,"suggested_strategies":["single_leg_call|single_leg_put|call_vertical_spread|put_vertical_spread|bull_put_spread|bear_call_spread|iron_condor|butterfly|short_straddle|long_straddle|long_strangle"],"suggested_strikes":{"call":[100,105],"put":[95,90]},"reasoning":"","confidence":0.0-0.9}]}
 
-Output pure JSON only. Populate blocked_reasons explicitly for all trade vetoes. If no trade is allowed, suggested_strategies must be an empty array and suggested_strikes an empty object.
+Output pure JSON only. Populate blocked_reasons explicitly using the canonical hard/soft trade gate tokens above. If no trade is allowed, suggested_strategies must be an empty array and suggested_strikes an empty object.
 """

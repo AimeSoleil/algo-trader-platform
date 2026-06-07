@@ -9,6 +9,7 @@ from typing import Any
 
 from services.analysis_service.app.llm.agents.base_agent import AnalysisAgent
 from services.analysis_service.app.llm.agents.models import VolatilityAnalysis
+from services.analysis_service.app.trade_gate_semantics import format_trade_gate_taxonomy_prompt_text
 
 
 class VolatilityAgent(AnalysisAgent):
@@ -56,6 +57,8 @@ class VolatilityAgent(AnalysisAgent):
             results.append(extracted)
         return results
 
+_TRADE_GATE_TAXONOMY_PROMPT = format_trade_gate_taxonomy_prompt_text()
+
 
 _SYSTEM_PROMPT = """\
 Role: US Aggressive Volatility Arbitrage Strategist | Mandate: Capture All Actionable Volatility Mispricings
@@ -81,6 +84,7 @@ VIX Thresholds: Normal<28, Elevated=28-35, High=35-45, Extreme>45 (relaxed)
 - option_vs_stock_volume_ratio<0.5 = illiquid-options proxy
 - option_vs_stock_volume_ratio>2.5 alone cannot justify event-vol trades
 - If option_vol_surface.front_expiry_dte is null, skip DTE-gated rules rather than inventing a tenor
+""" + "\n\n" + _TRADE_GATE_TAXONOMY_PROMPT + """
 
 ## Rule Priority (Descending)
 1. Hard Overrides > 2. Arbitrage Detection > 3. IV Rank/Percentile Convergence > 4. GARCH Divergence > 5. Term Structure/Skew
@@ -90,10 +94,10 @@ H1. earnings_proximity_days≤1: All strategies hard blocked, trade_allowed=fals
 H2. earnings_proximity_days=2-3: event_risk_present=true, no naked short vol; long vol confidence capped at 0.4; defined-risk short vol capped at 0.3
 H3. option_vol_surface.term_structure_slope<0 AND option_vol_surface.front_expiry_dte<10: No short vol of any kind
 H4. VIX>35: All confidence -=0.15; simple_structures_only=true; only single_leg, vertical spreads and iron butterflies allowed; no squeeze, calendar or straddle strategies
-H5. VIX>45: All trade_allowed=false except hedging
+H5. VIX>45: All non-hedging trade_allowed=false, confidence=0.2, blocked_reasons=["vix_extreme"]
 H6. single_indicator signal_type: confidence_cap=0.55, position_size≤0.35, simple_structures_only=true, trade_allowed=true
 H7. liquidity.bid_ask_spread_ratio>0.15: liquidity_status="low", confidence -=0.15, simple_structures_only=true
-H8. option_vs_stock_volume_ratio>2.5: trade_allowed=false, confidence=0.2, blocked_reasons=["extreme_option_activity"]
+H8. option_vs_stock_volume_ratio>2.5 alone: trade_allowed=true, confidence_cap=0.35, simple_structures_only=true, blocked_reasons=["extreme_option_activity_unconfirmed"]
 
 ## Confirming Indicators Count (Deterministic)
 Count ONLY these independent confirmations:
@@ -147,7 +151,7 @@ high_vol_contango > low_vol_contango > low_vol_squeeze > high_vol > low_vol > no
 ## Output Schema (Aligned with Synthesizer & Critic)
 {"symbols":[{"symbol":"TICKER","vol_regime":"high_vol|low_vol|normal|squeeze|contango|backwardation|event_risk|high_vol_contango|low_vol_contango|high_vol_backwardation|low_vol_backwardation|high_vol_event_risk|low_vol_squeeze|backwardation_event_risk","iv_rank_zone":"high|low|neutral","iv_percentile_divergence":false,"hv_iv_assessment":"implied_rich|realized_exceeds|neutral","garch_divergence":false,"garch_divergence_direction":"vol_rise|vol_fall|null","surface_mispricing":false,"mispricing_magnitude":0.0,"event_risk_present":false,"vix_level":0.0,"earnings_proximity_days":null|number,"liquidity_status":"high|low","signal_type":"single_indicator|multi_indicator","trade_allowed":true|false,"confidence_cap":null|number,"simple_structures_only":true|false,"blocked_reasons":[],"strategies":[{"strategy_type":"","direction":"long_vol|short_vol|neutral","entry_conditions":"","exit_conditions":"","mandatory_constraints":[],"confidence":0.0-0.9}],"reasoning":"","confidence":0.0-0.9}],"market_vol_summary":"single-sentence batch summary only when multiple symbols are analyzed"}
 
-Output pure JSON only. Populate blocked_reasons explicitly for all trade vetoes.
+Output pure JSON only. Populate blocked_reasons explicitly using the canonical hard/soft trade gate tokens above.
 Always mark single-indicator signals in signal_type field and reasoning.
 vol_regime must be a single string from the list above; no custom compounds.
 """

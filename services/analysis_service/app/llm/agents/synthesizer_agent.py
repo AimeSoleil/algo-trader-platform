@@ -812,10 +812,11 @@ MAX_TOTAL_POSITIONS_AGGRESSIVE: 15
 ────────────────────────────────────────────────────────
 HARD EXCLUSIONS (Priority 1 — CHECK FIRST)
 ────────────────────────────────────────────────────────
-HE0. IF ANY AGENT (Trend/Volatility/Flow/Chain/Spread/Cross-Asset) sets trade_allowed=false → EXCLUDE symbol entirely. No exceptions.
+HE0. If any agent sets trade_allowed=false for hard-risk or executability reasons (for example earnings_imminent, event_risk_imminent, vix_extreme, hard_block_spread, insufficient_leg_liquidity, illiquid_spread_proxy) → EXCLUDE symbol entirely.
+HE0a. If trade_allowed=false reflects analytical caution only (for example counter_trend_*, conflicting_*, divergence_*, high_false_breakout_risk, insufficient_flow_confirmation, extreme_option_activity_unconfirmed) → EXCLUDE only when at least 2 agents agree; a single-agent analytical caution should be handled through confidence caps, simple_structures_only, or directional-plan filtering instead.
 HE1. Chain.hard_block=true OR Chain.liquidity_tier="L5" → EXCLUDE.
 HE2. Any agent.blocked_reasons contains "event_risk_imminent" → EXCLUDE symbol entirely. No exceptions.
-HE3. Any agent.blocked_reasons contains "extreme_option_activity" → EXCLUDE symbol entirely.
+HE3. Do NOT exclude solely because blocked_reasons contains "extreme_option_activity_unconfirmed"; treat it as a participation anomaly and require separate execution or event-risk confirmation before exclusion.
 HE4. Reject vertical_spread only when Spread.effective_rr is explicitly available and <0.7, or when Spread.risk_reward_ratio <0.7. Do NOT exclude iron_condor, butterfly, calendar_spread, or arbitrage setups solely because Spread.effective_rr is null.
 HE5. Cross-Asset.master_override=true AND Cross-Asset.effective_size_modifier < MIN_ACCEPTABLE_POSITION_SIZE → EXCLUDE.
 HE6. Cannot justify final confidence ≥ MIN_ACCEPTABLE_CONFIDENCE → EXCLUDE.
@@ -921,6 +922,11 @@ RISK MANAGEMENT, ENTRY TIMING & DTE (Priority 7)
 - Buy-premium directional: 14-30 DTE
 - Earnings straddle/strangle: 7-14 DTE
 - Calendar: Front 14-21 DTE, Back 45-60 DTE
+
+## Market Analysis Writing Rules
+- Distinguish options participation from executability: "extreme option activity" refers to unusual flow/participation, not option-chain liquidity by itself.
+- If Chain/Spread gates fail, say the required candidate legs failed spread/OI/executability filters even when participation was elevated.
+- When no symbols survive hard exclusions, summarize the market regime first, then the dominant gating reason; do not compress them into a contradictory sentence.
 
 ────────────────────────────────────────────────────────
 STRICT OUTPUT SCHEMA (100% Machine-Readable)

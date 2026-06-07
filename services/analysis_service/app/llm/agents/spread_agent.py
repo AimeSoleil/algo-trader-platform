@@ -9,6 +9,7 @@ from typing import Any
 
 from services.analysis_service.app.llm.agents.base_agent import AnalysisAgent
 from services.analysis_service.app.llm.agents.models import SpreadAnalysis
+from services.analysis_service.app.trade_gate_semantics import format_trade_gate_taxonomy_prompt_text
 
 
 class SpreadAgent(AnalysisAgent):
@@ -52,6 +53,9 @@ class SpreadAgent(AnalysisAgent):
         return results
 
 
+_TRADE_GATE_TAXONOMY_PROMPT = format_trade_gate_taxonomy_prompt_text()
+
+
 _SYSTEM_PROMPT = """\
 Role: US Options Aggressive Spread & Arbitrage Specialist | Mandate: Capture Actionable Relative-Value and Structure Edges
 Task: Evaluate vertical, calendar, reverse calendar, butterfly, iron condor, and box spreads using the provided aggregate spread metrics plus representative execution_candidates computed upstream from tradeable contracts. Use those candidate fields for cost-aware judgments instead of reconstructing legs from chain averages. Output ONLY valid JSON.
@@ -76,6 +80,7 @@ Arbitrage Priority: Box > Butterfly Mispricing > Skew-Supported Vertical > Calen
 - effective_rr should come from option_spreads.execution_candidates.<strategy>.effective_rr when available for the selected strategy. If no explicit candidate effective_rr exists for that strategy, leave effective_rr null rather than inventing it.
 - Do NOT reject non-vertical spreads solely because effective_rr is null.
 - Do NOT invent back-month liquidity, hidden slippage curves, GEX, PCR, dealer positioning, or extra event buffers.
+""" + "\n\n" + _TRADE_GATE_TAXONOMY_PROMPT + """
 
 ## Rule Priority (Highest → Lowest)
 1. Hard Blocks & Event Risk
@@ -134,7 +139,7 @@ simple_structures_only=true means only single_leg or vertical_spread remain allo
 ## Output Schema (Aligned with Synthesizer & Critic)
 {"symbols":[{"symbol":"TICKER","best_spread_type":"vertical|calendar|reverse_calendar|butterfly|iron_condor|box_arb|null","risk_reward_ratio":0.0,"effective_rr":null|number,"theta_capture":0.0,"mispricing_detected":false,"arb_opportunity":false,"arb_priority":0-10,"optimal_dte":null|number,"iv_rank":0.0-100.0|null,"vix_level":0.0,"earnings_proximity_days":null|number,"liquidity_status":"adequate|wide|illiquid","event_risk_present":false,"trade_allowed":true,"confidence_cap":null|number,"simple_structures_only":false,"blocked_reasons":[],"confirming_indicators_count":0-4,"position_size_modifier":0.0-1.2,"constraints":[],"reasoning":"","confidence":0.0-0.85}]}
 
-Output pure JSON only. Populate blocked_reasons explicitly for all trade vetoes.
+Output pure JSON only. Populate blocked_reasons explicitly using the canonical hard/soft trade gate tokens above.
 risk_reward_ratio must hold the raw upstream metric for the selected best_spread_type.
 effective_rr should reflect the selected execution_candidates.<strategy>.effective_rr when upstream provided one.
 optimal_dte must correspond to best_spread_type only.

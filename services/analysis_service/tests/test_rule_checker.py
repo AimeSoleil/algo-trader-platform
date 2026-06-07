@@ -1142,11 +1142,23 @@ class TestStructuredAgentTradeGates:
             trend=[{
                 "symbol": "AAPL",
                 "trade_allowed": False,
-                "blocked_reasons": ["counter_trend_strong_adx", "divergence_reversal_warning"],
+                "blocked_reasons": ["earnings_imminent"],
             }],
         )
         result = check_blueprint(_blueprint(), agent_outputs=ao)
         assert any(i.rule == "trend_trade_blocked" and i.severity == "error" for i in result.issues)
+
+    def test_trend_trade_allowed_false_soft_reason_warns_only(self):
+        ao = _agent_outputs(
+            trend=[{
+                "symbol": "AAPL",
+                "trade_allowed": False,
+                "blocked_reasons": ["counter_trend_strong_adx", "divergence_reversal_warning"],
+            }],
+        )
+        result = check_blueprint(_blueprint(), agent_outputs=ao)
+        assert not any(i.rule == "trend_trade_blocked" and i.severity == "error" for i in result.issues)
+        assert any(i.rule == "trend_trade_block_soft" and i.severity == "warning" for i in result.issues)
 
     def test_trend_confidence_cap_error(self):
         ao = _agent_outputs(
@@ -1262,11 +1274,27 @@ class TestStructuredAgentTradeGates:
             flow=[{
                 "symbol": "AAPL",
                 "trade_allowed": False,
-                "blocked_reasons": ["standalone_flow", "high_false_breakout_risk"],
+                "blocked_reasons": ["event_risk_imminent"],
             }],
         )
         result = check_blueprint(_blueprint(), agent_outputs=ao)
         assert any(i.rule == "flow_trade_blocked" and i.severity == "error" for i in result.issues)
+
+    def test_soft_trade_block_consensus_escalates_to_error(self):
+        ao = _agent_outputs(
+            trend=[{
+                "symbol": "AAPL",
+                "trade_allowed": False,
+                "blocked_reasons": ["counter_trend_strong_adx"],
+            }],
+            flow=[{
+                "symbol": "AAPL",
+                "trade_allowed": False,
+                "blocked_reasons": ["conflicting_flow"],
+            }],
+        )
+        result = check_blueprint(_blueprint(), agent_outputs=ao)
+        assert any(i.rule == "multi_agent_soft_trade_block" and i.severity == "error" for i in result.issues)
 
     def test_flow_confidence_cap_error(self):
         ao = _agent_outputs(
@@ -1287,7 +1315,7 @@ class TestStructuredAgentTradeGates:
             chain=[{
                 "symbol": "AAPL",
                 "trade_allowed": False,
-                "blocked_reasons": ["event_risk", "conflicting_chain_signals"],
+                "blocked_reasons": ["insufficient_leg_liquidity"],
             }],
         )
         result = check_blueprint(_blueprint(), agent_outputs=ao)
@@ -1395,7 +1423,7 @@ class TestStructuredAgentTradeGates:
             volatility=[{
                 "symbol": "AAPL",
                 "trade_allowed": False,
-                "blocked_reasons": ["event_risk", "no_vol_edge"],
+                "blocked_reasons": ["earnings_imminent"],
             }],
         )
         result = check_blueprint(_blueprint(), agent_outputs=ao)

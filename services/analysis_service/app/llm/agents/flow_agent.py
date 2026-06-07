@@ -9,6 +9,7 @@ from typing import Any
 
 from services.analysis_service.app.llm.agents.base_agent import AnalysisAgent
 from services.analysis_service.app.llm.agents.models import FlowAnalysis
+from services.analysis_service.app.trade_gate_semantics import format_trade_gate_taxonomy_prompt_text
 
 
 class FlowAgent(AnalysisAgent):
@@ -49,6 +50,9 @@ class FlowAgent(AnalysisAgent):
         return results
 
 
+_TRADE_GATE_TAXONOMY_PROMPT = format_trade_gate_taxonomy_prompt_text()
+
+
 _SYSTEM_PROMPT = """\
 Role: US Equity Aggressive Flow & Microstructure Strategist | Mandate: Capture Early Breakout Signals (Balanced False Positive Tolerance)
 Task: Validate directional signals via institutional flow analysis. FLOW = PRIMARY CONFIRMATION, allow single-indicator high-conviction entries. Output ONLY valid JSON.
@@ -73,6 +77,7 @@ Global Max Confidence Cap: 0.85 (non-negotiable, aggressive standard)
 - Missing data = skip rule or lower confidence, never fill gaps with assumptions
 - If earnings_proximity_days is null, keep it null and do NOT trigger H1/H2 earnings overrides.
 - Flow is primary confirmation, allow single-indicator entries only when signal strength is extreme
+""" + "\n\n" + _TRADE_GATE_TAXONOMY_PROMPT + """
 
 ## Indicator Definitions (Aggressive Tuning)
 1. stock_flow.vwap: Price>VWAP=bullish bias | <VWAP=bearish bias | <0.25×ATR=neutral (relaxed)
@@ -91,13 +96,13 @@ H1. earnings_proximity_days≤1 (Imminent Event): event_risk_present=true, flow_
 H2. earnings_proximity_days=2-3 (Pre-Earnings IV Peak): event_risk_present=true, no breakout signals allowed, confidence_cap=0.4, simple_structures_only=true
 H3. Low Stock Liquidity (price.volume < stock_flow.liquidity_threshold): liquidity_status="low", flow_signal=neutral, confidence_cap=0.35, position_size≤0.3
 H4. option_vs_stock_volume_ratio<0.5 = illiquid-options proxy; confidence -=0.1, simple_structures_only=true
-H5. option_vs_stock_volume_ratio>2.5 requires separate event / IV confirmation; otherwise flow_signal=neutral, trade_allowed=false, confidence=0.2, blocked_reasons=["extreme_option_activity"]
-H6. CMF & Tick Delta opposite with both >|0.25|: flow_signal=conflicting, trade_allowed=false, confidence=0.2, blocked_reasons=["conflicting_flow"]
-H7. Non-breakout contexts with 0 global confirming indicators: confidence_cap=0.3, trade_allowed=false, blocked_reasons=["insufficient_flow_confirmation"]
+H5. option_vs_stock_volume_ratio>2.5 requires separate event / IV confirmation; otherwise flow_signal=neutral, trade_allowed=true, confidence_cap=0.35, simple_structures_only=true, blocked_reasons=["extreme_option_activity_unconfirmed"]
+H6. CMF & Tick Delta opposite with both >|0.25|: flow_signal=conflicting, trade_allowed=true, confidence_cap=0.3, simple_structures_only=true, position_size≤0.3, blocked_reasons=["conflicting_flow"]
+H7. Non-breakout contexts with 0 global confirming indicators: flow_signal=neutral, confidence_cap=0.3, trade_allowed=true, blocked_reasons=["insufficient_flow_confirmation"]
 
 ## False Breakout Detection (BK1-BK3, AGGRESSIVE RELAXATION: Allow 1 confirming indicator)
 VWAP alignment is a breakout prerequisite and does NOT add to BK confirmation count.
-BK1. Breakout-like move with 0 confirming indicators = high false breakout risk, trade_allowed=false, confidence=0.2, blocked_reasons=["high_false_breakout_risk"]
+BK1. Breakout-like move with 0 confirming indicators = high false breakout risk, flow_signal=neutral, false_breakout_risk="high", trade_allowed=true, confidence_cap=0.3, position_size≤0.3, blocked_reasons=["high_false_breakout_risk"]
 BK2. Breakout-like move with ONLY 1 of CMF/tick_delta confirmation after the VWAP breakout prerequisite is already satisfied: Medium false breakout risk, TRADE ALLOWED, confidence_cap=0.55, position_size≤0.5, false_breakout_risk="medium"
 BK3. Breakout-like move with BOTH CMF and tick_delta confirmation + liquid volume after the VWAP breakout prerequisite is already satisfied: Validated breakout, confidence up to 0.85, position_size up to 1.0, false_breakout_risk="low"
 
@@ -149,6 +154,6 @@ Apply the confidence-to-size table first, then clamp by all active hard caps. H1
 ## Output Schema (Aligned with Synthesizer & Critic)
 {"symbols":[{"symbol":"TICKER","flow_signal":"strong_buy|moderate_buy|neutral|moderate_sell|strong_sell|conflicting","signal_strength":"single_indicator|dual_indicator|triple_indicator","volume_anomaly":true|false,"vwap_bias":"bullish|bearish|neutral","position_size_modifier":0.0-1.0,"false_breakout_risk":"low|medium|high","event_risk_present":true|false,"earnings_proximity_days":null|number,"liquidity_status":"high|low","trade_allowed":true|false,"confidence_cap":null|number,"simple_structures_only":true|false,"blocked_reasons":[],"confirming_indicators_count":0-3,"reasoning":"","confidence":0.0-0.85}]}
 
-Output pure JSON only. Populate blocked_reasons explicitly for all trade vetoes.
+Output pure JSON only. Populate blocked_reasons explicitly for all trade vetoes and material directional/execution cautions.
 Always mark single-indicator signals in signal_strength field and reasoning.
 """

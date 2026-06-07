@@ -888,7 +888,8 @@ async def test_chunked_merge_precision_first_prefers_fewer_gate_conflicts(monkey
     assert blueprint.reasoning_context["post_merge_phase"]["machine_readable_filtered_symbols"] == ["MSFT"]
     filtered_candidate = blueprint.reasoning_context["post_merge_phase"]["machine_readable_filtered_candidates"][0]
     assert filtered_candidate["symbol"] == "MSFT"
-    assert filtered_candidate["precision_first_breakdown"]["trade_blocked_agents"] == ["trend"]
+    assert filtered_candidate["precision_first_breakdown"]["trade_blocked_agents"] == []
+    assert filtered_candidate["precision_first_breakdown"]["soft_trade_blocked_agents"] == ["trend"]
     assert filtered_candidate["precision_first_breakdown"]["confidence_caps"]["trend"] == 0.6
 
 

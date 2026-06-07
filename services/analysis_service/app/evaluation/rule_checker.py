@@ -16,6 +16,11 @@ from datetime import date as _date_type
 from typing import Any
 
 from shared.config import get_settings
+from services.analysis_service.app.trade_gate_semantics import (
+    SOFT_TRADE_BLOCK_CONSENSUS_MIN_COUNT,
+    classify_trade_block,
+    normalized_blocked_reasons,
+)
 
 
 _DEFAULT_SIMPLE_STRATEGY_TYPES = frozenset({"single_leg", "vertical_spread", "iron_condor", "calendar_spread"})
@@ -34,6 +39,7 @@ _EXECUTION_CANDIDATE_STRATEGY_KEYS = {
 }
 _SIMPLE_STRUCTURE_AGENT_NAMES = ("trend", "volatility", "flow", "chain", "spread")
 _ONE_SHOT_EXPIRY_STRATEGIES = frozenset({"single_leg", "vertical_spread"})
+_TRADE_GATE_AGENT_NAMES = ("trend", "volatility", "flow", "chain", "spread", "cross_asset")
 
 
 @dataclass
@@ -147,6 +153,20 @@ def _configured_simple_strategy_types() -> frozenset[str]:
     return configured or _DEFAULT_SIMPLE_STRATEGY_TYPES
 
 
+def _trade_blocking_agents(
+    agent_outputs: dict[str, Any],
+    symbol: str,
+    *,
+    classification: str,
+) -> list[str]:
+    agents: list[str] = []
+    for agent_name in _TRADE_GATE_AGENT_NAMES:
+        sym_data = _agent_sym(agent_outputs, agent_name, symbol)
+        if classify_trade_block(sym_data) == classification:
+            agents.append(agent_name)
+    return agents
+
+
 def check_blueprint(
     blueprint: dict[str, Any],
     signal_features: dict[str, dict[str, Any]] | None = None,
@@ -219,6 +239,7 @@ def check_blueprint(
             _check_cascading_modifiers(plan, agent_outputs, result)
             _check_volatility_trade_gate(plan, agent_outputs, result)
             _check_spread_trade_gate(plan, agent_outputs, result)
+            _check_soft_trade_block_consensus(plan, agent_outputs, result)
             _check_spread_effective_rr(plan, agent_outputs, result)
             _check_event_risk_consensus(plan, agent_outputs, result)
             _check_confirming_indicators(plan, agent_outputs, result)
@@ -1626,7 +1647,8 @@ def _check_agent_trade_gate(
     if isinstance(blocked_reasons, list) and blocked_reasons:
         blocked_clause = f" Reasons: {', '.join(str(reason) for reason in blocked_reasons)}."
 
-    if sym_data.get("trade_allowed") is False:
+    trade_block_classification = classify_trade_block(sym_data)
+    if trade_block_classification == "hard":
         result.issues.append(RuleIssue(
             severity="error",
             category="risk_breach",
@@ -1636,6 +1658,19 @@ def _check_agent_trade_gate(
                 f"{label} agent set trade_allowed=false for this symbol.{blocked_clause}"
             ),
         ))
+    elif trade_block_classification == "soft":
+        soft_agents = _trade_blocking_agents(agent_outputs, sym, classification="soft")
+        if len(soft_agents) < SOFT_TRADE_BLOCK_CONSENSUS_MIN_COUNT:
+            result.issues.append(RuleIssue(
+                severity="warning",
+                category="risk_breach",
+                symbol=sym,
+                rule=f"{agent_name}_trade_block_soft",
+                description=(
+                    f"{label} agent set trade_allowed=false for analytical caution only; "
+                    f"this remains advisory unless at least {SOFT_TRADE_BLOCK_CONSENSUS_MIN_COUNT} agents agree.{blocked_clause}"
+                ),
+            ))
 
     confidence_cap = sym_data.get("confidence_cap")
     plan_conf = plan.get("confidence", 0)
@@ -1916,6 +1951,41 @@ def _check_spread_trade_gate(
         label="Spread",
         apply_to_strategies=_SPREAD_STRATEGY_TYPES,
     )
+
+
+def _check_soft_trade_block_consensus(
+    plan: dict,
+    agent_outputs: dict[str, Any],
+    result: CheckResult,
+) -> None:
+    """Escalate multi-agent analytical soft blocks to a hard symbol veto."""
+    sym = plan.get("underlying", "UNKNOWN")
+    if _trade_blocking_agents(agent_outputs, sym, classification="hard"):
+        return
+
+    soft_agents = _trade_blocking_agents(agent_outputs, sym, classification="soft")
+    if len(soft_agents) < SOFT_TRADE_BLOCK_CONSENSUS_MIN_COUNT:
+        return
+
+    detail_parts: list[str] = []
+    for agent_name in soft_agents:
+        sym_data = _agent_sym(agent_outputs, agent_name, sym)
+        reasons = normalized_blocked_reasons(sym_data)
+        if reasons:
+            detail_parts.append(f"{agent_name} ({', '.join(reasons)})")
+        else:
+            detail_parts.append(agent_name)
+
+    result.issues.append(RuleIssue(
+        severity="error",
+        category="risk_breach",
+        symbol=sym,
+        rule="multi_agent_soft_trade_block",
+        description=(
+            "Multiple agents converged on analytical no-trade caution for this symbol: "
+            f"{'; '.join(detail_parts)}."
+        ),
+    ))
 
 
 # ---------------------------------------------------------------------------

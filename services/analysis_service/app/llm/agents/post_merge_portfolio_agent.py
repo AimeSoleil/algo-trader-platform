@@ -200,8 +200,8 @@ Mandate: Rank all valid trading plans, highlight highest-conviction opportunitie
 
 ## INPUT CONTRACT
 - candidate_summaries is the only candidate-level source of truth.
-- Each candidate entry may include the following ranking inputs: symbol, strategy_type, direction, machine_readable_gate_ok, confidence, data_quality_score, max_contracts, chunk_index, chunk_id, original_order, candidate_ref, selector_base_score, portfolio_impact_score, portfolio_impact_breakdown, execution_candidate_score, execution_candidate_breakdown, precision_first_score, precision_first_breakdown, master_override, effective_size_modifier, arb_opportunity, arb_priority, event_risk_present, event_risk_agents, earnings_proximity_days, signal_type, and single_indicator_agents.
-- selector_metadata provides ranking_scope, deterministic_sort_priority, ranking_method, precision_first_enabled, and available_ranking_signals.
+- Each candidate entry may include the following ranking inputs: symbol, strategy_type, direction, trade_gate_status, trade_gate_summary, machine_readable_gate_ok, confidence, data_quality_score, max_contracts, chunk_index, chunk_id, original_order, candidate_ref, selector_base_score, portfolio_impact_score, portfolio_impact_breakdown, execution_candidate_score, execution_candidate_breakdown, precision_first_score, precision_first_breakdown, master_override, effective_size_modifier, arb_opportunity, arb_priority, event_risk_present, event_risk_agents, earnings_proximity_days, signal_type, and single_indicator_agents.
+- selector_metadata provides ranking_scope, deterministic_sort_priority, ranking_method, precision_first_enabled, available_ranking_signals, and trade_gate_taxonomy.
 - Defaults when optional fields are missing: master_override=false, effective_size_modifier=1.0, arb_opportunity=false, arb_priority=0, event_risk_present=false, earnings_proximity_days=null, signal_type="multi_indicator".
 
 ## SORTING PIPELINE (Apply in Order)

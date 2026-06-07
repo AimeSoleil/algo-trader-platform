@@ -18,6 +18,12 @@ from shared.utils import get_logger, resolve_trading_date_arg, today_trading
 
 from services.analysis_service.app.evaluation.rule_checker import check_blueprint
 from services.analysis_service.app.llm.agents.orchestrator import AgentOrchestrator
+from services.analysis_service.app.trade_gate_semantics import (
+    aggregate_trade_gate_summaries,
+    format_trade_gate_rollup_text,
+    summarize_trade_gate_analyses,
+    trade_gate_taxonomy_metadata,
+)
 
 from services.analysis_service.app.tasks.helpers import (
     _get_adapter,
@@ -25,6 +31,8 @@ from services.analysis_service.app.tasks.helpers import (
 )
 
 logger = get_logger("analysis_tasks")
+
+_TRADE_GATE_AGENT_NAMES = ("trend", "volatility", "flow", "chain", "spread", "cross_asset")
 
 
 async def _claim_terminal_notification_slot_async(trading_date: str, outcome: str) -> bool:
@@ -126,6 +134,52 @@ def _apply_emitted_strategy_scope_guard(
     return blueprint, sorted(set(pruned_symbols)), pruned_issues, allowed_strategy_types, True
 
 
+def _symbol_trade_gate_summary(
+    agent_outputs: dict[str, object] | None,
+    symbol: str,
+) -> dict[str, object] | None:
+    if not isinstance(agent_outputs, dict):
+        return None
+
+    symbol_upper = symbol.upper()
+    agent_analyses: dict[str, dict[str, object] | None] = {}
+    for agent_name in _TRADE_GATE_AGENT_NAMES:
+        agent_output = agent_outputs.get(agent_name)
+        if not isinstance(agent_output, dict):
+            agent_analyses[agent_name] = None
+            continue
+        symbols = agent_output.get("symbols")
+        if not isinstance(symbols, list):
+            agent_analyses[agent_name] = None
+            continue
+        agent_analyses[agent_name] = next(
+            (
+                item for item in symbols
+                if isinstance(item, dict) and str(item.get("symbol") or "").strip().upper() == symbol_upper
+            ),
+            None,
+        )
+
+    summary = summarize_trade_gate_analyses(agent_analyses)
+    if summary["trade_gate_status"] == "clear":
+        return None
+    return {"symbol": symbol_upper, **summary}
+
+
+def _build_validation_trade_gate_summary(
+    agent_outputs: dict[str, object] | None,
+    pruned_symbols: list[str],
+) -> dict[str, object]:
+    symbol_summaries: list[dict[str, object]] = []
+    for symbol in pruned_symbols:
+        summary = _symbol_trade_gate_summary(agent_outputs, symbol)
+        if summary is not None:
+            symbol_summaries.append(summary)
+    aggregate = aggregate_trade_gate_summaries(symbol_summaries)
+    aggregate["trade_gate_taxonomy"] = trade_gate_taxonomy_metadata()
+    return aggregate
+
+
 def _apply_deterministic_validation(
     blueprint: LLMTradingBlueprint,
     signal_map: dict[str, dict[str, object]],
@@ -174,6 +228,7 @@ def _apply_deterministic_validation(
     summary["pruned_symbols"] = pruned_symbols
     summary["pruned_plan_count"] = original_plan_count - len(blueprint.symbol_plans)
     summary["pruned_symbol_errors"] = pruned_symbol_errors
+    summary["trade_gate_summary"] = _build_validation_trade_gate_summary(agent_outputs, validation_pruned_symbols)
     summary["empty_after_pruning"] = len(blueprint.symbol_plans) == 0
     summary["passed"] = bool(summary["passed"] and blueprint.symbol_plans)
     return blueprint, summary
@@ -238,6 +293,7 @@ def _summarize_pre_synthesis_outcome(blueprint: LLMTradingBlueprint) -> dict[str
     reasoning_context = blueprint.reasoning_context or {}
     filter_summary = reasoning_context.get("pre_synthesis_filter", {}) or {}
     triage_summary = reasoning_context.get("pre_synthesis_triage", {}) or {}
+    deterministic_validation = reasoning_context.get("deterministic_validation", {}) or {}
     analysis_order = list(triage_summary.get("analysis_order", []) or [])
     ranked_symbols: list[dict[str, object]] = []
 
@@ -256,20 +312,25 @@ def _summarize_pre_synthesis_outcome(blueprint: LLMTradingBlueprint) -> dict[str
         "analysis_symbol_count": int(triage_summary.get("analysis_symbol_count", len(analysis_order)) or 0),
         "analysis_order": analysis_order,
         "top_ranked_symbols": ranked_symbols[:5],
+        "trade_gate_summary": deterministic_validation.get("trade_gate_summary", {}) or {},
     }
 
 
 def _format_pre_synthesis_summary_text(summary: dict[str, object]) -> str:
     """Format ranking summaries for user-facing daily notifications."""
     analysis_order = summary.get("analysis_order", []) or []
-    if not analysis_order:
-        return ""
+    parts: list[str] = []
+    if analysis_order:
+        preview = ", ".join(str(symbol) for symbol in analysis_order[:5])
+        remaining_count = max(0, len(analysis_order) - 5)
+        suffix = f", +{remaining_count} more" if remaining_count else ""
+        parts.append(f"Pre-synthesis analysis priority: {preview}{suffix}.")
 
-    preview = ", ".join(str(symbol) for symbol in analysis_order[:5])
-    remaining_count = max(0, len(analysis_order) - 5)
-    suffix = f", +{remaining_count} more" if remaining_count else ""
+    trade_gate_text = format_trade_gate_rollup_text(summary.get("trade_gate_summary", {}) or {})
+    if trade_gate_text:
+        parts.append(trade_gate_text)
 
-    return f"Pre-synthesis analysis priority: {preview}{suffix}."
+    return " ".join(parts)
 
 
 def _notify_blueprint_failure(trading_date: str, exc: Exception, *, phase: str) -> None:

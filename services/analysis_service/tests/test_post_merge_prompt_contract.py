@@ -25,6 +25,9 @@ def test_post_merge_prompt_defines_input_contract_defaults_and_selected_symbols_
     assert "## INPUT CONTRACT" in _POST_MERGE_SYSTEM_PROMPT
     assert "master_override" in _POST_MERGE_SYSTEM_PROMPT
     assert "arb_opportunity" in _POST_MERGE_SYSTEM_PROMPT
+    assert "trade_gate_status" in _POST_MERGE_SYSTEM_PROMPT
+    assert "trade_gate_summary" in _POST_MERGE_SYSTEM_PROMPT
+    assert "trade_gate_taxonomy" in _POST_MERGE_SYSTEM_PROMPT
     assert "max_loss_per_trade" not in _POST_MERGE_SYSTEM_PROMPT
     assert "max_position_size" not in _POST_MERGE_SYSTEM_PROMPT
     assert "Defaults when optional fields are missing" in _POST_MERGE_SYSTEM_PROMPT

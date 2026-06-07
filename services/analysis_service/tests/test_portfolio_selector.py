@@ -126,7 +126,7 @@ def test_selector_excludes_machine_readable_gate_failures_from_output():
                     {
                         "symbol": "AAPL",
                         "trade_allowed": False,
-                        "blocked_reasons": ["counter_trend_setup"],
+                        "blocked_reasons": ["earnings_imminent"],
                     }
                 ]
             }
@@ -147,6 +147,40 @@ def test_selector_excludes_machine_readable_gate_failures_from_output():
     assert metadata["machine_readable_filtered_symbols"] == ["AAPL"]
     assert metadata["ranked_symbols"] == []
     assert metadata["selected_symbols"] == []
+
+
+def test_selector_keeps_single_soft_trade_block_candidate():
+    selector = PortfolioSelector()
+    candidate = PlanCandidate(
+        plan=_make_single_leg_plan("AAPL", confidence=0.74),
+        chunk_index=0,
+        original_order=0,
+        quality_score=1.0,
+        chunk_id="chunk-0",
+        agent_outputs={
+            "trend": {
+                "symbols": [
+                    {
+                        "symbol": "AAPL",
+                        "trade_allowed": False,
+                        "blocked_reasons": ["counter_trend_setup"],
+                    }
+                ]
+            }
+        },
+    )
+
+    selected_plans, metadata = selector.select(
+        candidates=[candidate],
+        trade_symbols={"AAPL"},
+        chunk_limits=[],
+        precision_first_enabled=True,
+        allowed_strategy_types=["single_leg", "vertical_spread"],
+    )
+
+    assert [plan.underlying for plan in selected_plans] == ["AAPL"]
+    assert metadata["eligible_candidate_count"] == 1
+    assert metadata["machine_readable_filtered_candidate_count"] == 0
 
 
 def test_selector_simple_structures_only_respects_allowed_strategy_types():
@@ -273,6 +307,8 @@ def test_review_candidate_summary_includes_post_merge_prompt_fields():
 
     summary = candidate_summaries[0]
     assert summary["candidate_ref"] == "AAPL::chunk-0::0"
+    assert summary["trade_gate_status"] == "clear"
+    assert summary["trade_gate_summary"]["trade_gate_status"] == "clear"
     assert summary["master_override"] is True
     assert summary["effective_size_modifier"] == 0.8
     assert summary["arb_opportunity"] is True
@@ -287,5 +323,10 @@ def test_review_candidate_summary_includes_post_merge_prompt_fields():
     assert selector_metadata["candidate_entries_may_repeat_symbols"] is True
     assert selector_metadata["raw_candidate_entry_count"] == 1
     assert selector_metadata["unique_candidate_symbol_count"] == 1
+    assert selector_metadata["trade_gate_taxonomy"]["soft_trade_block_consensus_min_count"] == 2
+    assert "vix_extreme" in selector_metadata["trade_gate_taxonomy"]["hard_trade_block_reasons"]
+    assert "counter_trend_*" in selector_metadata["trade_gate_taxonomy"]["soft_trade_block_reasons"]
     assert "master_override" in selector_metadata["available_ranking_signals"]
     assert "arb_opportunity" in selector_metadata["available_ranking_signals"]
+    assert "trade_gate_status" in selector_metadata["available_ranking_signals"]
+    assert "trade_gate_summary" in selector_metadata["available_ranking_signals"]

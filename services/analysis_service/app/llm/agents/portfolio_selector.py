@@ -4,6 +4,12 @@ from dataclasses import dataclass
 from typing import Any
 
 from shared.models.blueprint import SymbolPlan
+from services.analysis_service.app.trade_gate_semantics import (
+    SOFT_TRADE_BLOCK_CONSENSUS_MIN_COUNT,
+    aggregate_trade_gate_summaries,
+    summarize_trade_gate_analyses,
+    trade_gate_taxonomy_metadata,
+)
 
 
 @dataclass(frozen=True)
@@ -109,11 +115,24 @@ class PortfolioSelector:
             "ranking_method": self._ranking_method(precision_first_enabled),
             "precision_first_enabled": precision_first_enabled,
             "allowed_strategy_types": normalized_allowed_strategy_types,
+            "trade_gate_taxonomy": trade_gate_taxonomy_metadata(),
+            "candidate_trade_gate_summary": aggregate_trade_gate_summaries(
+                [
+                    {
+                        "symbol": summary.get("symbol"),
+                        **(summary.get("trade_gate_summary") or {}),
+                    }
+                    for summary in candidate_summaries
+                    if isinstance(summary, dict) and isinstance(summary.get("trade_gate_summary"), dict)
+                ]
+            ),
             "deterministic_sort_priority": self._deterministic_sort_priority(precision_first_enabled),
             "available_ranking_signals": [
                 "symbol",
                 "strategy_type",
                 "direction",
+                "trade_gate_status",
+                "trade_gate_summary",
                 "machine_readable_gate_ok",
                 "confidence",
                 "data_quality_score",
@@ -269,6 +288,19 @@ class PortfolioSelector:
         selected_plans = [candidate.plan for candidate in selected_candidates]
         selected_symbols = [plan.underlying.upper() for plan in selected_plans]
         filtered_symbols = [candidate.plan.underlying.upper() for candidate in ranked_plans[normalized_max_output_plans:]]
+        machine_readable_filtered_candidate_summaries = [
+            {
+                "symbol": candidate.plan.underlying.upper(),
+                "chunk_index": candidate.chunk_index,
+                "chunk_id": candidate.chunk_id,
+                "precision_first_breakdown": self._precision_first_breakdown(
+                    candidate,
+                    precision_first_enabled=precision_first_enabled,
+                    allowed_strategy_types=normalized_allowed_strategy_types,
+                ),
+            }
+            for candidate in machine_readable_filtered_candidates
+        ]
 
         metadata = {
             "selector_version": "v3",
@@ -282,23 +314,22 @@ class PortfolioSelector:
             "max_output_plans": normalized_max_output_plans,
             "selected_symbols": selected_symbols,
             "filtered_symbols": filtered_symbols,
+            "trade_gate_taxonomy": trade_gate_taxonomy_metadata(),
             "machine_readable_filtered_candidate_count": len(machine_readable_filtered_candidates),
             "machine_readable_filtered_symbols": sorted({
                 candidate.plan.underlying.upper() for candidate in machine_readable_filtered_candidates
             }),
-            "machine_readable_filtered_candidates": [
-                {
-                    "symbol": candidate.plan.underlying.upper(),
-                    "chunk_index": candidate.chunk_index,
-                    "chunk_id": candidate.chunk_id,
-                    "precision_first_breakdown": self._precision_first_breakdown(
-                        candidate,
-                        precision_first_enabled=precision_first_enabled,
-                        allowed_strategy_types=normalized_allowed_strategy_types,
-                    ),
-                }
-                for candidate in machine_readable_filtered_candidates
-            ],
+            "machine_readable_filtered_candidates": machine_readable_filtered_candidate_summaries,
+            "machine_readable_filtered_trade_gate_summary": aggregate_trade_gate_summaries(
+                [
+                    {
+                        "symbol": item.get("symbol"),
+                        **(item.get("precision_first_breakdown") or {}),
+                    }
+                    for item in machine_readable_filtered_candidate_summaries
+                    if isinstance(item, dict) and isinstance(item.get("precision_first_breakdown"), dict)
+                ]
+            ),
             "ranked_symbols": [candidate.plan.underlying.upper() for candidate in ranked_plans],
             "precision_first_enabled": precision_first_enabled,
             "allowed_strategy_types": normalized_allowed_strategy_types,
@@ -344,6 +375,7 @@ class PortfolioSelector:
             precision_first_enabled=precision_first_enabled,
             allowed_strategy_types=allowed_strategy_types,
         )
+        trade_gate_summary = self._candidate_trade_gate_summary(candidate)
         cross_asset_analysis = self._symbol_agent_analysis(candidate, "cross_asset") or {}
         spread_analysis = self._symbol_agent_analysis(candidate, "spread") or {}
         event_risk_agents = self._candidate_event_risk_agents(candidate)
@@ -360,6 +392,8 @@ class PortfolioSelector:
             "symbol": candidate.plan.underlying.upper(),
             "strategy_type": candidate.plan.strategy_type.value,
             "direction": candidate.plan.direction.value,
+            "trade_gate_status": trade_gate_summary["trade_gate_status"],
+            "trade_gate_summary": trade_gate_summary,
             "machine_readable_gate_ok": self._machine_readable_gate_ok(
                 candidate,
                 allowed_strategy_types=allowed_strategy_types,
@@ -493,6 +527,13 @@ class PortfolioSelector:
                 "simple_structure_penalty": 0.0,
                 "blocked_reason_penalty": 0.0,
                 "trade_blocked_agents": [],
+                "hard_trade_blocked_agents": [],
+                "hard_trade_blocked_reasons": [],
+                "soft_trade_blocked_agents": [],
+                "soft_trade_blocked_reasons": [],
+                "soft_trade_block_consensus_met": False,
+                "trade_gate_status": "clear",
+                "noncanonical_trade_blocked_reasons": [],
                 "simple_structure_conflict_agents": [],
                 "confidence_caps": {},
                 "blocked_reasons": [],
@@ -507,7 +548,9 @@ class PortfolioSelector:
             strategy_scope_penalty = 0.75
 
         complexity_penalty = self._PRECISION_FIRST_COMPLEXITY_PENALTIES.get(strategy_type, 0.24)
-        trade_blocked_agents: list[str] = []
+        trade_gate_summary = self._candidate_trade_gate_summary(candidate)
+        hard_trade_blocked_agents = list(trade_gate_summary["hard_trade_blocked_agents"])
+        soft_trade_blocked_agents = list(trade_gate_summary["soft_trade_blocked_agents"])
         simple_structure_conflict_agents: list[str] = []
         confidence_caps: dict[str, float] = {}
         blocked_reasons: list[str] = []
@@ -516,9 +559,6 @@ class PortfolioSelector:
             symbol_analysis = self._symbol_agent_analysis(candidate, agent_name)
             if not symbol_analysis:
                 continue
-
-            if symbol_analysis.get("trade_allowed") is False:
-                trade_blocked_agents.append(agent_name)
 
             confidence_cap = symbol_analysis.get("confidence_cap")
             if isinstance(confidence_cap, (int, float)):
@@ -535,7 +575,12 @@ class PortfolioSelector:
                     if str(reason).strip()
                 )
 
-        trade_block_penalty = min(0.75, len(trade_blocked_agents) * 0.35)
+        soft_trade_block_consensus_met = bool(trade_gate_summary["soft_trade_block_consensus_met"])
+        effective_trade_blocked_agents = list(hard_trade_blocked_agents)
+        if not effective_trade_blocked_agents and soft_trade_block_consensus_met:
+            effective_trade_blocked_agents = list(soft_trade_blocked_agents)
+
+        trade_block_penalty = min(0.75, len(effective_trade_blocked_agents) * 0.35)
 
         min_confidence_cap = min(confidence_caps.values(), default=None)
         confidence_cap_penalty = 0.0
@@ -568,7 +613,14 @@ class PortfolioSelector:
             "confidence_cap_penalty": round(confidence_cap_penalty, 6),
             "simple_structure_penalty": round(simple_structure_penalty, 6),
             "blocked_reason_penalty": round(blocked_reason_penalty, 6),
-            "trade_blocked_agents": trade_blocked_agents,
+            "trade_blocked_agents": effective_trade_blocked_agents,
+            "hard_trade_blocked_agents": hard_trade_blocked_agents,
+            "hard_trade_blocked_reasons": list(trade_gate_summary["hard_trade_blocked_reasons"]),
+            "soft_trade_blocked_agents": soft_trade_blocked_agents,
+            "soft_trade_blocked_reasons": list(trade_gate_summary["soft_trade_blocked_reasons"]),
+            "soft_trade_block_consensus_met": soft_trade_block_consensus_met,
+            "trade_gate_status": trade_gate_summary["trade_gate_status"],
+            "noncanonical_trade_blocked_reasons": list(trade_gate_summary["noncanonical_trade_blocked_reasons"]),
             "simple_structure_conflict_agents": simple_structure_conflict_agents,
             "confidence_caps": confidence_caps,
             "blocked_reasons": unique_blocked_reasons,
@@ -827,17 +879,34 @@ class PortfolioSelector:
     def _candidate_signal_type(self, candidate: PlanCandidate) -> str:
         return "single_indicator" if self._candidate_single_indicator_agents(candidate) else "multi_indicator"
 
+    def _candidate_trade_gate_summary(self, candidate: PlanCandidate) -> dict[str, Any]:
+        agent_analyses = {
+            agent_name: self._symbol_agent_analysis(candidate, agent_name)
+            for agent_name in self._PRECISION_FIRST_AGENT_NAMES
+        }
+        return summarize_trade_gate_analyses(agent_analyses)
+
+    def _trade_block_agent_breakdown(self, candidate: PlanCandidate) -> tuple[list[str], list[str]]:
+        trade_gate_summary = self._candidate_trade_gate_summary(candidate)
+        return (
+            list(trade_gate_summary["hard_trade_blocked_agents"]),
+            list(trade_gate_summary["soft_trade_blocked_agents"]),
+        )
+
     def _machine_readable_gate_ok(self, candidate: PlanCandidate, *, allowed_strategy_types: list[str]) -> bool:
         strategy_type = str(getattr(candidate.plan.strategy_type, "value", candidate.plan.strategy_type)).lower()
         simple_structure_types = self._configured_simple_structure_types(allowed_strategy_types)
+
+        hard_trade_blocked_agents, soft_trade_blocked_agents = self._trade_block_agent_breakdown(candidate)
+        if hard_trade_blocked_agents:
+            return False
+        if len(soft_trade_blocked_agents) >= SOFT_TRADE_BLOCK_CONSENSUS_MIN_COUNT:
+            return False
 
         for agent_name in self._PRECISION_FIRST_AGENT_NAMES:
             symbol_analysis = self._symbol_agent_analysis(candidate, agent_name)
             if not symbol_analysis:
                 continue
-
-            if symbol_analysis.get("trade_allowed") is False:
-                return False
 
             confidence_cap = symbol_analysis.get("confidence_cap")
             if isinstance(confidence_cap, (int, float)) and candidate.plan.confidence > float(confidence_cap):

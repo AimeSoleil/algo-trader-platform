@@ -355,7 +355,6 @@ class CrossAssetSymbolAnalysis(SymbolAnalysis):
     event_risk_present: bool = False
     correlation_significance: float = Field(0.0, ge=0.0)
     signal_type: str = "multi_indicator"  # "single_indicator", "multi_indicator"
-    position_size_modifier: float = Field(1.0, ge=0.0, le=2.0)
     hedging_needed: bool = False
     effective_size_modifier: float = Field(1.0, ge=0.0, le=2.0, description="Combined position size modifier after all adjustments. If <0.3, recommend skip.")
     master_override: bool = Field(True, description="True = this modifier overrides all other strategy module sizing")

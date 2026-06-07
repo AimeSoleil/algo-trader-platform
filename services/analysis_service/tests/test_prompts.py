@@ -371,10 +371,27 @@ def test_specialist_prompts_downgrade_option_ratio_to_supporting_signal():
 
     assert "option_vs_stock_volume_ratio<0.5 = illiquid-options proxy" in flow_prompt
     assert "option_vs_stock_volume_ratio>2.5 requires separate event / IV confirmation" in flow_prompt
+    assert 'H5. option_vs_stock_volume_ratio>2.5 requires separate event / IV confirmation; otherwise flow_signal=neutral, trade_allowed=true, confidence_cap=0.35, simple_structures_only=true, blocked_reasons=["extreme_option_activity_unconfirmed"]' in flow_prompt
+    assert 'trade_allowed=false, confidence=0.2, blocked_reasons=["extreme_option_activity"]' not in flow_prompt
     assert "option_vs_stock_volume_ratio<0.5 = illiquid-options proxy" in volatility_prompt
     assert "option_vs_stock_volume_ratio>2.5 alone cannot justify event-vol trades" in volatility_prompt
+    assert 'H8. option_vs_stock_volume_ratio>2.5 alone: trade_allowed=true, confidence_cap=0.35, simple_structures_only=true, blocked_reasons=["extreme_option_activity_unconfirmed"]' in volatility_prompt
     assert "<0.5 = illiquid-options proxy, 0.5-1.5 = normal, 1.5-2.5 = elevated, >2.5 = extreme abnormal volume" in cross_asset_prompt
     assert ">2.5 requires event / IV confirmation" in cross_asset_prompt
+
+
+def test_specialist_prompts_share_trade_gate_taxonomy_contract():
+    from services.analysis_service.app.llm.agents.chain_agent import _SYSTEM_PROMPT as chain_prompt
+    from services.analysis_service.app.llm.agents.flow_agent import _SYSTEM_PROMPT as flow_prompt
+    from services.analysis_service.app.llm.agents.spread_agent import _SYSTEM_PROMPT as spread_prompt
+    from services.analysis_service.app.llm.agents.trend_agent import _SYSTEM_PROMPT as trend_prompt
+    from services.analysis_service.app.llm.agents.volatility_agent import _SYSTEM_PROMPT as volatility_prompt
+
+    for prompt in (trend_prompt, flow_prompt, volatility_prompt, chain_prompt, spread_prompt):
+        assert "## Machine-Readable Trade Gate Taxonomy" in prompt
+        assert "Only these hard-veto reasons may set trade_allowed=false directly" in prompt
+        assert "Analytical caution reasons must stay trade_allowed=true" in prompt
+        assert "Do NOT invent new trade veto reason tokens" in prompt
 
 
 def test_cross_asset_prompt_uses_explicit_phase2_inputs_and_drops_prompt_only_trade_gate():
@@ -435,11 +452,13 @@ def test_chain_prompt_excludes_gamma_pin_from_directional_confirming_count():
     assert "`liquidity_ok`: informational execution-quality flag only" in chain_prompt
 
 
-def test_flow_prompt_uses_machine_readable_trade_gates_for_hard_no_trade_states():
+def test_flow_prompt_keeps_false_breakout_as_directional_caution_not_symbol_veto():
     from services.analysis_service.app.llm.agents.flow_agent import _SYSTEM_PROMPT as flow_prompt
 
     assert "H1. earnings_proximity_days≤1 (Imminent Event): event_risk_present=true, flow_signal=neutral, trade_allowed=false" in flow_prompt
-    assert "BK1. Breakout-like move with 0 confirming indicators = high false breakout risk, trade_allowed=false" in flow_prompt
+    assert 'H6. CMF & Tick Delta opposite with both >|0.25|: flow_signal=conflicting, trade_allowed=true, confidence_cap=0.3, simple_structures_only=true, position_size≤0.3, blocked_reasons=["conflicting_flow"]' in flow_prompt
+    assert 'BK1. Breakout-like move with 0 confirming indicators = high false breakout risk, flow_signal=neutral, false_breakout_risk="high", trade_allowed=true, confidence_cap=0.3, position_size≤0.3, blocked_reasons=["high_false_breakout_risk"]' in flow_prompt
+    assert 'H7. Non-breakout contexts with 0 global confirming indicators: flow_signal=neutral, confidence_cap=0.3, trade_allowed=true, blocked_reasons=["insufficient_flow_confirmation"]' in flow_prompt
     assert "## Confirming Indicators Count (Deterministic)" in flow_prompt
     assert "4-5d" not in flow_prompt
 
@@ -462,6 +481,13 @@ def test_trend_prompt_uses_numeric_liquidity_and_corrects_macd_divergence_semant
     assert "stock_trend.macd_hist_divergence = +1 trend confirmation, -1 contradiction/divergence" in trend_prompt
     assert "divergence same as RSI" not in trend_prompt
     assert "cross_asset.vix_level>45: regime=neutral, trade_allowed=false, confidence=0.2, blocked_reasons=[\"vix_extreme\"]" in trend_prompt
+    assert 'stock_trend.adx_z_score > 1.5 AND counter-trend or reversal thesis: trade_allowed=true, confidence_cap=0.25, simple_structures_only=true, false_positive_risk="high", blocked_reasons=["counter_trend_strong_adx"]' in trend_prompt
+
+
+def test_volatility_prompt_uses_canonical_vix_extreme_trade_veto_reason():
+    from services.analysis_service.app.llm.agents.volatility_agent import _SYSTEM_PROMPT as volatility_prompt
+
+    assert 'H5. VIX>45: All non-hedging trade_allowed=false, confidence=0.2, blocked_reasons=["vix_extreme"]' in volatility_prompt
 
 
 def test_trend_prompt_defines_confirmation_count_signal_type_and_output_derivation():
@@ -558,6 +584,33 @@ def test_synthesizer_and_critic_prompts_apply_spread_rr_gate_only_to_verticals()
     assert "Do NOT exclude iron_condor, butterfly, calendar_spread, or arbitrage setups solely because Spread.effective_rr is null" in _SYNTHESIZER_SYSTEM_PROMPT
     assert "Only vertical_spread may be rejected on Spread R:R" in critic_prompt
     assert "must NOT be rejected solely because Spread.effective_rr is null" in critic_prompt
+
+
+def test_synthesizer_and_critic_prompts_treat_unconfirmed_option_activity_as_caution_only():
+    from services.analysis_service.app.llm.agents.critic_agent import _CRITIC_SYSTEM_PROMPT as critic_prompt
+    from services.analysis_service.app.llm.agents.synthesizer_agent import _SYNTHESIZER_SYSTEM_PROMPT
+
+    assert 'Do NOT exclude solely because blocked_reasons contains "extreme_option_activity_unconfirmed"' in _SYNTHESIZER_SYSTEM_PROMPT
+    assert 'Do NOT fail a symbol solely because blocked_reasons contains "extreme_option_activity_unconfirmed"' in critic_prompt
+
+
+def test_synthesizer_and_critic_prompts_use_reason_aware_trade_block_semantics():
+    from services.analysis_service.app.llm.agents.critic_agent import _CRITIC_SYSTEM_PROMPT as critic_prompt
+    from services.analysis_service.app.llm.agents.synthesizer_agent import _SYNTHESIZER_SYSTEM_PROMPT
+
+    assert 'If any agent sets trade_allowed=false for hard-risk or executability reasons' in _SYNTHESIZER_SYSTEM_PROMPT
+    assert 'If trade_allowed=false reflects analytical caution only' in _SYNTHESIZER_SYSTEM_PROMPT
+    assert 'EXCLUDE only when at least 2 agents agree' in _SYNTHESIZER_SYSTEM_PROMPT
+    assert 'If any agent sets trade_allowed=false for hard-risk or executability reasons' in critic_prompt
+    assert 'symbol must NOT appear only when at least 2 agents agree' in critic_prompt
+
+
+def test_synthesizer_prompt_distinguishes_option_activity_from_executability_in_market_analysis():
+    from services.analysis_service.app.llm.agents.synthesizer_agent import _SYNTHESIZER_SYSTEM_PROMPT
+
+    assert 'Distinguish options participation from executability' in _SYNTHESIZER_SYSTEM_PROMPT
+    assert '"extreme option activity" refers to unusual flow/participation, not option-chain liquidity by itself' in _SYNTHESIZER_SYSTEM_PROMPT
+    assert 'When no symbols survive hard exclusions, summarize the market regime first, then the dominant gating reason' in _SYNTHESIZER_SYSTEM_PROMPT
 
 
 def test_synthesizer_system_prompt_allows_iron_condor_for_clean_range_bound_setups():
