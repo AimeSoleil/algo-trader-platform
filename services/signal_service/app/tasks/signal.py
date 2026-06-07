@@ -174,6 +174,8 @@ async def _compute_daily_signals(
                     total_volume=total_volume,
                     total_option_volume=total_option_volume,
                     hedge_ratio=hedge_ratio,
+                    gamma_exposure=option_indicators.portfolio_greeks.get("gamma"),
+                    gamma_peak_strike=option_indicators.gamma_peak_strike,
                     trading_date=td,
                     earnings_date=earnings_map.get(symbol),
                 )

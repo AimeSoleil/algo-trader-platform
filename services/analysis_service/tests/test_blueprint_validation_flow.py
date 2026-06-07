@@ -7,8 +7,10 @@ from shared.models.blueprint import Direction, LLMTradingBlueprint, OptionLeg, S
 import services.analysis_service.app.tasks.blueprint as blueprint_task
 from services.analysis_service.app.tasks.blueprint import (
     _apply_deterministic_validation,
+    _apply_and_log_deterministic_validation,
     _format_pre_synthesis_summary_text,
     _is_blueprint_soft_blocked,
+    _resolve_validation_agent_outputs,
     _summarize_pre_synthesis_outcome,
 )
 
@@ -69,6 +71,115 @@ def test_apply_deterministic_validation_prunes_offending_symbols_only():
     assert summary["passed"] is True
 
 
+def test_resolve_validation_agent_outputs_aggregates_chunk_contexts():
+    resolved = _resolve_validation_agent_outputs({
+        "chunk_contexts": [
+            {
+                "agent_outputs": {
+                    "trend": {
+                        "symbols": [
+                            {"symbol": "AAPL", "trade_allowed": False},
+                        ]
+                    }
+                }
+            },
+            {
+                "agent_outputs": {
+                    "trend": {
+                        "symbols": [
+                            {"symbol": "MSFT", "trade_allowed": True},
+                        ]
+                    },
+                    "flow": {
+                        "symbols": [
+                            {"symbol": "MSFT", "confidence_cap": 0.4},
+                        ]
+                    },
+                }
+            },
+        ]
+    })
+
+    assert resolved == {
+        "trend": {
+            "symbols": [
+                {"symbol": "AAPL", "trade_allowed": False},
+                {"symbol": "MSFT", "trade_allowed": True},
+            ]
+        },
+        "flow": {
+            "symbols": [
+                {"symbol": "MSFT", "confidence_cap": 0.4},
+            ]
+        },
+    }
+
+
+def test_apply_and_log_deterministic_validation_uses_chunk_agent_outputs(monkeypatch):
+    captured: dict[str, object] = {}
+
+    class _FakeSignal:
+        def __init__(self, symbol: str):
+            self.symbol = symbol
+
+        def model_dump(self, mode: str = "json") -> dict[str, object]:
+            return {"symbol": self.symbol}
+
+    def _fake_apply(blueprint, signal_map, agent_outputs):
+        captured["signal_map"] = signal_map
+        captured["agent_outputs"] = agent_outputs
+        return blueprint, {
+            "passed": True,
+            "error_count": 0,
+            "warning_count": 0,
+            "issues": [],
+            "initial_error_count": 0,
+            "initial_warning_count": 0,
+            "precision_first_enabled": False,
+            "allowed_strategy_types": [],
+            "emitted_strategy_scope_pruned_symbols": [],
+            "emitted_strategy_scope_pruned_plan_count": 0,
+            "pruned_symbols": [],
+            "pruned_plan_count": 0,
+            "pruned_symbol_errors": [],
+            "empty_after_pruning": False,
+        }
+
+    monkeypatch.setattr(blueprint_task, "_apply_deterministic_validation", _fake_apply)
+
+    blueprint = _make_blueprint(["MSFT"]).model_copy(update={
+        "reasoning_context": {
+            "chunk_contexts": [
+                {
+                    "agent_outputs": {
+                        "trend": {
+                            "symbols": [
+                                {"symbol": "MSFT", "trade_allowed": False},
+                            ]
+                        }
+                    }
+                }
+            ]
+        }
+    })
+
+    validated = _apply_and_log_deterministic_validation(
+        blueprint,
+        [_FakeSignal("MSFT")],
+        td=date(2026, 4, 30),
+    )
+
+    assert captured["signal_map"] == {"MSFT": {"symbol": "MSFT"}}
+    assert captured["agent_outputs"] == {
+        "trend": {
+            "symbols": [
+                {"symbol": "MSFT", "trade_allowed": False},
+            ]
+        }
+    }
+    assert validated.reasoning_context["deterministic_validation"]["passed"] is True
+
+
 def test_empty_blueprint_after_pruning_is_soft_blocked():
     blueprint, summary = _apply_deterministic_validation(
         _make_blueprint(["AAPL"]),
@@ -83,7 +194,7 @@ def test_empty_blueprint_after_pruning_is_soft_blocked():
     assert _is_blueprint_soft_blocked(blueprint) is True
 
 
-def test_precision_first_strategy_scope_prunes_complex_strategies(monkeypatch):
+def test_emitted_strategy_scope_guard_prunes_complex_strategies(monkeypatch):
     settings = SimpleNamespace(
         analysis_service=SimpleNamespace(
             llm=SimpleNamespace(
@@ -117,8 +228,8 @@ def test_precision_first_strategy_scope_prunes_complex_strategies(monkeypatch):
     assert blueprint.symbol_plans == []
     assert summary["precision_first_enabled"] is True
     assert summary["allowed_strategy_types"] == ["single_leg", "vertical_spread"]
-    assert summary["strategy_scope_pruned_symbols"] == ["MSFT"]
-    assert summary["strategy_scope_pruned_plan_count"] == 1
+    assert summary["emitted_strategy_scope_pruned_symbols"] == ["MSFT"]
+    assert summary["emitted_strategy_scope_pruned_plan_count"] == 1
 
 
 def test_precision_first_keeps_calendar_when_allowed_and_context_is_clean(monkeypatch):

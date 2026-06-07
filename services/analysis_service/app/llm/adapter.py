@@ -28,24 +28,18 @@ class LLMAdapter:
     async def generate_blueprint(
         self,
         signal_features: list[SignalFeatures],
-        current_positions: dict | None = None,
-        previous_execution: dict | None = None,
         *,
         signal_date: date | None = None,
     ) -> LLMTradingBlueprint:
         """Generate blueprint via the multi-agent pipeline only."""
         return await self._generate_agentic(
             signal_features,
-            current_positions,
-            previous_execution,
             signal_date=signal_date,
         )
 
     async def _generate_agentic(
         self,
         signal_features: list[SignalFeatures],
-        current_positions: dict | None,
-        previous_execution: dict | None,
         *,
         signal_date: date | None = None,
     ) -> LLMTradingBlueprint:
@@ -55,8 +49,6 @@ class LLMAdapter:
             orchestrator = self._get_orchestrator()
             blueprint = await orchestrator.generate(
                 signal_features=signal_features,
-                current_positions=current_positions,
-                previous_execution=previous_execution,
                 signal_date=signal_date,
             )
             elapsed_ms = round((perf_counter() - started) * 1000, 2)
@@ -78,8 +70,6 @@ class LLMAdapter:
     async def generate_single_symbol(
         self,
         signal_features: list[SignalFeatures],
-        current_positions: dict | None = None,
-        previous_execution: dict | None = None,
         *,
         signal_date: date | None = None,
     ) -> LLMTradingBlueprint:
@@ -103,8 +93,6 @@ class LLMAdapter:
 
         user_prompt = build_blueprint_prompt(
             signal_features=signal_features,
-            current_positions=current_positions,
-            previous_execution=previous_execution,
             signal_date=signal_date,
         )
 

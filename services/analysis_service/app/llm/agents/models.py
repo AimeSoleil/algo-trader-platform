@@ -9,7 +9,7 @@ from enum import Enum
 import re
 from typing import Any
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 _NUMBER_RE = re.compile(r"[+-]?\d+(?:\.\d+)?")
 
@@ -47,6 +47,7 @@ class RegimeType(str, Enum):
     RANGE_BOUND = "range_bound"
     SQUEEZE = "squeeze"
     REVERSAL_WARNING = "reversal_warning"
+    REVERSAL_CONFIRMED = "reversal_confirmed"
     NEUTRAL = "neutral"
 
 
@@ -83,11 +84,20 @@ class StrategyCandidate(BaseModel):
     """A candidate strategy recommended by an analysis agent."""
     strategy_type: str  # e.g. "vertical_spread", "iron_condor"
     direction: str  # "bullish", "bearish", "neutral"
-    reasoning: str
+    reasoning: str = ""
     confidence: float = Field(0.5, ge=0.0, le=1.0)
     constraints: list[str] = Field(default_factory=list, description="Conditions or caveats")
+    mandatory_constraints: list[str] = Field(default_factory=list, description="Mandatory guardrails emitted by the volatility prompt")
     entry_conditions: str = Field("", description="Specific conditions required to enter the position")
     exit_conditions: str = Field("", description="Exit triggers: stop-loss, take-profit, time-based")
+
+    @model_validator(mode="after")
+    def _synchronize_constraints(self) -> StrategyCandidate:
+        if self.mandatory_constraints and not self.constraints:
+            self.constraints = list(self.mandatory_constraints)
+        if self.constraints and not self.mandatory_constraints:
+            self.mandatory_constraints = list(self.constraints)
+        return self
 
 
 class SymbolAnalysis(BaseModel):
@@ -111,10 +121,12 @@ class TrendSymbolAnalysis(SymbolAnalysis):
     trend_strength: float = 0.0
     adx_zone: str = "transition"  # "trending", "range_bound", "transition", "extreme"
     adx_z_score: float = 0.0
-    iv_rank: float = Field(0.0, ge=0.0, le=100.0, description="IV Rank 0-100")
+    vix_level: float = 0.0
+    iv_rank: float | None = Field(None, ge=0.0, le=100.0, description="IV Rank 0-100 when available; null means unknown")
     divergence_detected: bool = False
     divergence_type: str | None = None  # "rsi_macd_bullish", "rsi_macd_bearish"
     false_positive_risk: str = "medium"  # "low", "medium", "high"
+    signal_type: str = "multi_indicator"  # "single_indicator", "multi_indicator"
     trade_allowed: bool = True
     confidence_cap: float | None = Field(None, ge=0.0, le=1.0)
     simple_structures_only: bool = False
@@ -125,7 +137,7 @@ class TrendSymbolAnalysis(SymbolAnalysis):
     @classmethod
     def _coerce_iv_rank(cls, v: Any) -> Any:
         if v is None or v == "":
-            return 0.0
+            return None
         return v
 
 
@@ -197,13 +209,22 @@ class VolatilitySymbolAnalysis(SymbolAnalysis):
     garch_divergence: bool = False
     garch_divergence_direction: str | None = Field(None, description="vol_rise, vol_fall, or null")
     surface_mispricing: bool = False
+    mispricing_magnitude: float = 0.0
     event_risk_present: bool = False
+    vix_level: float = 0.0
+    earnings_proximity_days: int | None = Field(None, ge=0)
     liquidity_status: str = Field("high", description="high or low")
+    signal_type: str = "multi_indicator"  # "single_indicator", "multi_indicator"
     trade_allowed: bool = True
     confidence_cap: float | None = Field(None, ge=0.0, le=1.0)
     simple_structures_only: bool = False
     blocked_reasons: list[str] = Field(default_factory=list)
     strategies: list[StrategyCandidate] = Field(default_factory=list)
+
+    @field_validator("earnings_proximity_days", mode="before")
+    @classmethod
+    def _coerce_earnings_proximity_days(cls, v: Any) -> Any:
+        return _coerce_int_like(v)
 
 
 class VolatilityAnalysis(BaseModel):
@@ -215,6 +236,7 @@ class VolatilityAnalysis(BaseModel):
 class FlowSymbolAnalysis(SymbolAnalysis):
     """Per-symbol output from FlowAgent."""
     flow_signal: FlowSignal = FlowSignal.NEUTRAL
+    signal_strength: str = "single_indicator"  # "single_indicator", "dual_indicator", "triple_indicator"
     volume_anomaly: bool = False
     vwap_bias: str = "neutral"  # "bullish", "bearish", "neutral"
     position_size_modifier: float = Field(1.0, ge=0.0, le=1.5, description="1.0 = full, 0.5 = half, etc.")
@@ -235,7 +257,9 @@ class FlowAnalysis(BaseModel):
 
 class ChainSymbolAnalysis(SymbolAnalysis):
     """Per-symbol output from ChainAgent."""
-    front_expiry_dte: int = Field(0, ge=0, description="Estimated DTE of front-month expiry analyzed")
+    front_expiry_dte: int | None = Field(0, ge=0, description="Estimated DTE of front-month expiry analyzed")
+    iv_rank: float | None = Field(None, ge=0.0, le=100.0, description="IV Rank 0-100 when available; null means unknown")
+    earnings_proximity_days: int | None = Field(None, ge=0)
     liquidity_ok: bool = True
     hard_block: bool = False  # bid-ask ratio > 0.30
     liquidity_tier: str = Field("L1", description="L1 (excellent) through L5 (hard block)")
@@ -251,7 +275,25 @@ class ChainSymbolAnalysis(SymbolAnalysis):
     institutional_flow: str = "neutral"  # "call_buying", "put_buying", "neutral"
     net_delta_exposure: str = "neutral"  # "bullish", "bearish", "neutral"
     confirming_indicators_count: int = Field(0, ge=0, description="Number of confirming chain indicators")
+    suggested_strategies: list[str] = Field(default_factory=list, description="Optional strategy suggestions emitted by the chain prompt")
     suggested_strikes: dict[str, Any] = Field(default_factory=dict, description="Optimal strike recommendations")
+
+    @field_validator("front_expiry_dte", mode="before")
+    @classmethod
+    def _coerce_front_expiry_dte(cls, v: Any) -> Any:
+        return _coerce_int_like(v)
+
+    @field_validator("earnings_proximity_days", mode="before")
+    @classmethod
+    def _coerce_chain_earnings_proximity_days(cls, v: Any) -> Any:
+        return _coerce_int_like(v)
+
+    @field_validator("iv_rank", mode="before")
+    @classmethod
+    def _coerce_chain_iv_rank(cls, v: Any) -> Any:
+        if v is None or v == "":
+            return None
+        return v
 
 
 class ChainAnalysis(BaseModel):
@@ -261,24 +303,35 @@ class ChainAnalysis(BaseModel):
 
 class SpreadSymbolAnalysis(SymbolAnalysis):
     """Per-symbol output from SpreadAgent."""
-    best_spread_type: str | None = None  # "vertical", "calendar", "butterfly", "box_arb"
+    best_spread_type: str | None = None  # "vertical", "calendar", "reverse_calendar", "butterfly", "iron_condor", "box_arb"
     risk_reward_ratio: float = 0.0
-    effective_rr: float | None = Field(None, description="Cost-adjusted R:R after transaction costs")
+    effective_rr: float | None = Field(None, description="Optional cost-aware R:R when explicitly defensible from provided inputs")
     theta_capture: float = 0.0
     mispricing_detected: bool = False
     arb_opportunity: bool = False
+    arb_priority: int = Field(0, ge=0, le=10)
     optimal_dte: int | None = None
+    iv_rank: float | None = Field(None, ge=0.0, le=100.0, description="IV Rank 0-100 when available; null means unknown")
+    vix_level: float = 0.0
+    earnings_proximity_days: int | None = Field(None, ge=0)
     liquidity_status: str = Field("adequate", description="adequate, wide, illiquid")
     event_risk_present: bool = False
     trade_allowed: bool = True
     confidence_cap: float | None = Field(None, ge=0.0, le=1.0)
     simple_structures_only: bool = False
     blocked_reasons: list[str] = Field(default_factory=list)
+    confirming_indicators_count: int = Field(0, ge=0, le=4, description="Number of explicit spread confirmations supporting the selected structure")
+    position_size_modifier: float = Field(1.0, ge=0.0, le=1.2, description="1.2 = max aggressive size, 0.5 = half size")
     constraints: list[str] = Field(default_factory=list)
 
     @field_validator("optimal_dte", mode="before")
     @classmethod
     def _coerce_optimal_dte(cls, v: Any) -> Any:
+        return _coerce_int_like(v)
+
+    @field_validator("earnings_proximity_days", mode="before")
+    @classmethod
+    def _coerce_spread_earnings_proximity_days(cls, v: Any) -> Any:
         return _coerce_int_like(v)
 
 
@@ -290,17 +343,28 @@ class SpreadAnalysis(BaseModel):
 class CrossAssetSymbolAnalysis(SymbolAnalysis):
     """Per-symbol output from CrossAssetAgent."""
     correlation_regime: str = "normal"  # "fear", "decoupled", "bullish_vol", "normal", "event_driven"
-    dominant_benchmark: str = "SPY"  # "SPY", "QQQ", "IWM", "idiosyncratic"
+    dominant_benchmark: str = "idiosyncratic"  # "SPY", "QQQ", "IWM", "idiosyncratic"
     rate_sensitive: bool = False
     risk_off_signal: bool = False
     regime_transition: bool = False  # SPY / QQQ / IWM correlations diverging
-    regime_days: int = Field(0, ge=0, description="Consecutive days the current correlation regime has persisted. <5 = transitioning, >=5 = confirmed.")
+    regime_days: int | None = Field(None, ge=0, description="Consecutive days the current correlation regime has persisted when explicit persistence data is available; null = unknown/unconfirmed.")
     vix_environment: str = "normal"  # "panic", "elevated", "normal", "complacent"
+    vix_percentile_60d: float = Field(0.0, ge=0.0, le=1.0)
     gex_regime: str = Field("neutral", description="positive (vol suppressed), negative (vol amplified), neutral")
-    position_size_modifier: float = Field(1.0, ge=0.0, le=1.5)
+    earnings_proximity_days: int | None = Field(None, ge=0)
+    event_risk_present: bool = False
+    correlation_significance: float = Field(0.0, ge=0.0)
+    signal_type: str = "multi_indicator"  # "single_indicator", "multi_indicator"
+    position_size_modifier: float = Field(1.0, ge=0.0, le=2.0)
     hedging_needed: bool = False
-    effective_size_modifier: float = Field(1.0, ge=0.0, le=1.5, description="Combined position size modifier after all adjustments. If <0.3, recommend skip.")
+    effective_size_modifier: float = Field(1.0, ge=0.0, le=2.0, description="Combined position size modifier after all adjustments. If <0.3, recommend skip.")
     master_override: bool = Field(True, description="True = this modifier overrides all other strategy module sizing")
+    blocked_reasons: list[str] = Field(default_factory=list)
+
+    @field_validator("regime_days", "earnings_proximity_days", mode="before")
+    @classmethod
+    def _coerce_cross_asset_ints(cls, v: Any) -> Any:
+        return _coerce_int_like(v)
 
 
 class CrossAssetAnalysis(BaseModel):
@@ -336,6 +400,7 @@ class PostMergeConflictExplanation(BaseModel):
     """LLM explanation for a symbol-level portfolio ranking choice."""
 
     symbol: str
+    type: str = ""  # candidate_conflict | priority_override | diversification_adjustment | risk_demotion
     decision: str = "keep"  # keep | drop | deprioritize
     rationale: str = ""
 

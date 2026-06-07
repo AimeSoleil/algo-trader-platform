@@ -97,6 +97,14 @@ class TestSymbolPlan:
         assert plan.underlying == "AAPL"
         assert plan.confidence == 0.7
 
+    def test_max_loss_per_trade_is_optional(self):
+        plan = SymbolPlan(**_make_plan(max_loss_per_trade=None))
+        assert plan.max_loss_per_trade is None
+
+    def test_max_position_size_is_optional(self):
+        plan = SymbolPlan(**_make_plan(max_position_size=None))
+        assert plan.max_position_size is None
+
     def test_confidence_out_of_range_high(self):
         with pytest.raises(ValidationError, match="confidence"):
             SymbolPlan(**_make_plan(confidence=1.5))

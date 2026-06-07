@@ -31,6 +31,61 @@ from .cal_utils import (
 
 logger = get_logger("stock_indicators")
 
+_FLOW_LIQUIDITY_THRESHOLD_FLOOR = 300_000.0
+_FLOW_LIQUIDITY_THRESHOLD_CAP = 3_000_000.0
+_FLOW_LIQUIDITY_THRESHOLD_ADV_FRACTION = 0.10
+_TREND_ADX_Z_WINDOW = 20
+_TREND_ADX_Z_MIN_POINTS = 5
+
+
+def _adx_series(
+    high: pd.Series,
+    low: pd.Series,
+    close: pd.Series,
+    period: int = 14,
+) -> pd.Series:
+    """Return the full ADX series so Trend can consume precomputed statistics."""
+    up_move = high.diff()
+    down_move = -low.diff()
+
+    plus_dm = up_move.where((up_move > down_move) & (up_move > 0), 0.0)
+    minus_dm = down_move.where((down_move > up_move) & (down_move > 0), 0.0)
+
+    tr1 = high - low
+    tr2 = (high - close.shift(1)).abs()
+    tr3 = (low - close.shift(1)).abs()
+    tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
+    atr_series = tr.rolling(window=period).mean()
+
+    plus_di = 100 * (plus_dm.rolling(window=period).mean() / atr_series.replace(0, np.nan))
+    minus_di = 100 * (minus_dm.rolling(window=period).mean() / atr_series.replace(0, np.nan))
+
+    dx = (100 * (plus_di - minus_di).abs() / (plus_di + minus_di).replace(0, np.nan)).fillna(0)
+    return dx.rolling(window=period).mean()
+
+
+def _derive_adx_stats(
+    high: pd.Series,
+    low: pd.Series,
+    close: pd.Series,
+    period: int = 14,
+) -> tuple[float, float]:
+    """Precompute ADX z-score and 2-session change for Trend prompt rules."""
+    adx_values = _adx_series(high, low, close, period=period).dropna()
+    if adx_values.empty:
+        return 0.0, 0.0
+
+    adx_change_2d = float(adx_values.iloc[-1] - adx_values.iloc[-3]) if len(adx_values) >= 3 else 0.0
+
+    adx_window = adx_values.tail(_TREND_ADX_Z_WINDOW)
+    if len(adx_window) < _TREND_ADX_Z_MIN_POINTS:
+        return 0.0, round(adx_change_2d, 4)
+
+    mean_val = float(adx_window.mean())
+    std_val = float(adx_window.std(ddof=0))
+    adx_z_score = 0.0 if std_val <= 1e-9 else float((adx_values.iloc[-1] - mean_val) / std_val)
+    return round(adx_z_score, 4), round(adx_change_2d, 4)
+
 
 def _sanitize_stock_indicators(ind: StockIndicators) -> StockIndicators:
     """Sanitize all float fields — replace NaN/Inf with 0.0."""
@@ -102,6 +157,7 @@ def compute_stock_indicators(bars_df: pd.DataFrame) -> StockIndicators:
     bb_upper, bb_lower, bb_mid = _bollinger_bands(close)
     atr = _atr(high, low, close)
     adx = _adx(high, low, close)
+    adx_z_score, adx_change_2d = _derive_adx_stats(high, low, close)
     tenkan, kijun, span_a, span_b = _ichimoku(high, low)
     lin_slope = _linear_reg_slope(close)
 
@@ -124,6 +180,17 @@ def compute_stock_indicators(bars_df: pd.DataFrame) -> StockIndicators:
     typical_price = (high + low + close) / 3
     cum_vol = bars_df["volume"].cumsum().replace(0, np.nan)
     vwap = round(float((typical_price * bars_df["volume"]).cumsum().iloc[-1] / cum_vol.iloc[-1]), 4)
+
+    adv_20d = float(bars_df["volume"].tail(20).mean()) if len(bars_df) >= 20 else float(bars_df["volume"].mean())
+    # Flow uses a current-bar liquidity hurdle, so derive a numeric threshold from
+    # recent daily ADV instead of making the prompt guess a market-cap tier.
+    liquidity_threshold = round(
+        min(
+            _FLOW_LIQUIDITY_THRESHOLD_CAP,
+            max(_FLOW_LIQUIDITY_THRESHOLD_FLOOR, adv_20d * _FLOW_LIQUIDITY_THRESHOLD_ADV_FRACTION),
+        ),
+        4,
+    )
 
     poc, val, vah = _volume_profile(close, bars_df["volume"])
     cmf_20 = _cmf(high, low, close, bars_df["volume"])
@@ -193,6 +260,8 @@ def compute_stock_indicators(bars_df: pd.DataFrame) -> StockIndicators:
         bollinger_mid=bb_mid,
         atr_14=atr,
         adx_14=adx,
+        adx_z_score=adx_z_score,
+        adx_change_2d=adx_change_2d,
         keltner_mid=keltner_mid,
         keltner_upper=keltner_upper,
         keltner_lower=keltner_lower,
@@ -205,6 +274,7 @@ def compute_stock_indicators(bars_df: pd.DataFrame) -> StockIndicators:
         hv_20d=hv_20d,
         garch_vol_forecast=garch_forecast,
         vwap=vwap,
+        liquidity_threshold=liquidity_threshold,
         volume_profile_poc=poc,
         volume_profile_val=val,
         volume_profile_vah=vah,

@@ -159,7 +159,7 @@ def test_blueprint_option_leg_price_tolerance_accepts_percent_strings():
     assert blueprint.symbol_plans[0].legs[0].price_tolerance == 0.015
 
 
-def test_normalize_blueprint_payload_normalizes_max_total_positions_to_plan_count():
+def test_normalize_blueprint_payload_uses_global_cap_not_current_plan_count():
     payload = {
         "trading_date": "2026-04-29",
         "generated_at": "2026-04-28T03:39:57",
@@ -197,14 +197,14 @@ def test_normalize_blueprint_payload_normalizes_max_total_positions_to_plan_coun
 
     normalized, stats = _normalize_blueprint_payload(payload, signal_date=None)
 
-    assert normalized["max_total_positions"] == 3
+    assert normalized["max_total_positions"] == 10
     assert len(normalized["symbol_plans"]) == 3
     assert [p["underlying"] for p in normalized["symbol_plans"]] == ["SPY", "QQQ", "IWM"]
     assert stats["max_total_positions_normalized"] == 1
 
     blueprint = LLMTradingBlueprint.model_validate(normalized)
 
-    assert blueprint.max_total_positions == 3
+    assert blueprint.max_total_positions == 10
     assert len(blueprint.symbol_plans) == 3
 
 
@@ -289,7 +289,7 @@ def test_normalize_blueprint_payload_sorts_trimmed_plans_by_score_then_quality_c
     normalized, stats = _normalize_blueprint_payload(payload, signal_date=None, max_output_plans=2)
 
     assert [plan["underlying"] for plan in normalized["symbol_plans"]] == ["NVDA", "TSLA"]
-    assert normalized["max_total_positions"] == 2
+    assert normalized["max_total_positions"] == 10
     assert stats["symbol_plans_trimmed_to_max_output_plans"] == 2
 
 
@@ -313,7 +313,7 @@ def test_normalize_blueprint_payload_does_not_trim_when_output_cap_disabled():
 
     normalized, stats = _normalize_blueprint_payload(payload, signal_date=None, max_output_plans=None)
 
-    assert normalized["max_total_positions"] == 12
+    assert normalized["max_total_positions"] == 10
     assert len(normalized["symbol_plans"]) == 12
     assert stats["symbol_plans_trimmed_to_max_output_plans"] == 0
 
@@ -339,8 +339,6 @@ def test_synthesizer_prompt_caps_max_total_positions_to_configured_limit(monkeyp
     prompt = SynthesizerAgent()._build_prompt(
         agent_outputs={},
         signals_summary=[{"symbol": symbol, "close_price": 100.0, "volume": 1_000_000, "volatility_regime": "normal"} for symbol in trade_symbols],
-        current_positions=None,
-        previous_execution=None,
         critic_feedback=None,
         signal_date=None,
         trade_symbols=trade_symbols,
@@ -375,19 +373,17 @@ def test_synthesizer_prompt_does_not_apply_global_cap_when_disabled(monkeypatch)
     prompt = SynthesizerAgent()._build_prompt(
         agent_outputs={},
         signals_summary=[{"symbol": symbol, "close_price": 100.0, "volume": 1_000_000, "volatility_regime": "normal"} for symbol in trade_symbols],
-        current_positions=None,
-        previous_execution=None,
         critic_feedback=None,
         signal_date=None,
         trade_symbols=trade_symbols,
         apply_output_cap=False,
     )
 
-    assert '"max_total_positions":12' in prompt
-    assert "Generate at most 12 symbol_plans total" in prompt
+    assert '"max_total_positions":10' in prompt
+    assert "Use max_total_positions=10 as the portfolio cap" in prompt
 
-    assert "Every leg SHOULD include `price_tolerance` as a decimal fraction" in _SYNTHESIZER_SYSTEM_PROMPT
-    assert "Liquid ETF / blue chip: 0.005-0.015" in _SYNTHESIZER_SYSTEM_PROMPT
+    assert "Every leg MUST include `price_tolerance` as a decimal fraction" in _SYNTHESIZER_SYSTEM_PROMPT
+    assert "Only use generic 0.005-0.015 for liquid ETFs/blue chips when Chain.liquidity_tier is unknown" in _SYNTHESIZER_SYSTEM_PROMPT
     assert "Buying (`side=buy`): prefer the tighter end" in _SYNTHESIZER_SYSTEM_PROMPT
 
 

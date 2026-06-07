@@ -18,11 +18,22 @@ from typing import Any
 from shared.config import get_settings
 
 
-_DEFAULT_SIMPLE_STRATEGY_TYPES = frozenset({"single_leg", "vertical_spread"})
+_DEFAULT_SIMPLE_STRATEGY_TYPES = frozenset({"single_leg", "vertical_spread", "iron_condor", "calendar_spread"})
 _SPREAD_STRATEGY_TYPES = frozenset({
     "vertical_spread", "iron_condor", "iron_butterfly",
     "butterfly", "calendar_spread", "diagonal_spread",
 })
+_VOLATILITY_SHORT_VOL_STRATEGY_TYPES = frozenset({"iron_condor", "iron_butterfly"})
+_EXECUTION_CANDIDATE_STRATEGY_KEYS = {
+    "vertical_spread": ("vertical",),
+    "iron_condor": ("iron_condor",),
+    "iron_butterfly": ("butterfly",),
+    "butterfly": ("butterfly",),
+    "calendar_spread": ("calendar",),
+    "diagonal_spread": ("calendar", "reverse_calendar"),
+}
+_SIMPLE_STRUCTURE_AGENT_NAMES = ("trend", "volatility", "flow", "chain", "spread")
+_ONE_SHOT_EXPIRY_STRATEGIES = frozenset({"single_leg", "vertical_spread"})
 
 
 @dataclass
@@ -81,6 +92,23 @@ def _signal_spot_price(signal: dict[str, Any]) -> float | None:
         return None
     spot = float(raw)
     return spot if spot > 0 else None
+
+
+def _signal_volume(signal: dict[str, Any]) -> float | None:
+    """Best-effort volume lookup from raw or serialized signal structures."""
+    raw = signal.get("volume")
+    if isinstance(raw, (int, float)):
+        volume = float(raw)
+        return volume if volume >= 0 else None
+
+    price = signal.get("price", {})
+    if isinstance(price, dict):
+        nested = price.get("volume")
+        if isinstance(nested, (int, float)):
+            volume = float(nested)
+            return volume if volume >= 0 else None
+
+    return None
 
 
 def _bollinger_position(signal: dict[str, Any], stock_indicators: dict[str, Any]) -> float | None:
@@ -169,20 +197,26 @@ def check_blueprint(
         if signal_features:
             sig = signal_features.get(sym, {})
             _check_counter_trend(plan, sig, result)
+            _check_trend_adx_zscore_guard(plan, sig, result)
+            _check_trend_numeric_liquidity_guard(plan, sig, result)
+            _check_volatility_backwardation_short_dte_guard(plan, sig, result)
             _check_liquidity(plan, sig, result)
             _check_vertical_spread_moneyness(plan, sig, result)
             _check_calendar_spread_context(plan, sig, result)
             _check_earnings_proximity(plan, sig, result)
             _check_confidence_quality_gate(plan, sig, result)
             _check_cross_asset_quality_guards(plan, sig, result)
+            _check_spread_execution_candidate_conflicts(plan, sig, agent_outputs, result)
         if agent_outputs:
             _check_cross_asset_agent_guards(plan, agent_outputs, result)
+            _check_volatility_single_indicator_limits(plan, agent_outputs, result)
             _check_trend_trade_gate(plan, agent_outputs, result)
+            _check_trend_false_positive_risk(plan, agent_outputs, result)
             _check_flow_trade_gate(plan, agent_outputs, result)
             _check_chain_hard_block(plan, agent_outputs, result)
+            _check_chain_gamma_pin_exception_requirements(plan, agent_outputs, result)
             _check_chain_trade_gate(plan, agent_outputs, result)
             _check_cascading_modifiers(plan, agent_outputs, result)
-            _check_master_override(plan, agent_outputs, result)
             _check_volatility_trade_gate(plan, agent_outputs, result)
             _check_spread_trade_gate(plan, agent_outputs, result)
             _check_spread_effective_rr(plan, agent_outputs, result)
@@ -214,72 +248,9 @@ _DEFAULT_CONFIDENCE_BASELINE = 0.40
 
 
 def _check_plan_risk(plan: dict, result: CheckResult) -> None:
-    """Validate per-plan risk constraints."""
-    sym = plan.get("underlying", "UNKNOWN")
-
-    # Stop-loss required
-    stop_loss = plan.get("stop_loss_amount")
-    if stop_loss is None or stop_loss == 0:
-        result.issues.append(RuleIssue(
-            severity="error",
-            category="risk_breach",
-            symbol=sym,
-            rule="stop_loss_required",
-            description="Plan missing stop_loss_amount — every plan must have a stop-loss",
-        ))
-
-    # Max loss per trade required and positive
-    max_loss = plan.get("max_loss_per_trade", 0)
-    if max_loss <= 0:
-        result.issues.append(RuleIssue(
-            severity="error",
-            category="risk_breach",
-            symbol=sym,
-            rule="max_loss_positive",
-            description=f"max_loss_per_trade={max_loss} — must be > 0",
-        ))
-
-    # Stop-loss should not exceed plan max loss
-    if isinstance(stop_loss, (int, float)) and isinstance(max_loss, (int, float)) and max_loss > 0:
-        if stop_loss > max_loss:
-            result.issues.append(RuleIssue(
-                severity="error",
-                category="risk_breach",
-                symbol=sym,
-                rule="stop_loss_exceeds_max_loss",
-                description=(
-                    f"stop_loss_amount={stop_loss} exceeds max_loss_per_trade={max_loss}"
-                ),
-            ))
-        elif abs(stop_loss - max_loss) < 1e-9:
-            result.issues.append(RuleIssue(
-                severity="error",
-                category="risk_breach",
-                symbol=sym,
-                rule="stop_loss_equals_max_loss",
-                description=(
-                    f"stop_loss_amount={stop_loss} equals max_loss_per_trade={max_loss} — "
-                    "this is a worst-case loss, not an actionable stop"
-                ),
-            ))
-
-    # Optional R:R sanity check when take-profit is provided
-    take_profit = plan.get("take_profit_amount")
-    if isinstance(take_profit, (int, float)) and take_profit > 0 and isinstance(max_loss, (int, float)) and max_loss > 0:
-        if take_profit / max_loss < 1.0:
-            result.issues.append(RuleIssue(
-                severity="warning",
-                category="risk_breach",
-                symbol=sym,
-                rule="risk_reward_below_one",
-                description=(
-                    f"take_profit_amount={take_profit} vs max_loss_per_trade={max_loss} "
-                    f"(R:R<{1.0})"
-                ),
-            ))
-
-    # Confidence sanity
+    """Validate per-plan confidence sanity only; sizing/loss are trader-managed."""
     conf = plan.get("confidence", 0)
+    sym = plan.get("underlying", "UNKNOWN")
     strategy = plan.get("strategy_type", "")
     baseline = _CONFIDENCE_BASELINES.get(strategy, _DEFAULT_CONFIDENCE_BASELINE)
     threshold = baseline * 0.6
@@ -364,7 +335,16 @@ def _check_plan_reasoning(plan: dict, result: CheckResult) -> None:
             description=f"Reasoning is only {len(reasoning)} chars — should explain agent analyses",
         ))
 
-    # Exit conditions
+    entries = plan.get("entry_conditions", [])
+    if not entries:
+        result.issues.append(RuleIssue(
+            severity="warning",
+            category="logic_error",
+            symbol=sym,
+            rule="no_entry_conditions",
+            description="Plan has no entry conditions — should define at least one",
+        ))
+
     exits = plan.get("exit_conditions", [])
     if not exits:
         result.issues.append(RuleIssue(
@@ -374,6 +354,34 @@ def _check_plan_reasoning(plan: dict, result: CheckResult) -> None:
             rule="no_exit_conditions",
             description="Plan has no exit conditions — should define at least one",
         ))
+
+    adjustment_rules = plan.get("adjustment_rules", [])
+    if adjustment_rules:
+        return
+
+    strategy = str(plan.get("strategy_type", "")).lower()
+    if strategy in _ONE_SHOT_EXPIRY_STRATEGIES:
+        reasoning_lower = reasoning.lower()
+        if "hold to expiry" in reasoning_lower or "one-shot" in reasoning_lower or "no adjustment" in reasoning_lower:
+            return
+        result.issues.append(RuleIssue(
+            severity="warning",
+            category="logic_error",
+            symbol=sym,
+            rule="adjustment_rules_missing_reasoning",
+            description=(
+                "One-shot structure omitted adjustment_rules but reasoning does not explain hold-to-expiry or no-adjustment intent"
+            ),
+        ))
+        return
+
+    result.issues.append(RuleIssue(
+        severity="warning",
+        category="logic_error",
+        symbol=sym,
+        rule="adjustment_rules_missing",
+        description="Plan has no adjustment_rules for a non one-shot structure",
+    ))
 
 
 # ---------------------------------------------------------------------------
@@ -412,8 +420,8 @@ def _check_counter_trend(plan: dict, signal: dict, result: CheckResult) -> None:
             if bb_pos is not None and (bb_pos > 0.95 or bb_pos < 0.05):
                 confluence_count += 1
 
-            has_stop = bool(plan.get("stop_loss_amount"))
-            severity = "warning" if (confluence_count >= 2 and has_stop) else "error"
+            has_exit_plan = bool(plan.get("exit_conditions"))
+            severity = "warning" if (confluence_count >= 2 and has_exit_plan) else "error"
 
             result.issues.append(RuleIssue(
                 severity=severity,
@@ -426,6 +434,78 @@ def _check_counter_trend(plan: dict, signal: dict, result: CheckResult) -> None:
                     f"Rule: do NOT enter counter-trend when ADX>30."
                 ),
             ))
+
+
+def _check_trend_adx_zscore_guard(plan: dict, signal: dict, result: CheckResult) -> None:
+    """Trend H6: extreme ADX z-score blocks counter-trend / reversal theses."""
+    sym = plan.get("underlying", "UNKNOWN")
+    trend = signal.get("stock_indicators", {})
+    if not isinstance(trend, dict):
+        return
+
+    adx_z_score = trend.get("adx_z_score")
+    try:
+        adx_z_val = float(adx_z_score) if adx_z_score is not None else None
+    except (TypeError, ValueError):
+        adx_z_val = None
+
+    if adx_z_val is None or adx_z_val <= 1.5:
+        return
+
+    trend_dir = trend.get("trend", trend.get("trend_direction", "neutral"))
+    plan_dir = plan.get("direction", "neutral")
+    if trend_dir == "neutral" or plan_dir == "neutral":
+        return
+
+    is_counter = (
+        (trend_dir == "bullish" and plan_dir == "bearish")
+        or (trend_dir == "bearish" and plan_dir == "bullish")
+    )
+    if not is_counter:
+        return
+
+    result.issues.append(RuleIssue(
+        severity="error",
+        category="strategy_mismatch",
+        symbol=sym,
+        rule="counter_trend_adx_zscore",
+        description=(
+            f"Counter-trend or reversal thesis while stock_indicators.adx_z_score={adx_z_val:.2f}>1.50. "
+            f"Trend={trend_dir}, plan direction={plan_dir}. Trend H6 requires blocking counter-trend setups in extreme ADX conditions."
+        ),
+    ))
+
+
+def _check_trend_numeric_liquidity_guard(plan: dict, signal: dict, result: CheckResult) -> None:
+    """Trend H5: low-liquidity names should inherit the high false-positive guardrail."""
+    sym = plan.get("underlying", "UNKNOWN")
+    trend = signal.get("stock_indicators", {})
+    if not isinstance(trend, dict):
+        return
+
+    liquidity_threshold = trend.get("liquidity_threshold")
+    try:
+        liquidity_floor = float(liquidity_threshold) if liquidity_threshold is not None else None
+    except (TypeError, ValueError):
+        liquidity_floor = None
+
+    volume = _signal_volume(signal)
+    if liquidity_floor is None or liquidity_floor <= 0 or volume is None or volume >= liquidity_floor:
+        return
+
+    strategy = str(plan.get("strategy_type", "")).lower()
+    simple_strategy_types = _configured_simple_strategy_types()
+    if strategy not in simple_strategy_types:
+        result.issues.append(RuleIssue(
+            severity="error",
+            category="strategy_mismatch",
+            symbol=sym,
+            rule="trend_low_liquidity_simple_structures_only",
+            description=(
+                f"price.volume={volume:.0f} is below stock_indicators.liquidity_threshold={liquidity_floor:.0f}. "
+                f"Trend H5 implies high false_positive_risk and simple structures only, but strategy_type={strategy or 'unknown'}"
+            ),
+        ))
 
 
 def _check_liquidity(plan: dict, signal: dict, result: CheckResult) -> None:
@@ -461,6 +541,35 @@ def _check_liquidity(plan: dict, signal: dict, result: CheckResult) -> None:
             symbol=sym,
             rule="bid_ask_illiquid",
             description=f"bid_ask_spread_ratio={bid_ask_ratio:.4f} > 0.15 — illiquid, use wider limits",
+        ))
+
+
+def _check_volatility_backwardation_short_dte_guard(
+    plan: dict,
+    signal: dict,
+    result: CheckResult,
+) -> None:
+    """Volatility H3: backwardation plus short front DTE blocks short-vol structures."""
+    strategy = str(plan.get("strategy_type", "")).lower()
+    if strategy not in _VOLATILITY_SHORT_VOL_STRATEGY_TYPES:
+        return
+
+    sym = plan.get("underlying", "UNKNOWN")
+    slope = _signal_term_structure_slope(signal)
+    front_expiry_dte = _signal_front_expiry_dte(signal)
+    if slope is None or front_expiry_dte is None:
+        return
+
+    if slope < 0.0 and front_expiry_dte < 10:
+        result.issues.append(RuleIssue(
+            severity="error",
+            category="strategy_mismatch",
+            symbol=sym,
+            rule="volatility_backwardation_short_dte_short_vol",
+            description=(
+                f"term_structure_slope={slope:.4f} and front_expiry_dte={front_expiry_dte} < 10. "
+                f"Volatility H3 blocks short-vol strategy {strategy} in near-dated backwardation."
+            ),
         ))
 
 
@@ -585,6 +694,346 @@ def _check_calendar_spread_context(plan: dict, signal: dict, result: CheckResult
                 "but the signal data is missing or non-numeric"
             ),
         ))
+        return
+
+    if slope_val <= 0.0:
+        result.issues.append(RuleIssue(
+            severity="error",
+            category="strategy_mismatch",
+            symbol=sym,
+            rule="calendar_requires_contango",
+            description=(
+                f"term_structure_slope={slope_val:.4f} — calendar_spread is allowed only in contango "
+                "under precision-first validation"
+            ),
+        ))
+
+
+def _check_spread_execution_candidate_conflicts(
+    plan: dict,
+    signal: dict,
+    agent_outputs: dict[str, Any],
+    result: CheckResult,
+) -> None:
+    """Flag spread plans that ignore materially stronger allowed execution candidates."""
+    strategy = plan.get("strategy_type", "")
+    candidate_keys = _EXECUTION_CANDIDATE_STRATEGY_KEYS.get(strategy)
+    if not candidate_keys:
+        return
+
+    sym = plan.get("underlying", "UNKNOWN")
+    execution_candidates = _signal_execution_candidates(signal)
+    if not execution_candidates:
+        result.issues.append(RuleIssue(
+            severity="warning",
+            category="logic_error",
+            symbol=sym,
+            rule="spread_execution_candidate_data_missing",
+            description="execution_candidates data is missing; skipping structure-priority conflict check",
+        ))
+        return
+
+    current_candidates = [
+        _execution_candidate_breakdown(candidate_key, execution_candidates.get(candidate_key), signal)
+        for candidate_key in candidate_keys
+        if execution_candidates.get(candidate_key) is not None
+    ]
+    if not current_candidates:
+        result.issues.append(RuleIssue(
+            severity="warning",
+            category="logic_error",
+            symbol=sym,
+            rule="spread_execution_candidate_data_missing",
+            description=(
+                f"execution_candidates has no usable data for selected strategy {strategy}; skipping structure-priority conflict check"
+            ),
+        ))
+        return
+
+    current = max(current_candidates, key=lambda item: item["score"])
+    stronger_alternatives: list[dict[str, Any]] = []
+    for alt_strategy, alt_candidate_keys in _EXECUTION_CANDIDATE_STRATEGY_KEYS.items():
+        if alt_strategy == strategy:
+            continue
+        if not _is_execution_candidate_allowed(alt_strategy, signal, agent_outputs, sym):
+            continue
+
+        for candidate_key in alt_candidate_keys:
+            raw_candidate = execution_candidates.get(candidate_key)
+            if raw_candidate is None:
+                continue
+            breakdown = _execution_candidate_breakdown(candidate_key, raw_candidate, signal)
+            if not breakdown["candidate_available"]:
+                continue
+            if breakdown["score"] < 0.55:
+                continue
+            if breakdown["score"] - current["score"] < 0.2:
+                continue
+            stronger_alternatives.append({
+                "strategy": alt_strategy,
+                **breakdown,
+            })
+
+    if not stronger_alternatives:
+        return
+
+    strongest = max(stronger_alternatives, key=lambda item: item["score"])
+    result.issues.append(RuleIssue(
+        severity="error",
+        category="logic_error",
+        symbol=sym,
+        rule="spread_execution_candidate_conflict",
+        description=(
+            f"Selected {strategy} relies on execution candidate {current['candidate_key']} with "
+            f"score={current['score']:.2f} ({current['reason']}). A materially stronger allowed "
+            f"execution candidate exists for {strongest['strategy']} via {strongest['candidate_key']} "
+            f"with score={strongest['score']:.2f} ({strongest['reason']}) — structure_priority_conflict"
+        ),
+    ))
+
+
+def _signal_execution_candidates(signal: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    option_indicators = signal.get("option_indicators", {})
+    if isinstance(option_indicators, dict):
+        spread_inputs = option_indicators.get("spread_execution_inputs")
+        if isinstance(spread_inputs, dict):
+            return {
+                str(name): data
+                for name, data in spread_inputs.items()
+                if isinstance(data, dict)
+            }
+
+    option_spreads = signal.get("option_spreads", {})
+    if isinstance(option_spreads, dict):
+        execution_candidates = option_spreads.get("execution_candidates")
+        if isinstance(execution_candidates, dict):
+            return {
+                str(name): data
+                for name, data in execution_candidates.items()
+                if isinstance(data, dict)
+            }
+    return {}
+
+
+def _signal_earnings_days(signal: dict[str, Any]) -> int | None:
+    for key in ("cross_asset_indicators", "cross_asset"):
+        cross_asset = signal.get(key, {})
+        if not isinstance(cross_asset, dict):
+            continue
+        earnings_days = cross_asset.get("earnings_proximity_days")
+        if isinstance(earnings_days, int):
+            return earnings_days
+    return None
+
+
+def _signal_term_structure_slope(signal: dict[str, Any]) -> float | None:
+    option_indicators = signal.get("option_indicators", {})
+    if not isinstance(option_indicators, dict):
+        return None
+    slope = option_indicators.get("term_structure_slope")
+    try:
+        return float(slope) if slope is not None else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _signal_front_expiry_dte(signal: dict[str, Any]) -> int | None:
+    option_indicators = signal.get("option_indicators", {})
+    if not isinstance(option_indicators, dict):
+        return None
+    front_expiry_dte = option_indicators.get("front_expiry_dte")
+    if isinstance(front_expiry_dte, int):
+        return front_expiry_dte
+    try:
+        return int(front_expiry_dte) if front_expiry_dte is not None else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _has_simple_structures_only_gate(
+    agent_outputs: dict[str, Any],
+    symbol: str,
+) -> bool:
+    for agent_name in _SIMPLE_STRUCTURE_AGENT_NAMES:
+        symbol_data = _agent_sym(agent_outputs, agent_name, symbol)
+        if symbol_data and symbol_data.get("simple_structures_only"):
+            return True
+    return False
+
+
+def _gamma_pin_exception_allows_complex_structure(
+    plan: dict[str, Any],
+    agent_outputs: dict[str, Any],
+) -> bool:
+    """Return True when Chain GP1 allows neutral butterfly/iron_condor exception."""
+    sym = plan.get("underlying", "UNKNOWN")
+    strategy = str(plan.get("strategy_type", "")).lower()
+    direction = str(plan.get("direction", "")).lower()
+    if strategy not in {"butterfly", "iron_condor"} or direction != "neutral":
+        return False
+
+    chain_data = _agent_sym(agent_outputs, "chain", sym)
+    if chain_data is None:
+        return False
+
+    if not chain_data.get("gamma_pin_active"):
+        return False
+
+    pin_strength = _safe_float(chain_data.get("pin_strength"))
+    if pin_strength is None or pin_strength <= 0.7:
+        return False
+
+    liquidity_tier = str(chain_data.get("liquidity_tier") or "").upper()
+    return liquidity_tier in {"L1", "L2"}
+
+
+def _is_execution_candidate_allowed(
+    strategy_type: str,
+    signal: dict[str, Any],
+    agent_outputs: dict[str, Any],
+    symbol: str,
+) -> bool:
+    earnings_days = _signal_earnings_days(signal)
+    slope = _signal_term_structure_slope(signal)
+
+    if _has_simple_structures_only_gate(agent_outputs, symbol):
+        return strategy_type == "vertical_spread"
+
+    if isinstance(earnings_days, int):
+        if earnings_days <= 1:
+            return False
+        if earnings_days <= 3 and strategy_type != "vertical_spread":
+            return False
+        if earnings_days <= 5 and strategy_type in {"calendar_spread", "diagonal_spread"}:
+            return False
+
+    if strategy_type == "calendar_spread":
+        return isinstance(slope, float) and slope > 0.0
+
+    if strategy_type == "diagonal_spread":
+        return isinstance(slope, float) and (slope > 0.0 or slope < -0.03)
+
+    return True
+
+
+def _execution_candidate_breakdown(
+    candidate_key: str,
+    candidate: dict[str, Any],
+    signal: dict[str, Any],
+) -> dict[str, Any]:
+    slope = _signal_term_structure_slope(signal)
+    candidate_available = bool(candidate.get("candidate_available", False))
+    worst_leg_ratio = _safe_float(candidate.get("worst_leg_bid_ask_spread_ratio"))
+    liquidity_penalty = 0.0
+    if worst_leg_ratio is not None:
+        if worst_leg_ratio > 0.2:
+            liquidity_penalty = 0.3
+        elif worst_leg_ratio > 0.1:
+            liquidity_penalty = 0.1
+
+    metric_name: str | None = None
+    metric_value: float | None = None
+    reason = "candidate_unavailable"
+    score = 0.15
+
+    if candidate_available:
+        score = 0.25
+        if candidate_key == "vertical":
+            metric_name = "effective_rr"
+            metric_value = _safe_float(candidate.get("effective_rr"))
+            if metric_value is None:
+                metric_name = "raw_rr"
+                metric_value = _safe_float(candidate.get("raw_rr"))
+            if metric_value is None:
+                reason = "vertical_rr_missing"
+            elif metric_value < 0.7:
+                score = 0.1
+                reason = "vertical_rr_below_floor"
+            elif metric_value >= 1.2:
+                score = 1.0
+                reason = "vertical_rr_strong"
+            else:
+                score = 0.55 + ((metric_value - 0.7) / 0.5) * 0.45
+                reason = "vertical_rr_acceptable"
+        elif candidate_key == "iron_condor":
+            metric_name = "effective_rr"
+            metric_value = _safe_float(candidate.get("effective_rr"))
+            if metric_value is None:
+                metric_name = "raw_rr"
+                metric_value = _safe_float(candidate.get("raw_rr"))
+            if metric_value is None:
+                reason = "iron_condor_rr_missing"
+            elif 0.4 <= metric_value <= 0.6:
+                score = 1.0
+                reason = "iron_condor_rr_optimal"
+            elif 0.3 <= metric_value <= 0.8:
+                score = 0.8
+                reason = "iron_condor_rr_supported"
+            elif 0.2 <= metric_value <= 1.0:
+                score = 0.55
+                reason = "iron_condor_rr_marginal"
+            else:
+                score = 0.15
+                reason = "iron_condor_rr_outside_band"
+        elif candidate_key == "calendar":
+            metric_name = "effective_theta_capture_per_day"
+            metric_value = _safe_float(candidate.get("effective_theta_capture_per_day"))
+            if metric_value is None:
+                reason = "calendar_theta_missing"
+            elif not isinstance(slope, float) or slope <= 0.0:
+                score = 0.1
+                reason = "calendar_term_structure_misaligned"
+            elif metric_value <= 0.0:
+                score = 0.1
+                reason = "calendar_theta_not_positive"
+            else:
+                score = 0.55 + min(metric_value / 0.05, 1.0) * 0.45
+                reason = "calendar_theta_supported"
+        elif candidate_key == "reverse_calendar":
+            metric_name = "effective_theta_capture_per_day"
+            metric_value = _safe_float(candidate.get("effective_theta_capture_per_day"))
+            if metric_value is None:
+                reason = "reverse_calendar_theta_missing"
+            elif not isinstance(slope, float) or slope >= -0.03:
+                score = 0.1
+                reason = "reverse_calendar_term_structure_misaligned"
+            elif metric_value <= 0.0:
+                score = 0.1
+                reason = "reverse_calendar_theta_not_positive"
+            else:
+                score = 0.55 + min(metric_value / 0.05, 1.0) * 0.45
+                reason = "reverse_calendar_theta_supported"
+        elif candidate_key == "butterfly":
+            metric_name = "pricing_error"
+            metric_value = _safe_float(candidate.get("pricing_error"))
+            if metric_value is None:
+                reason = "butterfly_pricing_missing"
+            elif metric_value > 0.12:
+                score = 1.0
+                reason = "butterfly_pricing_strong"
+            elif metric_value >= 0.08:
+                score = 0.8
+                reason = "butterfly_pricing_supported"
+            else:
+                score = 0.2
+                reason = "butterfly_pricing_below_threshold"
+
+    final_score = max(0.0, min(1.0, round(score - liquidity_penalty, 6)))
+    return {
+        "candidate_key": candidate_key,
+        "candidate_available": candidate_available,
+        "score": final_score,
+        "metric_name": metric_name,
+        "metric_value": round(metric_value, 6) if metric_value is not None else None,
+        "reason": reason,
+    }
+
+
+def _safe_float(value: Any) -> float | None:
+    try:
+        return float(value) if value is not None else None
+    except (TypeError, ValueError):
+        return None
         return
 
     if slope_val <= 0.0:
@@ -796,6 +1245,8 @@ def _check_dte_bounds(plan: dict, result: CheckResult) -> None:
         dte_min, dte_max = 14, 200
     elif strategy in ("leaps", "long_leaps"):
         dte_min, dte_max = 60, 365
+    elif strategy in ("single_leg", "vertical_spread"):
+        dte_min, dte_max = 5, 180
     else:
         dte_min, dte_max = 7, 180
 
@@ -934,8 +1385,6 @@ def _check_cross_asset_quality_guards(
     freshness = conf_scores.get("data_freshness")
     plan_conf = plan.get("confidence", 0)
     direction = plan.get("direction", "neutral")
-    max_pos = plan.get("max_position_size")
-
     if isinstance(corr_sig, (int, float)) and corr_sig < 0.5 and plan_conf > 0.4:
         result.issues.append(RuleIssue(
             severity="warning",
@@ -957,22 +1406,6 @@ def _check_cross_asset_quality_guards(
             description=(
                 f"cross-asset data_freshness={freshness:.2f} with directional "
                 f"plan confidence={plan_conf:.2f} is too aggressive"
-            ),
-        ))
-
-    if (
-        isinstance(corr_sig, (int, float)) and corr_sig < 0.5
-        and isinstance(freshness, (int, float)) and freshness < 0.5
-        and isinstance(max_pos, (int, float)) and max_pos > 0.7
-    ):
-        result.issues.append(RuleIssue(
-            severity="warning",
-            category="risk_breach",
-            symbol=sym,
-            rule="cross_asset_low_quality_position_size",
-            description=(
-                f"cross-asset quality low (significance={corr_sig:.2f}, "
-                f"freshness={freshness:.2f}) but max_position_size={max_pos:.2f} > 0.70"
             ),
         ))
 
@@ -1005,50 +1438,23 @@ def _check_cross_asset_agent_guards(
             ),
         ))
 
-    eff_mod = cross_data.get("effective_size_modifier")
-    max_pos = plan.get("max_position_size")
-    try:
-        eff_val = float(eff_mod) if eff_mod is not None else None
-    except (TypeError, ValueError):
-        eff_val = None
-
-    if (
-        eff_val is not None
-        and eff_val <= 0.5
-        and isinstance(max_pos, (int, float))
-        and max_pos > eff_val
-    ):
-        result.issues.append(RuleIssue(
-            severity="error",
-            category="risk_breach",
-            symbol=sym,
-            rule="cross_asset_effective_size_modifier_cap",
-            description=(
-                f"Cross-Asset effective_size_modifier={eff_val:.2f} requires max_position_size "
-                f"<= {eff_val:.2f}, but plan uses {max_pos:.2f}"
-            ),
-        ))
-
     regime_days = cross_data.get("regime_days")
+    regime_days_unknown = regime_days is None
     if (
         cross_data.get("regime_transition") is True
-        and isinstance(regime_days, int)
-        and regime_days < 3
+        and (regime_days_unknown or (isinstance(regime_days, int) and regime_days < 3))
         and plan.get("direction", "neutral") in {"bullish", "bearish"}
-        and (
-            plan_conf > 0.5
-            or (isinstance(max_pos, (int, float)) and max_pos > 0.5)
-        )
+        and plan_conf > 0.5
     ):
+        regime_days_desc = regime_days if isinstance(regime_days, int) else "unknown"
         result.issues.append(RuleIssue(
             severity="error",
             category="risk_breach",
             symbol=sym,
             rule="cross_asset_regime_transition_directional_aggression",
             description=(
-                f"Cross-Asset regime_transition=true with regime_days={regime_days} requires neutral or "
-                f"defensive positioning, but plan remains directional with confidence={plan_conf:.2f} "
-                f"and max_position_size={float(max_pos) if isinstance(max_pos, (int, float)) else 1.0:.2f}"
+                f"Cross-Asset regime_transition=true with regime_days={regime_days_desc} requires neutral or "
+                f"defensive positioning, but plan remains directional with confidence={plan_conf:.2f}"
             ),
         ))
 
@@ -1070,12 +1476,9 @@ def _check_cascading_modifiers(
     flow_mod = flow_data.get("position_size_modifier") if flow_data else None
     cross_mod = cross_data.get("effective_size_modifier") if cross_data else None
 
-    if flow_mod is None or cross_mod is None:
-        return
-
     try:
-        flow_val = float(flow_mod)
-        cross_val = float(cross_mod)
+        flow_val = float(flow_mod) if flow_mod is not None else 1.0
+        cross_val = float(cross_mod) if cross_mod is not None else 1.0
         product = flow_val * cross_val
     except (TypeError, ValueError):
         return
@@ -1253,6 +1656,8 @@ def _check_agent_trade_gate(
         ))
 
     if sym_data.get("simple_structures_only") and strategy not in simple_strategy_types:
+        if _gamma_pin_exception_allows_complex_structure(plan, agent_outputs):
+            return
         result.issues.append(RuleIssue(
             severity="error",
             category="strategy_mismatch",
@@ -1278,6 +1683,33 @@ def _check_volatility_trade_gate(
     )
 
 
+def _check_volatility_single_indicator_limits(
+    plan: dict, agent_outputs: dict[str, Any], result: CheckResult,
+) -> None:
+    """Volatility H6: single-indicator regimes must cap confidence."""
+    sym = plan.get("underlying", "UNKNOWN")
+    vol_data = _agent_sym(agent_outputs, "volatility", sym)
+    if vol_data is None:
+        return
+
+    signal_type = str(vol_data.get("signal_type") or "").strip().lower()
+    if signal_type != "single_indicator":
+        return
+
+    plan_conf = plan.get("confidence", 0)
+    if isinstance(plan_conf, (int, float)) and plan_conf > 0.55:
+        result.issues.append(RuleIssue(
+            severity="error",
+            category="risk_breach",
+            symbol=sym,
+            rule="volatility_single_indicator_confidence_cap",
+            description=(
+                f"Volatility signal_type=single_indicator requires confidence <= 0.55, "
+                f"but plan uses {float(plan_conf):.2f}"
+            ),
+        ))
+
+
 def _check_trend_trade_gate(
     plan: dict, agent_outputs: dict[str, Any], result: CheckResult,
 ) -> None:
@@ -1289,6 +1721,33 @@ def _check_trend_trade_gate(
         agent_name="trend",
         label="Trend",
     )
+
+
+def _check_trend_false_positive_risk(
+    plan: dict, agent_outputs: dict[str, Any], result: CheckResult,
+) -> None:
+    """Trend high false-positive risk must clamp structure complexity."""
+    sym = plan.get("underlying", "UNKNOWN")
+    trend_data = _agent_sym(agent_outputs, "trend", sym)
+    if trend_data is None:
+        return
+
+    false_positive_risk = str(trend_data.get("false_positive_risk") or "").strip().lower()
+    if false_positive_risk != "high":
+        return
+
+    strategy = str(plan.get("strategy_type", "")).lower()
+    simple_strategy_types = _configured_simple_strategy_types()
+    if strategy not in simple_strategy_types:
+        result.issues.append(RuleIssue(
+            severity="error",
+            category="strategy_mismatch",
+            symbol=sym,
+            rule="trend_false_positive_risk_simple_structures_only",
+            description=(
+                f"Trend false_positive_risk=high requires simple structures only, but strategy_type={strategy or 'unknown'}"
+            ),
+        ))
 
 
 def _check_flow_trade_gate(
@@ -1304,6 +1763,38 @@ def _check_flow_trade_gate(
     )
 
 
+def _check_flow_position_size_modifier_cap(
+    plan: dict, agent_outputs: dict[str, Any], result: CheckResult,
+) -> None:
+    """Flow hard caps must constrain the synthesized max_position_size directly."""
+    sym = plan.get("underlying", "UNKNOWN")
+    flow_data = _agent_sym(agent_outputs, "flow", sym)
+    if flow_data is None:
+        return
+
+    flow_mod = flow_data.get("position_size_modifier")
+    max_pos = plan.get("max_position_size")
+    try:
+        flow_val = float(flow_mod) if flow_mod is not None else None
+    except (TypeError, ValueError):
+        flow_val = None
+
+    if flow_val is None or not isinstance(max_pos, (int, float)):
+        return
+
+    if 0.0 <= flow_val <= 1.0 and max_pos > flow_val:
+        result.issues.append(RuleIssue(
+            severity="error",
+            category="risk_breach",
+            symbol=sym,
+            rule="flow_position_size_modifier_cap",
+            description=(
+                f"Flow position_size_modifier={flow_val:.2f} requires max_position_size "
+                f"<= {flow_val:.2f}, but plan uses {max_pos:.2f}"
+            ),
+        ))
+
+
 def _check_chain_trade_gate(
     plan: dict, agent_outputs: dict[str, Any], result: CheckResult,
 ) -> None:
@@ -1315,6 +1806,102 @@ def _check_chain_trade_gate(
         agent_name="chain",
         label="Chain",
     )
+
+
+def _check_chain_gamma_pin_exception_requirements(
+    plan: dict,
+    agent_outputs: dict[str, Any],
+    result: CheckResult,
+) -> None:
+    """GP1: if gamma-pin exception is used, enforce structure and strike centering."""
+    sym = plan.get("underlying", "UNKNOWN")
+    strategy = str(plan.get("strategy_type", "")).lower()
+
+    chain_data = _agent_sym(agent_outputs, "chain", sym)
+    if chain_data is None:
+        return
+    if not chain_data.get("gamma_pin_active"):
+        return
+
+    pin_strength = _safe_float(chain_data.get("pin_strength"))
+    if pin_strength is None or pin_strength <= 0.7:
+        return
+
+    liquidity_tier = str(chain_data.get("liquidity_tier") or "").upper()
+    if liquidity_tier not in {"L1", "L2"}:
+        result.issues.append(RuleIssue(
+            severity="error",
+            category="strategy_mismatch",
+            symbol=sym,
+            rule="chain_gamma_pin_liquidity_tier",
+            description=(
+                f"Chain gamma_pin_active=true with pin_strength={pin_strength:.2f} requires "
+                f"liquidity_tier in [L1, L2], but got {liquidity_tier or 'unknown'}"
+            ),
+        ))
+
+    if strategy not in {"butterfly", "iron_condor"}:
+        result.issues.append(RuleIssue(
+            severity="error",
+            category="strategy_mismatch",
+            symbol=sym,
+            rule="chain_gamma_pin_structure_required",
+            description=(
+                f"Chain gamma_pin_active=true with pin_strength={pin_strength:.2f} requires "
+                "butterfly or iron_condor structures"
+            ),
+        ))
+        return
+
+    direction = str(plan.get("direction", "")).lower()
+    if direction != "neutral":
+        result.issues.append(RuleIssue(
+            severity="error",
+            category="strategy_mismatch",
+            symbol=sym,
+            rule="chain_gamma_pin_neutral_direction_required",
+            description=(
+                f"Chain gamma-pin exception requires direction=neutral, but plan direction={direction or 'unknown'}"
+            ),
+        ))
+
+    gamma_pin_strike = _safe_float(chain_data.get("gamma_pin_strike"))
+    if gamma_pin_strike is None:
+        return
+
+    tolerance = 1e-6
+    short_leg_strikes = []
+    for leg in plan.get("legs", []):
+        if not isinstance(leg, dict):
+            continue
+        if str(leg.get("side", "")).lower() != "sell":
+            continue
+        leg_strike = _safe_float(leg.get("strike"))
+        if leg_strike is not None:
+            short_leg_strikes.append(leg_strike)
+
+    if not short_leg_strikes:
+        result.issues.append(RuleIssue(
+            severity="error",
+            category="strategy_mismatch",
+            symbol=sym,
+            rule="chain_gamma_pin_missing_short_legs",
+            description="Chain gamma-pin exception requires short center legs for strike centering",
+        ))
+        return
+
+    if not any(abs(leg_strike - gamma_pin_strike) <= tolerance for leg_strike in short_leg_strikes):
+        formatted_strikes = ", ".join(f"{strike:.2f}" for strike in sorted(short_leg_strikes))
+        result.issues.append(RuleIssue(
+            severity="error",
+            category="strategy_mismatch",
+            symbol=sym,
+            rule="chain_gamma_pin_strike_centering",
+            description=(
+                f"Chain gamma-pin exception requires at least one short leg strike to match gamma_pin_strike="
+                f"{gamma_pin_strike:.2f}, but short strikes are [{formatted_strikes}]"
+            ),
+        ))
 
 
 def _check_spread_trade_gate(
@@ -1339,12 +1926,12 @@ def _check_spread_trade_gate(
 def _check_spread_effective_rr(
     plan: dict, agent_outputs: dict[str, Any], result: CheckResult,
 ) -> None:
-    """Validate cost-adjusted R:R from Spread agent.
+    """Validate the vertical spread R:R floor from Spread agent.
 
     Agent prompt source:
-    - Spread H1: effective_rr < 1.0 after costs → REJECT spread, confidence ≤ 0.2
-    - Spread H2: effective_rr cannot be estimated → cap confidence ≤ 0.5
-    - Synthesizer HE3: effective_rr < 1.0 → exclude that spread setup
+    - Spread V1: verticals require effective_rr / risk_reward_ratio >= 0.7
+    - Spread contract: non-vertical spreads must not be rejected solely because
+      effective_rr is null
     """
     sym = plan.get("underlying", "UNKNOWN")
     spread_data = _agent_sym(agent_outputs, "spread", sym)
@@ -1352,39 +1939,32 @@ def _check_spread_effective_rr(
         return
 
     strategy = plan.get("strategy_type", "")
-    # Only check for spread strategies
-    if strategy not in _SPREAD_STRATEGY_TYPES:
+    if strategy != "vertical_spread":
         return
 
-    eff_rr = spread_data.get("effective_rr")
+    metrics: dict[str, float] = {}
+    for metric_name in ("effective_rr", "risk_reward_ratio"):
+        metric_value = spread_data.get(metric_name)
+        try:
+            if metric_value is not None:
+                metrics[metric_name] = float(metric_value)
+        except (TypeError, ValueError):
+            continue
 
-    if eff_rr is None:
+    if not metrics:
+        return
+
+    strictest_name, strictest_val = min(metrics.items(), key=lambda item: item[1])
+    if strictest_val < 0.7:
+        metric_desc = ", ".join(f"{name}={value:.2f}" for name, value in sorted(metrics.items()))
         result.issues.append(RuleIssue(
             severity="error",
             category="risk_breach",
             symbol=sym,
-            rule="spread_effective_rr_unknown",
+            rule="spread_vertical_rr_reject",
             description=(
-                "Spread effective_rr is unavailable — precision-first validation rejects "
-                "spread setups without a cost-adjusted R:R"
-            ),
-        ))
-        return
-
-    try:
-        rr_val = float(eff_rr)
-    except (TypeError, ValueError):
-        return
-
-    if rr_val < 1.0:
-        result.issues.append(RuleIssue(
-            severity="error",
-            category="risk_breach",
-            symbol=sym,
-            rule="spread_effective_rr_reject",
-            description=(
-                f"Spread effective_rr={rr_val:.2f} < 1.0 after costs — "
-                f"spread setup must be rejected"
+                f"Vertical spread {strictest_name}={strictest_val:.2f} is below the 0.70 floor "
+                f"for spread viability. Available metrics: {metric_desc}"
             ),
         ))
 
@@ -1399,7 +1979,7 @@ _EVENT_RISK_AGENTS = ("volatility", "flow", "chain", "spread", "cross_asset", "t
 def _check_event_risk_consensus(
     plan: dict, agent_outputs: dict[str, Any], result: CheckResult,
 ) -> None:
-    """Enforce event-risk size and confidence caps from the synthesizer contract.
+    """Enforce event-risk confidence caps from the synthesizer contract.
 
     Agent prompt source:
     - Synthesizer ER1: ≥3 agents flag event_risk_present → max_position_size ≤ 0.8
@@ -1419,6 +1999,46 @@ def _check_event_risk_consensus(
 
     plan_conf = plan.get("confidence", 0)
     strategy = plan.get("strategy_type", "")
+    direction = str(plan.get("direction", "")).strip().lower()
+
+    market_shock = _safe_float(cross_data.get("market_shock_return_1d") if cross_data else None)
+    market_shock_source = str(cross_data.get("market_shock_source") or "").strip() if cross_data else ""
+    shock_escalation = (
+        market_shock is not None
+        and abs(market_shock) > 0.03
+        and bool(market_shock_source)
+        and direction in {"bullish", "bearish"}
+        and strategy not in {"straddle", "strangle"}
+    )
+    shock_direction_aligned = (
+        shock_escalation
+        and ((market_shock < 0 and direction == "bearish") or (market_shock > 0 and direction == "bullish"))
+    )
+
+    if shock_escalation and not shock_direction_aligned:
+        if plan_conf > 0.5:
+            result.issues.append(RuleIssue(
+                severity="error",
+                category="risk_breach",
+                symbol=sym,
+                rule="event_risk_market_shock_confidence_cap",
+                description=(
+                    f"market_shock_return_1d={market_shock:.4f} ({market_shock_source}) escalates event risk, "
+                    f"but confidence={plan_conf:.2f} > 0.50"
+                ),
+            ))
+    elif shock_direction_aligned:
+        reasoning = str(plan.get("reasoning") or "").lower()
+        if market_shock_source.lower() not in reasoning and "shock" not in reasoning:
+            result.issues.append(RuleIssue(
+                severity="warning",
+                category="logic_error",
+                symbol=sym,
+                rule="event_risk_market_shock_exemption_reasoning",
+                description=(
+                    "Applied directional market-shock exemption without explicit reasoning reference to shock source"
+                ),
+            ))
 
     if (
         event_count >= 2
@@ -1440,19 +2060,6 @@ def _check_event_risk_consensus(
     if event_count < 3:
         return
 
-    max_pos = plan.get("max_position_size")
-    if not isinstance(max_pos, (int, float)) or max_pos > 0.8:
-        result.issues.append(RuleIssue(
-            severity="error",
-            category="risk_breach",
-            symbol=sym,
-            rule="event_risk_consensus_position_size",
-            description=(
-                f"{event_count} agents flagged event_risk_present but max_position_size="
-                f"{float(max_pos) if isinstance(max_pos, (int, float)) else 1.0:.2f} exceeds the 0.80 cap"
-            ),
-        ))
-
     if plan_conf > 0.5:
         result.issues.append(RuleIssue(
             severity="warning",
@@ -1461,8 +2068,7 @@ def _check_event_risk_consensus(
             rule="event_risk_consensus",
             description=(
                 f"{event_count} agents flagged event_risk_present but plan "
-                f"confidence={plan_conf:.2f} > 0.50 — should tighten stops or "
-                f"reduce max_position_size"
+                f"confidence={plan_conf:.2f} > 0.50 — should reduce conviction or wait for cleaner context"
             ),
         ))
 

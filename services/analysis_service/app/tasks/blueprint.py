@@ -2,8 +2,9 @@
 from __future__ import annotations
 
 import json
-from datetime import date, timedelta
+from datetime import date
 from time import perf_counter
+from typing import Any
 
 from sqlalchemy import text
 
@@ -19,7 +20,6 @@ from services.analysis_service.app.evaluation.rule_checker import check_blueprin
 from services.analysis_service.app.llm.agents.orchestrator import AgentOrchestrator
 
 from services.analysis_service.app.tasks.helpers import (
-    _fetch_current_positions,
     _get_adapter,
     _parse_signal_features,
 )
@@ -84,10 +84,10 @@ def _summarize_check_result(check) -> dict[str, object]:
     }
 
 
-def _apply_precision_first_strategy_scope(
+def _apply_emitted_strategy_scope_guard(
     blueprint: LLMTradingBlueprint,
 ) -> tuple[LLMTradingBlueprint, list[str], list[dict[str, object]], list[str], bool]:
-    """Prune plans outside the configured precision-first strategy whitelist."""
+    """Prune emitted plans outside the configured precision-first strategy whitelist."""
     precision_first = get_settings().analysis_service.llm.precision_first
     allowed_strategy_types = [strategy_type.lower() for strategy_type in precision_first.allowed_strategy_types]
     allowed_set = set(allowed_strategy_types)
@@ -110,11 +110,11 @@ def _apply_precision_first_strategy_scope(
         pruned_issues.append(
             {
                 "severity": "error",
-                "rule": "precision_first_strategy_scope",
+                "rule": "emitted_strategy_scope_guard",
                 "symbol": symbol,
                 "category": "strategy_mismatch",
                 "description": (
-                    f"strategy_type={strategy_type} is outside the precision-first allowlist "
+                    f"emitted strategy_type={strategy_type} is outside the precision-first allowlist "
                     f"{sorted(allowed_set)}"
                 ),
             }
@@ -133,8 +133,8 @@ def _apply_deterministic_validation(
 ) -> tuple[LLMTradingBlueprint, dict[str, object]]:
     """Prune symbol plans with deterministic errors, then re-run validation."""
     original_plan_count = len(blueprint.symbol_plans)
-    blueprint, scope_pruned_symbols, scope_pruned_issues, allowed_strategy_types, precision_first_enabled = (
-        _apply_precision_first_strategy_scope(blueprint)
+    blueprint, emitted_scope_pruned_symbols, emitted_scope_pruned_issues, allowed_strategy_types, precision_first_enabled = (
+        _apply_emitted_strategy_scope_guard(blueprint)
     )
 
     initial_check = check_blueprint(
@@ -144,13 +144,13 @@ def _apply_deterministic_validation(
     )
     initial_errors = [issue for issue in initial_check.issues if issue.severity == "error"]
     validation_pruned_symbols = sorted({issue.symbol.upper() for issue in initial_errors if issue.symbol})
-    pruned_symbols = sorted(set(scope_pruned_symbols) | set(validation_pruned_symbols))
+    pruned_symbols = sorted(set(emitted_scope_pruned_symbols) | set(validation_pruned_symbols))
 
     pruned_symbol_errors = _serialize_rule_issues(
         [issue for issue in initial_errors if issue.symbol and issue.symbol.upper() in validation_pruned_symbols]
     )
-    if scope_pruned_issues:
-        pruned_symbol_errors = [*scope_pruned_issues, *pruned_symbol_errors]
+    if emitted_scope_pruned_issues:
+        pruned_symbol_errors = [*emitted_scope_pruned_issues, *pruned_symbol_errors]
 
     if validation_pruned_symbols:
         surviving_plans = [
@@ -169,14 +169,62 @@ def _apply_deterministic_validation(
     summary["initial_warning_count"] = initial_check.warning_count
     summary["precision_first_enabled"] = precision_first_enabled
     summary["allowed_strategy_types"] = allowed_strategy_types
-    summary["strategy_scope_pruned_symbols"] = scope_pruned_symbols
-    summary["strategy_scope_pruned_plan_count"] = len(scope_pruned_issues)
+    summary["emitted_strategy_scope_pruned_symbols"] = emitted_scope_pruned_symbols
+    summary["emitted_strategy_scope_pruned_plan_count"] = len(emitted_scope_pruned_issues)
     summary["pruned_symbols"] = pruned_symbols
     summary["pruned_plan_count"] = original_plan_count - len(blueprint.symbol_plans)
     summary["pruned_symbol_errors"] = pruned_symbol_errors
     summary["empty_after_pruning"] = len(blueprint.symbol_plans) == 0
     summary["passed"] = bool(summary["passed"] and blueprint.symbol_plans)
     return blueprint, summary
+
+
+def _resolve_validation_agent_outputs(
+    reasoning_context: dict[str, Any] | None,
+) -> dict[str, object] | None:
+    """Return specialist outputs for deterministic validation.
+
+    Chunk-merged blueprints keep per-chunk agent outputs under ``chunk_contexts``
+    rather than the top-level reasoning context. Aggregate those symbol analyses so
+    deterministic validation can still enforce machine-readable agent gates.
+    """
+    if not isinstance(reasoning_context, dict):
+        return None
+
+    agent_outputs = reasoning_context.get("agent_outputs")
+    if isinstance(agent_outputs, dict):
+        return agent_outputs
+
+    chunk_contexts = reasoning_context.get("chunk_contexts")
+    if not isinstance(chunk_contexts, list):
+        return None
+
+    merged_outputs: dict[str, dict[str, object]] = {}
+    for chunk_context in chunk_contexts:
+        if not isinstance(chunk_context, dict):
+            continue
+
+        chunk_outputs = chunk_context.get("agent_outputs")
+        if not isinstance(chunk_outputs, dict):
+            continue
+
+        for agent_name, agent_output in chunk_outputs.items():
+            if not isinstance(agent_output, dict):
+                continue
+
+            merged_agent_output = merged_outputs.setdefault(agent_name, {})
+            for key, value in agent_output.items():
+                if key == "symbols" and isinstance(value, list):
+                    existing_symbols = merged_agent_output.setdefault("symbols", [])
+                    if isinstance(existing_symbols, list):
+                        existing_symbols.extend(
+                            item for item in value if isinstance(item, dict)
+                        )
+                    continue
+
+                merged_agent_output.setdefault(key, value)
+
+    return merged_outputs or None
 
 
 def _is_blueprint_soft_blocked(blueprint: LLMTradingBlueprint) -> bool:
@@ -301,24 +349,6 @@ async def _load_signal_features_for_date(td: date) -> list[SignalFeatures]:
     return signal_features
 
 
-async def _load_previous_execution(td: date) -> dict | None:
-    """Load the last completed execution summary for contextual analysis."""
-    previous_execution = None
-    yesterday = td - timedelta(days=1)
-    async with get_postgres_session() as session:
-        result = await session.execute(
-            text(
-                "SELECT execution_summary FROM llm_trading_blueprint "
-                "WHERE trading_date = :date AND status = 'completed'"
-            ),
-            {"date": yesterday},
-        )
-        row = result.fetchone()
-        if row:
-            previous_execution = row[0]
-    return previous_execution
-
-
 def _apply_and_log_deterministic_validation(
     blueprint: LLMTradingBlueprint,
     signal_features: list[SignalFeatures],
@@ -330,7 +360,7 @@ def _apply_and_log_deterministic_validation(
         sf.symbol.upper(): sf.model_dump(mode="json")
         for sf in signal_features
     }
-    agent_outputs = (blueprint.reasoning_context or {}).get("agent_outputs")
+    agent_outputs = _resolve_validation_agent_outputs(blueprint.reasoning_context)
     blueprint, summary = _apply_deterministic_validation(blueprint, signal_map, agent_outputs)
     ctx = dict(blueprint.reasoning_context or {})
     ctx["deterministic_validation"] = summary
@@ -345,7 +375,7 @@ def _apply_and_log_deterministic_validation(
             initial_warning_count=summary["initial_warning_count"],
             error_count=summary["error_count"],
             warning_count=summary["warning_count"],
-            strategy_scope_pruned_symbols=summary["strategy_scope_pruned_symbols"],
+            emitted_strategy_scope_pruned_symbols=summary["emitted_strategy_scope_pruned_symbols"],
             pruned_symbols=summary["pruned_symbols"],
             pruned_plan_count=summary["pruned_plan_count"],
             pruned_symbol_errors=summary["pruned_symbol_errors"],
@@ -505,7 +535,7 @@ async def _run_blueprint_pipeline(
     td: date,
     progress_cb=None,
 ):
-    """Common pipeline: fetch positions → previous execution → LLM → return blueprint."""
+    """Common pipeline: LLM generation → deterministic validation → return blueprint."""
     logger.debug(
         "blueprint.pipeline_started",
         log_event="pipeline_start",
@@ -514,38 +544,7 @@ async def _run_blueprint_pipeline(
         signal_rows=len(signal_features),
     )
 
-    # 1) Fetch current positions
-    if progress_cb:
-        progress_cb("fetching_positions")
-    logger.debug(
-        "blueprint.pipeline_fetch_positions",
-        log_event="pipeline_stage",
-        stage="fetching_positions",
-        trading_date=str(td),
-    )
-    current_positions = await _fetch_current_positions(td)
-    logger.debug(
-        "blueprint.pipeline_positions_ready",
-        log_event="pipeline_stage",
-        stage="positions_ready",
-        trading_date=str(td),
-        source=current_positions.get("source"),
-        count=current_positions.get("count", 0),
-    )
-
-    # 2) Previous execution summary
-    if progress_cb:
-        progress_cb("reading_previous_execution")
-    previous_execution = await _load_previous_execution(td)
-    logger.debug(
-        "blueprint.pipeline_previous_execution",
-        log_event="pipeline_stage",
-        stage="previous_execution_ready",
-        trading_date=str(td),
-        has_previous_execution=previous_execution is not None,
-    )
-
-    # 3) LLM generation
+    # 1) LLM generation
     if progress_cb:
         progress_cb("generating_blueprint")
     adapter = _get_adapter()
@@ -557,8 +556,6 @@ async def _run_blueprint_pipeline(
     )
     blueprint = await adapter.generate_blueprint(
         signal_features=signal_features,
-        current_positions=current_positions,
-        previous_execution=previous_execution,
         signal_date=td,
     )
     logger.debug(
@@ -570,7 +567,7 @@ async def _run_blueprint_pipeline(
         plans=len(blueprint.symbol_plans),
     )
 
-    # 4) Deterministic validation with symbol-level pruning
+    # 2) Deterministic validation with symbol-level pruning
     return _apply_and_log_deterministic_validation(blueprint, signal_features, td=td)
 
 
@@ -801,14 +798,10 @@ async def _generate_blueprint_chunk_async(
             "missing_symbols": sorted(requested),
         }
 
-    current_positions = await _fetch_current_positions(td)
-    previous_execution = await _load_previous_execution(td)
     orchestrator = AgentOrchestrator()
     blueprint = await orchestrator.generate_chunk_blueprint(
         signal_features=chunk_signal_features,
         benchmark_features=benchmark_features,
-        current_positions=current_positions,
-        previous_execution=previous_execution,
         signal_date=td,
         analysis_chunk_id=f"daily-{task_id or 'chunk'}",
     )
@@ -837,8 +830,6 @@ async def _finalize_daily_blueprint_chunks_async(chunk_results, trading_date: st
         logger.warning("blueprint.no_signals", date=str(td))
         return {"error": "No signal features available", "date": str(td)}
 
-    current_positions = await _fetch_current_positions(td)
-    previous_execution = await _load_previous_execution(td)
     chunk_payloads = chunk_results if isinstance(chunk_results, list) else [chunk_results]
     chunk_blueprints: list[LLMTradingBlueprint] = []
     missing_symbols: list[str] = []
@@ -854,8 +845,6 @@ async def _finalize_daily_blueprint_chunks_async(chunk_results, trading_date: st
     blueprint = await orchestrator.merge_chunk_blueprints(
         chunk_blueprints=chunk_blueprints,
         signal_features=all_signal_features,
-        current_positions=current_positions,
-        previous_execution=previous_execution,
         signal_date=td,
     )
     if missing_symbols:

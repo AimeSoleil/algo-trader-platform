@@ -88,7 +88,7 @@ class AgentOrchestrator:
     Usage::
 
         orch = AgentOrchestrator()
-        blueprint = await orch.generate(signals, positions, prev_exec)
+        blueprint = await orch.generate(signals)
     """
 
     def __init__(self, *, provider: AgentLLMProvider | None = None):
@@ -171,8 +171,6 @@ class AgentOrchestrator:
     async def generate(
         self,
         signal_features: list[SignalFeatures],
-        current_positions: dict | None = None,
-        previous_execution: dict | None = None,
         *,
         signal_date: date | None = None,
     ) -> LLMTradingBlueprint:
@@ -182,10 +180,6 @@ class AgentOrchestrator:
         ----------
         signal_features:
             All symbols' signal features.
-        current_positions:
-            Current portfolio positions (or None).
-        previous_execution:
-            Yesterday's execution summary (or None).
 
         Returns
         -------
@@ -323,14 +317,14 @@ class AgentOrchestrator:
         trade_symbol_names = [sf.symbol for sf in trade_features]
         market_snapshot = self._build_market_snapshot(benchmark_features)
 
+        used_chunk_merge = False
+
         if len(trade_features) <= chunk_size:
             # Small enough — run everything in one pass (no chunking overhead)
             analysis_chunk_id = f"single-{uuid.uuid4().hex[:8]}"
             try:
                 blueprint = await self._generate_single_pass(
                     signal_features=trade_features,
-                    current_positions=current_positions,
-                    previous_execution=previous_execution,
                     provider=provider,
                     signal_date=signal_date,
                     analysis_chunk_id=analysis_chunk_id,
@@ -368,6 +362,7 @@ class AgentOrchestrator:
                     error=exc,
                 )
         else:
+            used_chunk_merge = True
             # Chunk trade symbols only; benchmark context is shared as one
             # market snapshot instead of being re-serialized into every chunk.
             chunks: list[list[SignalFeatures]] = []
@@ -410,8 +405,6 @@ class AgentOrchestrator:
                         )
                         blueprint = await self._generate_single_pass(
                             signal_features=chunk_features,
-                            current_positions=current_positions,
-                            previous_execution=previous_execution,
                             provider=provider,
                             signal_date=signal_date,
                             is_chunk=True,
@@ -504,8 +497,6 @@ class AgentOrchestrator:
             blueprint = await self.merge_chunk_blueprints(
                 chunk_blueprints=chunk_blueprints,
                 signal_features=signal_features,
-                current_positions=current_positions,
-                previous_execution=previous_execution,
                 signal_date=signal_date,
                 provider=provider,
                 usage_tracker=usage_tracker,
@@ -515,13 +506,15 @@ class AgentOrchestrator:
             for ct in chunk_trackers.values():
                 usage_tracker.merge(ct)
 
-        # Safety net: drop any benchmark-only plans the LLM may still emit
-        blueprint.symbol_plans = [
-            p for p in blueprint.symbol_plans
-            if p.underlying.upper() in trade_syms
-        ]
-        blueprint.symbol_plans = blueprint.symbol_plans[:max_output_plans]
-        blueprint.max_total_positions = len(blueprint.symbol_plans)
+        if not used_chunk_merge:
+            # Safety net: drop any benchmark-only plans the LLM may still emit.
+            # Chunk merge already applies the same filtering and final cap.
+            blueprint.symbol_plans = [
+                p for p in blueprint.symbol_plans
+                if p.underlying.upper() in trade_syms
+            ]
+            blueprint.symbol_plans = blueprint.symbol_plans[:max_output_plans]
+            blueprint.max_total_positions = max_output_plans
         blueprint.reasoning_context = {
             **(blueprint.reasoning_context or {}),
             "pre_synthesis_filter": pre_synthesis_filter,
@@ -551,8 +544,6 @@ class AgentOrchestrator:
         signal_features: list[SignalFeatures],
         *,
         benchmark_features: list[SignalFeatures] | None = None,
-        current_positions: dict | None = None,
-        previous_execution: dict | None = None,
         signal_date: date | None = None,
         analysis_chunk_id: str | None = None,
     ) -> LLMTradingBlueprint:
@@ -573,8 +564,6 @@ class AgentOrchestrator:
         resolved_chunk_id = analysis_chunk_id or f"fanout-{uuid.uuid4().hex[:8]}"
         blueprint = await self._generate_single_pass(
             signal_features=chunk_features,
-            current_positions=current_positions,
-            previous_execution=previous_execution,
             provider=provider,
             signal_date=signal_date,
             is_chunk=True,
@@ -600,8 +589,6 @@ class AgentOrchestrator:
         *,
         chunk_blueprints: list[LLMTradingBlueprint],
         signal_features: list[SignalFeatures],
-        current_positions: dict | None = None,
-        previous_execution: dict | None = None,
         signal_date: date | None = None,
         provider: AgentLLMProvider | None = None,
         usage_tracker: LLMUsageTracker | None = None,
@@ -644,6 +631,10 @@ class AgentOrchestrator:
             sf.symbol.upper(): sf.data_quality.score
             for sf in signal_features
         }
+        signal_feature_by_symbol = {
+            sf.symbol.upper(): sf
+            for sf in signal_features
+        }
         chunk_limits = [
             {
                 "chunk_index": idx,
@@ -665,6 +656,7 @@ class AgentOrchestrator:
                     quality_score=quality_by_symbol.get(plan.underlying.upper(), plan.data_quality_score),
                     chunk_id=chunk_id,
                     agent_outputs=agent_outputs if isinstance(agent_outputs, dict) else None,
+                    signal_feature=signal_feature_by_symbol.get(plan.underlying.upper()),
                 ))
                 original_order += 1
 
@@ -681,15 +673,12 @@ class AgentOrchestrator:
             candidate_summaries, selector_context = self._portfolio_selector.build_review_inputs(
                 candidates=merged_plan_candidates,
                 trade_symbols=trade_symbols,
-                current_positions=current_positions,
                 precision_first_enabled=precision_first_enabled,
                 allowed_strategy_types=allowed_strategy_types,
             )
             try:
                 review = await self._post_merge_portfolio_agent.review(
                     candidate_summaries=candidate_summaries,
-                    current_positions=current_positions,
-                    previous_execution=previous_execution,
                     chunk_limit_proposals=chunk_limits,
                     selector_metadata=selector_context,
                     candidate_count=review_candidate_count,
@@ -728,8 +717,6 @@ class AgentOrchestrator:
             trade_symbols=trade_symbols,
             chunk_limits=chunk_limits,
             max_output_plans=max_output_plans,
-            current_positions=current_positions,
-            previous_execution=previous_execution,
             llm_review=llm_post_merge_review,
             precision_first_enabled=precision_first_enabled,
             allowed_strategy_types=allowed_strategy_types,
@@ -740,7 +727,9 @@ class AgentOrchestrator:
         }
 
         blueprint.symbol_plans = selected_plans
-        blueprint.max_total_positions = len(selected_plans)
+        output_targets = selection_metadata.get("output_targets", {})
+        max_total_positions_target = output_targets.get("max_total_positions", {})
+        blueprint.max_total_positions = int(max_total_positions_target.get("value", max_output_plans))
 
         all_contexts = [bp.reasoning_context for bp in chunk_blueprints if bp.reasoning_context]
         blueprint.reasoning_context = {
@@ -769,8 +758,6 @@ class AgentOrchestrator:
     async def _generate_single_pass(
         self,
         signal_features: list[SignalFeatures],
-        current_positions: dict | None,
-        previous_execution: dict | None,
         provider: AgentLLMProvider,
         *,
         signal_date: date | None = None,
@@ -783,15 +770,7 @@ class AgentOrchestrator:
         """Run the full specialist → synthesizer → critic pipeline on one set of signals."""
         # ── Step 0: Serialize signals once ──
         serialized = self._serialize_signals(signal_features)
-        signals_summary = [
-            {
-                "symbol": sf.symbol,
-                "close_price": sf.close_price,
-                "volume": sf.volume,
-                "volatility_regime": sf.volatility_regime,
-            }
-            for sf in signal_features
-        ]
+        signals_summary = serialized
 
         # ── Step 1: Run 6 specialist agents in parallel ──
         logger.info(
@@ -897,8 +876,6 @@ class AgentOrchestrator:
         blueprint = await self._synthesizer.synthesize(
             agent_outputs=compact_outputs,
             signals_summary=signals_summary,
-            current_positions=current_positions,
-            previous_execution=previous_execution,
             provider=provider,
             signal_date=signal_date,
             usage_tracker=usage_tracker,
@@ -965,8 +942,6 @@ class AgentOrchestrator:
             blueprint = await self._synthesizer.synthesize(
                 agent_outputs=compact_outputs,
                 signals_summary=signals_summary,
-                current_positions=current_positions,
-                previous_execution=previous_execution,
                 critic_feedback=verdict.summary + "\n\nIssues:\n" + json.dumps(
                     [i.model_dump() for i in verdict.issues],
                     indent=2,
@@ -1176,6 +1151,8 @@ class AgentOrchestrator:
         earnings_score = self._coarse_ranking_earnings_score(
             signal_feature.cross_asset_indicators.earnings_proximity_days,
         )
+        trend_signal_score = self._coarse_ranking_trend_signal_score(signal_feature)
+        stock_liquidity_score = self._coarse_ranking_stock_liquidity_score(signal_feature)
         weight_sum = sum(max(0.0, value) for value in weights.values()) or 1.0
         coarse_score = round(
             (
@@ -1184,6 +1161,8 @@ class AgentOrchestrator:
                 + weights["liquidity"] * liquidity_score
                 + weights["strategy_eligibility"] * strategy_score
                 + weights["earnings_buffer"] * earnings_score
+                + weights["trend_signal"] * trend_signal_score
+                + weights["stock_liquidity"] * stock_liquidity_score
             ) / weight_sum,
             6,
         )
@@ -1198,9 +1177,14 @@ class AgentOrchestrator:
                 "liquidity_score": round(liquidity_score, 6),
                 "strategy_eligibility_score": round(strategy_score, 6),
                 "earnings_score": round(earnings_score, 6),
+                "trend_signal_score": round(trend_signal_score, 6),
+                "stock_liquidity_score": round(stock_liquidity_score, 6),
                 "eligible_strategy_count": len(eligible_strategy_types),
                 "option_row_count": signal_feature.data_quality.option_row_count,
                 "bid_ask_spread_ratio": round(signal_feature.option_indicators.bid_ask_spread_ratio, 6),
+                "adx_z_score": round(signal_feature.stock_indicators.adx_z_score, 6),
+                "liquidity_threshold": round(signal_feature.stock_indicators.liquidity_threshold, 6),
+                "volume": signal_feature.volume,
                 "earnings_proximity_days": signal_feature.cross_asset_indicators.earnings_proximity_days,
             },
         }
@@ -1226,6 +1210,10 @@ class AgentOrchestrator:
                 ),
             })
 
+        trend_guard_reason = self._pre_synthesis_trend_guard_reason(signal_feature)
+        if trend_guard_reason is not None:
+            reasons.append(trend_guard_reason)
+
         eligible_strategy_types = self._eligible_precision_first_strategy_types(
             signal_feature,
             allowed_strategy_types,
@@ -1242,6 +1230,74 @@ class AgentOrchestrator:
             })
 
         return reasons, eligible_strategy_types
+
+    def _pre_synthesis_trend_guard_reason(
+        self,
+        signal_feature: SignalFeatures,
+    ) -> dict[str, str] | None:
+        """Drop symbols trapped in extreme-trend counter-trend/reversal contexts.
+
+        This is intentionally narrow: only fire when the signal context points to an
+        extreme established trend, reversal tension is explicit, and there is no
+        aligned trend-following confirmation left for the LLM to express.
+        """
+        stock = signal_feature.stock_indicators
+        trend_direction = str(getattr(stock, "trend", "neutral") or "neutral").lower()
+        if trend_direction not in {"bullish", "bearish"}:
+            return None
+
+        adx_z_score = float(getattr(stock, "adx_z_score", 0.0) or 0.0)
+        if adx_z_score <= 1.5:
+            return None
+
+        rsi_divergence = float(getattr(stock, "rsi_divergence", 0.0) or 0.0)
+        macd_hist_divergence = float(getattr(stock, "macd_hist_divergence", 0.0) or 0.0)
+        reversal_tension = (
+            (trend_direction == "bullish" and rsi_divergence > 0)
+            or (trend_direction == "bearish" and rsi_divergence < 0)
+        ) and macd_hist_divergence < 0
+        if not reversal_tension:
+            return None
+
+        close_price = float(signal_feature.close_price)
+        aligned_confirmations = 0
+
+        keltner_upper = float(getattr(stock, "keltner_upper", 0.0) or 0.0)
+        keltner_lower = float(getattr(stock, "keltner_lower", 0.0) or 0.0)
+        if trend_direction == "bullish" and keltner_upper > 0 and close_price > keltner_upper:
+            aligned_confirmations += 1
+        if trend_direction == "bearish" and keltner_lower > 0 and close_price < keltner_lower:
+            aligned_confirmations += 1
+
+        tenkan = float(getattr(stock, "ichimoku_tenkan", 0.0) or 0.0)
+        kijun = float(getattr(stock, "ichimoku_kijun", 0.0) or 0.0)
+        span_a = float(getattr(stock, "ichimoku_span_a", 0.0) or 0.0)
+        span_b = float(getattr(stock, "ichimoku_span_b", 0.0) or 0.0)
+        cloud_top = max(span_a, span_b)
+        cloud_bottom = min(span_a, span_b)
+        if trend_direction == "bullish" and tenkan > kijun and cloud_top > 0 and close_price > cloud_top:
+            aligned_confirmations += 1
+        if trend_direction == "bearish" and tenkan < kijun and cloud_bottom > 0 and close_price < cloud_bottom:
+            aligned_confirmations += 1
+
+        linreg = float(getattr(stock, "linear_reg_slope", 0.0) or 0.0)
+        if trend_direction == "bullish" and linreg > 0:
+            aligned_confirmations += 1
+        if trend_direction == "bearish" and linreg < 0:
+            aligned_confirmations += 1
+
+        if aligned_confirmations > 0:
+            return None
+
+        return {
+            "rule": "trend_extreme_counter_trend_context",
+            "description": (
+                f"stock_indicators.adx_z_score={adx_z_score:.2f} signals an extreme {trend_direction} trend, "
+                f"but reversal tension is explicit (rsi_divergence={rsi_divergence:.1f}, "
+                f"macd_hist_divergence={macd_hist_divergence:.1f}) and there are no aligned trend-following confirmations. "
+                "Pre-synthesis Trend hard-gate drops this symbol rather than sending a likely counter-trend setup into LLM analysis."
+            ),
+        }
 
     def _eligible_precision_first_strategy_types(
         self,
@@ -1282,7 +1338,23 @@ class AgentOrchestrator:
             "liquidity": float(getattr(weights_cfg, "liquidity", 0.2)),
             "strategy_eligibility": float(getattr(weights_cfg, "strategy_eligibility", 0.1)),
             "earnings_buffer": float(getattr(weights_cfg, "earnings_buffer", 0.1)),
+            "trend_signal": float(getattr(weights_cfg, "trend_signal", 0.05)),
+            "stock_liquidity": float(getattr(weights_cfg, "stock_liquidity", 0.05)),
         }
+
+    def _coarse_ranking_trend_signal_score(self, signal_feature: SignalFeatures) -> float:
+        """Reward clearer precomputed trend regimes without dominating coarse ranking."""
+        adx_z = float(getattr(signal_feature.stock_indicators, "adx_z_score", 0.0) or 0.0)
+        normalized = min(abs(adx_z) / 1.8, 1.0)
+        return round(normalized, 6)
+
+    def _coarse_ranking_stock_liquidity_score(self, signal_feature: SignalFeatures) -> float:
+        """Score current stock liquidity against the Trend/Flow liquidity threshold."""
+        liquidity_threshold = float(getattr(signal_feature.stock_indicators, "liquidity_threshold", 0.0) or 0.0)
+        if liquidity_threshold <= 0:
+            return 0.5
+        current_volume = max(float(signal_feature.volume), 0.0)
+        return round(min(current_volume / liquidity_threshold, 1.0), 6)
 
     def _coarse_ranking_decision_reason(
         self,
@@ -1297,6 +1369,8 @@ class AgentOrchestrator:
             ("liquidity", entry["components"]["liquidity_score"]),
             ("strategy_eligibility", entry["components"]["strategy_eligibility_score"]),
             ("earnings_buffer", entry["components"]["earnings_score"]),
+            ("trend_signal", entry["components"]["trend_signal_score"]),
+            ("stock_liquidity", entry["components"]["stock_liquidity_score"]),
         )
         strongest_components = sorted(components, key=lambda item: item[1], reverse=True)[:2]
         weakest_components = sorted(

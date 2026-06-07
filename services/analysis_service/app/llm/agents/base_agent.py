@@ -41,6 +41,12 @@ _REPAIRABLE_VALIDATION_TYPES = frozenset({
     "list_type",
     "dict_type",
 })
+_NON_REPAIRABLE_AGENT_GATE_FIELDS = frozenset({
+    "trade_allowed",
+    "confidence_cap",
+    "simple_structures_only",
+    "blocked_reasons",
+})
 
 
 @dataclass(frozen=True)
@@ -587,6 +593,8 @@ class AnalysisAgent(ABC):
                 if field_info is None:
                     return _NO_DEFAULT
                 if index == len(loc) - 1:
+                    if part in _NON_REPAIRABLE_AGENT_GATE_FIELDS:
+                        return _NO_DEFAULT
                     return self._field_default(field_info)
                 current_type = field_info.annotation
                 continue

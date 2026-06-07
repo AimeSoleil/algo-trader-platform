@@ -38,6 +38,9 @@ VIX_LOOKBACK_WEEKS = 52     # weeks for VIX percentile (≈252 trading days)
 VIX_LOOKBACK_DAYS = 60      # trading days for VIX percentile (60d avoids regime distortion)
 FRESHNESS_MAX_LAG_DAYS = 2  # data older than this is treated as stale
 OPTION_CONTRACT_SHARE_MULTIPLIER = 100.0
+REGIME_FLIP_LOOKBACK_DAYS = 10
+REGIME_TRANSITION_STREAK_DAYS = 3
+GEX_NEUTRAL_THRESHOLD = 0.05
 
 # Benchmark names that map to model fields
 BENCHMARK_FIELD_MAP: dict[str, tuple[str, str]] = {
@@ -349,6 +352,136 @@ def compute_iv_stock_correlation(
     return float(window_slice["ret"].corr(window_slice["iv"]))
 
 
+def _classify_iv_correlation_regime(iv_corr: float) -> str:
+    """Map rolling IV-stock correlation to the Cross-Asset regime labels."""
+    if iv_corr <= -0.45:
+        return "fear"
+    if iv_corr >= 0.25:
+        return "bullish_vol"
+    if -0.25 <= iv_corr <= 0.25:
+        return "decoupled"
+    return "normal"
+
+
+def _rolling_iv_regime_series(
+    bars_df: pd.DataFrame,
+    iv_history: pd.Series,
+    *,
+    window: int = CORR_WINDOW,
+) -> pd.Series:
+    """Build a trailing regime-label series from rolling IV-stock correlation windows."""
+    if bars_df.empty or "timestamp" not in bars_df.columns or iv_history.empty:
+        return pd.Series(dtype="object")
+
+    stock_returns = (
+        bars_df.assign(timestamp=pd.to_datetime(bars_df["timestamp"], errors="coerce"))
+        .dropna(subset=["timestamp"])
+        .set_index("timestamp")["close"]
+        .sort_index()
+        .pct_change()
+        .dropna()
+    )
+
+    iv_series = pd.Series(iv_history, copy=False)
+    iv_series.index = pd.to_datetime(iv_series.index, errors="coerce")
+    iv_series = iv_series[iv_series.index.notna()].sort_index()
+    iv_series = iv_series[iv_series > 0].dropna()
+    iv_changes = iv_series.pct_change().dropna()
+
+    if stock_returns.empty or len(iv_changes) < window:
+        return pd.Series(dtype="object")
+
+    merged = pd.DataFrame({
+        "ret": stock_returns,
+        "iv": iv_changes,
+    }).dropna()
+
+    if len(merged) < window:
+        return pd.Series(dtype="object")
+
+    regimes: list[str] = []
+    regime_index: list[pd.Timestamp] = []
+    for end in range(window, len(merged) + 1):
+        window_slice = merged.iloc[end - window:end]
+        if window_slice["ret"].std() == 0 or window_slice["iv"].std() == 0:
+            regimes.append("normal")
+        else:
+            raw_corr = window_slice["ret"].corr(window_slice["iv"])
+            corr = float(raw_corr) if pd.notna(raw_corr) else 0.0
+            regimes.append(_classify_iv_correlation_regime(corr))
+        regime_index.append(merged.index[end - 1])
+
+    return pd.Series(regimes, index=regime_index, dtype="object")
+
+
+def _derive_regime_history_metrics(
+    regimes: pd.Series,
+    *,
+    lookback: int = REGIME_FLIP_LOOKBACK_DAYS,
+) -> tuple[int | None, bool, int]:
+    """Derive current streak length, transition state, and recent flip count."""
+    cleaned = regimes.dropna()
+    if cleaned.empty:
+        return None, False, 0
+
+    current = cleaned.iloc[-1]
+    streak = 1
+    for pos in range(len(cleaned) - 2, -1, -1):
+        if cleaned.iloc[pos] != current:
+            break
+        streak += 1
+
+    recent = cleaned.tail(lookback)
+    flip_count = 0
+    for pos in range(1, len(recent)):
+        if recent.iloc[pos] != recent.iloc[pos - 1]:
+            flip_count += 1
+
+    regime_transition = flip_count > 0 and streak < REGIME_TRANSITION_STREAK_DAYS
+    return streak, regime_transition, flip_count
+
+
+def _derive_market_shock_context(
+    benchmark_returns: dict[str, pd.Series],
+) -> tuple[float, str | None]:
+    """Pick the latest largest absolute market-proxy move across SPY/QQQ/IWM."""
+    candidates: list[tuple[float, float, str]] = []
+    for name in ("SPY", "QQQ", "IWM"):
+        series = benchmark_returns.get(name)
+        if series is None:
+            continue
+
+        clean = pd.Series(series, copy=False).dropna()
+        if clean.empty:
+            continue
+
+        last_move = float(clean.iloc[-1])
+        candidates.append((abs(last_move), last_move, name))
+
+    if not candidates:
+        return 0.0, None
+
+    _, move, source = max(candidates, key=lambda item: item[0])
+    return round(move, 4), source
+
+
+def _classify_gex_regime(
+    gamma_exposure: float | None,
+    *,
+    threshold: float = GEX_NEUTRAL_THRESHOLD,
+) -> str:
+    """Classify normalized gamma exposure into a coarse GEX regime."""
+    if gamma_exposure is None or pd.isna(gamma_exposure):
+        return "neutral"
+
+    gamma_value = float(gamma_exposure)
+    if gamma_value >= threshold:
+        return "positive"
+    if gamma_value <= -threshold:
+        return "negative"
+    return "neutral"
+
+
 # ═══════════════════════════════════════════════════════════
 # Public entry-point
 # ═══════════════════════════════════════════════════════════
@@ -364,6 +497,8 @@ def build_cross_asset_indicators(
     total_volume: int,
     total_option_volume: float,
     hedge_ratio: float,
+    gamma_exposure: float | None = None,
+    gamma_peak_strike: float | None = None,
     trading_date: date | None = None,
     earnings_date: date | None = None,
 ) -> CrossAssetIndicators:
@@ -437,6 +572,15 @@ def build_cross_asset_indicators(
         "data_freshness": round(data_freshness, 4),
     }
 
+    regime_series = _rolling_iv_regime_series(bars_df, iv_history)
+    if correlation_significance >= 0.5:
+        regime_days, regime_transition, regime_flip_count_10d = _derive_regime_history_metrics(regime_series)
+    else:
+        regime_days, regime_transition, regime_flip_count_10d = None, False, 0
+
+    market_shock_return_1d, market_shock_source = _derive_market_shock_context(benchmark_returns)
+    gex_regime = _classify_gex_regime(gamma_exposure)
+
     # ── Earnings proximity ──────────────────────────────────
     earnings_proximity: int | None = None
     if earnings_date is not None and trading_date is not None:
@@ -478,6 +622,12 @@ def build_cross_asset_indicators(
 
         # Earnings
         earnings_proximity_days=earnings_proximity,
+        regime_days=regime_days,
+        regime_transition=regime_transition,
+        regime_flip_count_10d=regime_flip_count_10d,
+        market_shock_return_1d=market_shock_return_1d,
+        market_shock_source=market_shock_source,
+        gex_regime=gex_regime,
 
         confidence_scores=confidence,
     )

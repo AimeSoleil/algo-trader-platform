@@ -14,6 +14,7 @@ class PlanCandidate:
     quality_score: float
     chunk_id: str | None = None
     agent_outputs: dict[str, Any] | None = None
+    signal_feature: Any | None = None
 
 
 @dataclass(frozen=True)
@@ -28,7 +29,7 @@ class PositionContext:
 class PortfolioSelector:
     """Deterministic post-merge selector for chunked blueprints."""
 
-    _DEFAULT_SIMPLE_STRUCTURE_TYPES = frozenset({"single_leg", "vertical_spread"})
+    _DEFAULT_SIMPLE_STRUCTURE_TYPES = frozenset({"single_leg", "vertical_spread", "iron_condor", "calendar_spread"})
 
     _STRATEGY_IMPACT_WEIGHTS = {
         "single_leg": 1.0,
@@ -61,17 +62,33 @@ class PortfolioSelector:
     }
 
     _PRECISION_FIRST_AGENT_NAMES = ("trend", "volatility", "flow", "chain", "spread")
+    _EVENT_RISK_AGENT_NAMES = ("trend", "volatility", "flow", "chain", "spread", "cross_asset")
+    _SIGNAL_TYPE_AGENT_NAMES = ("trend", "volatility", "cross_asset")
+
+    _EXECUTION_CANDIDATE_STRATEGY_KEYS = {
+        "vertical_spread": ("vertical",),
+        "iron_condor": ("iron_condor",),
+        "calendar_spread": ("calendar",),
+        "diagonal_spread": ("calendar", "reverse_calendar"),
+        "butterfly": ("butterfly",),
+        "iron_butterfly": ("butterfly",),
+    }
 
     def build_review_inputs(
         self,
         *,
         candidates: list[PlanCandidate],
         trade_symbols: set[str],
-        current_positions: dict | None = None,
         precision_first_enabled: bool = False,
         allowed_strategy_types: list[str] | None = None,
     ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
-        position_context = self._build_position_context(current_positions)
+        position_context = PositionContext(
+            open_underlyings=set(),
+            counts_by_underlying={},
+            direction_by_underlying={},
+            total_positions=0,
+            direction_counts={"bullish": 0, "bearish": 0, "neutral": 0},
+        )
         normalized_allowed_strategy_types = self._normalize_allowed_strategy_types(allowed_strategy_types)
         candidate_summaries = [
             self._review_candidate_summary(
@@ -84,17 +101,41 @@ class PortfolioSelector:
         ]
         selector_metadata = {
             "candidate_count": len(candidates),
+            "raw_candidate_entry_count": len(candidates),
+            "unique_candidate_symbol_count": len({candidate.plan.underlying.upper() for candidate in candidates}),
             "trade_symbols": sorted(trade_symbols),
+            "ranking_scope": "symbol_level",
+            "candidate_entries_may_repeat_symbols": True,
             "ranking_method": self._ranking_method(precision_first_enabled),
             "precision_first_enabled": precision_first_enabled,
             "allowed_strategy_types": normalized_allowed_strategy_types,
             "deterministic_sort_priority": self._deterministic_sort_priority(precision_first_enabled),
-            "current_position_context": {
-                "total_positions": position_context.total_positions,
-                "direction_counts": position_context.direction_counts,
-                "counts_by_underlying": position_context.counts_by_underlying,
-                "direction_by_underlying": position_context.direction_by_underlying,
-            },
+            "available_ranking_signals": [
+                "symbol",
+                "strategy_type",
+                "direction",
+                "machine_readable_gate_ok",
+                "confidence",
+                "data_quality_score",
+                "max_contracts",
+                "candidate_ref",
+                "selector_base_score",
+                "portfolio_impact_score",
+                "portfolio_impact_breakdown",
+                "execution_candidate_score",
+                "execution_candidate_breakdown",
+                "precision_first_score",
+                "precision_first_breakdown",
+                "master_override",
+                "effective_size_modifier",
+                "arb_opportunity",
+                "arb_priority",
+                "event_risk_present",
+                "event_risk_agents",
+                "earnings_proximity_days",
+                "signal_type",
+                "single_indicator_agents",
+            ],
         }
         return candidate_summaries, selector_metadata
 
@@ -105,13 +146,17 @@ class PortfolioSelector:
         trade_symbols: set[str],
         chunk_limits: list[dict[str, Any]],
         max_output_plans: int = 10,
-        current_positions: dict | None = None,
-        previous_execution: dict | None = None,
         llm_review: dict[str, Any] | None = None,
         precision_first_enabled: bool = False,
         allowed_strategy_types: list[str] | None = None,
     ) -> tuple[list[SymbolPlan], dict[str, Any]]:
-        position_context = self._build_position_context(current_positions)
+        position_context = PositionContext(
+            open_underlyings=set(),
+            counts_by_underlying={},
+            direction_by_underlying={},
+            total_positions=0,
+            direction_counts={"bullish": 0, "bearish": 0, "neutral": 0},
+        )
         llm_rank_positions = self._llm_rank_positions(llm_review)
         llm_selected_symbols = self._llm_selected_symbols(llm_review)
         normalized_allowed_strategy_types = self._normalize_allowed_strategy_types(allowed_strategy_types)
@@ -119,9 +164,19 @@ class PortfolioSelector:
             candidate for candidate in candidates
             if candidate.plan.underlying.upper() in trade_symbols
         ]
+        eligible_candidates: list[PlanCandidate] = []
+        machine_readable_filtered_candidates: list[PlanCandidate] = []
+        for candidate in filtered_candidates:
+            if self._machine_readable_gate_ok(
+                candidate,
+                allowed_strategy_types=normalized_allowed_strategy_types,
+            ):
+                eligible_candidates.append(candidate)
+                continue
+            machine_readable_filtered_candidates.append(candidate)
 
         candidates_by_symbol: dict[str, list[PlanCandidate]] = {}
-        for candidate in filtered_candidates:
+        for candidate in eligible_candidates:
             candidates_by_symbol.setdefault(candidate.plan.underlying.upper(), []).append(candidate)
 
         deduped_candidates: list[PlanCandidate] = []
@@ -221,23 +276,33 @@ class PortfolioSelector:
             "ranking_method": self._ranking_method(precision_first_enabled),
             "input_plan_count": len(candidates),
             "trade_candidate_count": len(filtered_candidates),
+            "eligible_candidate_count": len(eligible_candidates),
             "deduped_plan_count": len(deduped_candidates),
             "output_plan_count": len(selected_plans),
             "max_output_plans": normalized_max_output_plans,
             "selected_symbols": selected_symbols,
             "filtered_symbols": filtered_symbols,
+            "machine_readable_filtered_candidate_count": len(machine_readable_filtered_candidates),
+            "machine_readable_filtered_symbols": sorted({
+                candidate.plan.underlying.upper() for candidate in machine_readable_filtered_candidates
+            }),
+            "machine_readable_filtered_candidates": [
+                {
+                    "symbol": candidate.plan.underlying.upper(),
+                    "chunk_index": candidate.chunk_index,
+                    "chunk_id": candidate.chunk_id,
+                    "precision_first_breakdown": self._precision_first_breakdown(
+                        candidate,
+                        precision_first_enabled=precision_first_enabled,
+                        allowed_strategy_types=normalized_allowed_strategy_types,
+                    ),
+                }
+                for candidate in machine_readable_filtered_candidates
+            ],
             "ranked_symbols": [candidate.plan.underlying.upper() for candidate in ranked_plans],
             "precision_first_enabled": precision_first_enabled,
             "allowed_strategy_types": normalized_allowed_strategy_types,
             "deterministic_sort_priority": self._deterministic_sort_priority(precision_first_enabled),
-            "current_position_count": self._position_count(current_positions),
-            "current_position_context": {
-                "total_positions": position_context.total_positions,
-                "direction_counts": position_context.direction_counts,
-                "counts_by_underlying": position_context.counts_by_underlying,
-                "direction_by_underlying": position_context.direction_by_underlying,
-            },
-            "previous_execution_present": previous_execution is not None,
             "llm_review": {
                 "used": bool(llm_review),
                 "ranking": list(llm_rank_positions.keys()),
@@ -251,10 +316,14 @@ class PortfolioSelector:
             "chunk_limit_proposals": chunk_limits,
             "output_targets": {
                 "max_total_positions": {
-                    "value": len(selected_plans),
-                    "source": "configured_max_output_plans" if filtered_symbols else "selected_plan_count",
+                    "value": normalized_max_output_plans,
+                    "source": "configured_max_output_plans",
                     "configured_cap": normalized_max_output_plans,
                     "chunk_proposals": [limit.get("max_total_positions") for limit in chunk_limits],
+                },
+                "selected_plan_count": {
+                    "value": len(selected_plans),
+                    "source": "post_merge_selection",
                 },
             },
         }
@@ -269,11 +338,24 @@ class PortfolioSelector:
         allowed_strategy_types: list[str],
     ) -> dict[str, Any]:
         portfolio_impact_breakdown = self._portfolio_impact_breakdown(candidate, position_context)
+        execution_candidate_breakdown = self._execution_candidate_breakdown(candidate)
         precision_first_breakdown = self._precision_first_breakdown(
             candidate,
             precision_first_enabled=precision_first_enabled,
             allowed_strategy_types=allowed_strategy_types,
         )
+        cross_asset_analysis = self._symbol_agent_analysis(candidate, "cross_asset") or {}
+        spread_analysis = self._symbol_agent_analysis(candidate, "spread") or {}
+        event_risk_agents = self._candidate_event_risk_agents(candidate)
+        single_indicator_agents = self._candidate_single_indicator_agents(candidate)
+        effective_size_modifier = self._as_float(cross_asset_analysis.get("effective_size_modifier"))
+        if effective_size_modifier is None:
+            effective_size_modifier = 1.0
+        arb_priority_raw = spread_analysis.get("arb_priority")
+        try:
+            arb_priority = int(arb_priority_raw) if arb_priority_raw is not None else 0
+        except (TypeError, ValueError):
+            arb_priority = 0
         return {
             "symbol": candidate.plan.underlying.upper(),
             "strategy_type": candidate.plan.strategy_type.value,
@@ -284,11 +366,11 @@ class PortfolioSelector:
             ),
             "confidence": round(candidate.plan.confidence, 6),
             "data_quality_score": round(candidate.quality_score, 6),
-            "max_position_size": candidate.plan.max_position_size,
             "max_contracts": candidate.plan.max_contracts,
             "chunk_index": candidate.chunk_index,
             "chunk_id": candidate.chunk_id,
             "original_order": candidate.original_order,
+            "candidate_ref": self._candidate_ref(candidate),
             "selector_base_score": self._candidate_score(
                 candidate,
                 position_context,
@@ -297,8 +379,19 @@ class PortfolioSelector:
             ),
             "portfolio_impact_score": portfolio_impact_breakdown["portfolio_impact_score"],
             "portfolio_impact_breakdown": portfolio_impact_breakdown,
+            "execution_candidate_score": execution_candidate_breakdown["execution_candidate_score"],
+            "execution_candidate_breakdown": execution_candidate_breakdown,
             "precision_first_score": precision_first_breakdown["precision_first_score"],
             "precision_first_breakdown": precision_first_breakdown,
+            "master_override": bool(cross_asset_analysis.get("master_override", False)),
+            "effective_size_modifier": round(effective_size_modifier, 6),
+            "arb_opportunity": bool(spread_analysis.get("arb_opportunity", False)),
+            "arb_priority": arb_priority,
+            "event_risk_present": bool(event_risk_agents),
+            "event_risk_agents": event_risk_agents,
+            "earnings_proximity_days": self._candidate_earnings_proximity_days(candidate),
+            "signal_type": "single_indicator" if single_indicator_agents else "multi_indicator",
+            "single_indicator_agents": single_indicator_agents,
         }
 
     def _candidate_score(
@@ -384,6 +477,9 @@ class PortfolioSelector:
         strategy_type = str(getattr(candidate.plan.strategy_type, "value", candidate.plan.strategy_type)).lower()
         allowed_set = {item.lower() for item in allowed_strategy_types}
         simple_structure_types = self._configured_simple_structure_types(allowed_strategy_types)
+        execution_candidate_breakdown = self._execution_candidate_breakdown(candidate)
+        execution_candidate_score = execution_candidate_breakdown["execution_candidate_score"]
+        execution_candidate_adjustment = round((execution_candidate_score - 0.5) * 0.4, 6)
 
         if not precision_first_enabled:
             return {
@@ -401,6 +497,9 @@ class PortfolioSelector:
                 "confidence_caps": {},
                 "blocked_reasons": [],
                 "total_penalty": 0.0,
+                "execution_candidate_score": round(execution_candidate_score, 6),
+                "execution_candidate_adjustment": 0.0,
+                "execution_candidate_breakdown": execution_candidate_breakdown,
             }
 
         strategy_scope_penalty = 0.0
@@ -460,7 +559,7 @@ class PortfolioSelector:
         )
 
         return {
-            "precision_first_score": round(max(0.0, 1.0 - total_penalty), 6),
+            "precision_first_score": round(max(0.0, min(1.0, 1.0 - total_penalty + execution_candidate_adjustment)), 6),
             "strategy_type": strategy_type,
             "allowed_strategy_types": sorted(allowed_set),
             "strategy_scope_penalty": round(strategy_scope_penalty, 6),
@@ -474,7 +573,259 @@ class PortfolioSelector:
             "confidence_caps": confidence_caps,
             "blocked_reasons": unique_blocked_reasons,
             "total_penalty": round(total_penalty, 6),
+            "execution_candidate_score": round(execution_candidate_score, 6),
+            "execution_candidate_adjustment": round(execution_candidate_adjustment, 6),
+            "execution_candidate_breakdown": execution_candidate_breakdown,
         }
+
+    def _execution_candidate_breakdown(self, candidate: PlanCandidate) -> dict[str, Any]:
+        strategy_type = str(getattr(candidate.plan.strategy_type, "value", candidate.plan.strategy_type)).lower()
+        candidate_keys = self._EXECUTION_CANDIDATE_STRATEGY_KEYS.get(strategy_type, ())
+
+        if not candidate_keys:
+            return {
+                "execution_candidate_score": 0.5,
+                "strategy_type": strategy_type,
+                "candidate_key": None,
+                "candidate_available": False,
+                "metric_name": None,
+                "metric_value": None,
+                "worst_leg_bid_ask_spread_ratio": None,
+                "term_structure_slope": None,
+                "reason": "strategy_not_execution_candidate_scored",
+            }
+
+        spread_execution_inputs = self._spread_execution_inputs(candidate)
+        if not spread_execution_inputs:
+            return {
+                "execution_candidate_score": 0.25,
+                "strategy_type": strategy_type,
+                "candidate_key": candidate_keys[0],
+                "candidate_available": False,
+                "metric_name": None,
+                "metric_value": None,
+                "worst_leg_bid_ask_spread_ratio": None,
+                "term_structure_slope": self._term_structure_slope(candidate),
+                "reason": "execution_candidates_missing",
+            }
+
+        scored_candidates = [
+            self._score_execution_candidate(candidate, strategy_type, candidate_key, spread_execution_inputs.get(candidate_key))
+            for candidate_key in candidate_keys
+            if spread_execution_inputs.get(candidate_key) is not None
+        ]
+        if not scored_candidates:
+            return {
+                "execution_candidate_score": 0.25,
+                "strategy_type": strategy_type,
+                "candidate_key": candidate_keys[0],
+                "candidate_available": False,
+                "metric_name": None,
+                "metric_value": None,
+                "worst_leg_bid_ask_spread_ratio": None,
+                "term_structure_slope": self._term_structure_slope(candidate),
+                "reason": "relevant_execution_candidate_missing",
+            }
+
+        best = max(scored_candidates, key=lambda item: item["execution_candidate_score"])
+        best["strategy_type"] = strategy_type
+        return best
+
+    def _score_execution_candidate(
+        self,
+        candidate: PlanCandidate,
+        strategy_type: str,
+        candidate_key: str,
+        execution_candidate: Any,
+    ) -> dict[str, Any]:
+        data = self._normalize_execution_candidate(execution_candidate)
+        slope = self._term_structure_slope(candidate)
+        candidate_available = bool(data.get("candidate_available", False))
+        worst_leg_ratio = self._as_float(data.get("worst_leg_bid_ask_spread_ratio"))
+        liquidity_penalty = 0.0
+        if worst_leg_ratio is not None:
+            if worst_leg_ratio > 0.2:
+                liquidity_penalty = 0.3
+            elif worst_leg_ratio > 0.1:
+                liquidity_penalty = 0.1
+
+        metric_name: str | None = None
+        metric_value: float | None = None
+        score = 0.25 if candidate_available else 0.15
+        reason = "candidate_unavailable"
+
+        if candidate_available:
+            if strategy_type == "vertical_spread":
+                metric_name = "effective_rr"
+                metric_value = self._as_float(data.get("effective_rr"))
+                if metric_value is None:
+                    metric_name = "raw_rr"
+                    metric_value = self._as_float(data.get("raw_rr"))
+                if metric_value is None:
+                    score = 0.25
+                    reason = "vertical_rr_missing"
+                elif metric_value < 0.7:
+                    score = 0.1
+                    reason = "vertical_rr_below_floor"
+                elif metric_value >= 1.2:
+                    score = 1.0
+                    reason = "vertical_rr_strong"
+                else:
+                    score = 0.55 + ((metric_value - 0.7) / 0.5) * 0.45
+                    reason = "vertical_rr_acceptable"
+            elif strategy_type == "iron_condor":
+                metric_name = "effective_rr"
+                metric_value = self._as_float(data.get("effective_rr"))
+                if metric_value is None:
+                    metric_name = "raw_rr"
+                    metric_value = self._as_float(data.get("raw_rr"))
+                if metric_value is None:
+                    score = 0.25
+                    reason = "iron_condor_rr_missing"
+                elif 0.4 <= metric_value <= 0.6:
+                    score = 1.0
+                    reason = "iron_condor_rr_optimal"
+                elif 0.3 <= metric_value <= 0.8:
+                    score = 0.8
+                    reason = "iron_condor_rr_supported"
+                elif 0.2 <= metric_value <= 1.0:
+                    score = 0.55
+                    reason = "iron_condor_rr_marginal"
+                else:
+                    score = 0.15
+                    reason = "iron_condor_rr_outside_band"
+            elif strategy_type in {"calendar_spread", "diagonal_spread"} and candidate_key == "calendar":
+                metric_name = "effective_theta_capture_per_day"
+                metric_value = self._as_float(data.get("effective_theta_capture_per_day"))
+                if metric_value is None:
+                    score = 0.25
+                    reason = "calendar_theta_missing"
+                elif slope is not None and slope <= 0:
+                    score = 0.1
+                    reason = "calendar_term_structure_misaligned"
+                elif metric_value <= 0:
+                    score = 0.1
+                    reason = "calendar_theta_not_positive"
+                else:
+                    score = 0.55 + min(metric_value / 0.05, 1.0) * 0.45
+                    reason = "calendar_theta_supported"
+            elif strategy_type == "diagonal_spread" and candidate_key == "reverse_calendar":
+                metric_name = "effective_theta_capture_per_day"
+                metric_value = self._as_float(data.get("effective_theta_capture_per_day"))
+                if metric_value is None:
+                    score = 0.25
+                    reason = "reverse_calendar_theta_missing"
+                elif slope is not None and slope >= -0.03:
+                    score = 0.1
+                    reason = "reverse_calendar_term_structure_misaligned"
+                elif metric_value <= 0:
+                    score = 0.1
+                    reason = "reverse_calendar_theta_not_positive"
+                else:
+                    score = 0.55 + min(metric_value / 0.05, 1.0) * 0.45
+                    reason = "reverse_calendar_theta_supported"
+            elif strategy_type in {"butterfly", "iron_butterfly"}:
+                metric_name = "pricing_error"
+                metric_value = self._as_float(data.get("pricing_error"))
+                if metric_value is None:
+                    score = 0.25
+                    reason = "butterfly_pricing_missing"
+                elif metric_value > 0.12:
+                    score = 1.0
+                    reason = "butterfly_pricing_strong"
+                elif metric_value >= 0.08:
+                    score = 0.8
+                    reason = "butterfly_pricing_supported"
+                else:
+                    score = 0.2
+                    reason = "butterfly_pricing_below_threshold"
+
+        final_score = max(0.0, min(1.0, round(score - liquidity_penalty, 6)))
+        return {
+            "execution_candidate_score": final_score,
+            "candidate_key": candidate_key,
+            "candidate_available": candidate_available,
+            "metric_name": metric_name,
+            "metric_value": round(metric_value, 6) if metric_value is not None else None,
+            "worst_leg_bid_ask_spread_ratio": round(worst_leg_ratio, 6) if worst_leg_ratio is not None else None,
+            "term_structure_slope": round(slope, 6) if slope is not None else None,
+            "reason": reason,
+        }
+
+    def _spread_execution_inputs(self, candidate: PlanCandidate) -> dict[str, dict[str, Any]]:
+        signal_feature = candidate.signal_feature
+        if signal_feature is None:
+            return {}
+        option_indicators = getattr(signal_feature, "option_indicators", None)
+        if option_indicators is None:
+            return {}
+        spread_execution_inputs = getattr(option_indicators, "spread_execution_inputs", None)
+        if not isinstance(spread_execution_inputs, dict):
+            return {}
+        normalized: dict[str, dict[str, Any]] = {}
+        for name, entry in spread_execution_inputs.items():
+            normalized[str(name)] = self._normalize_execution_candidate(entry)
+        return normalized
+
+    def _normalize_execution_candidate(self, entry: Any) -> dict[str, Any]:
+        if hasattr(entry, "model_dump"):
+            return entry.model_dump(mode="json")
+        if isinstance(entry, dict):
+            return entry
+        return {}
+
+    def _term_structure_slope(self, candidate: PlanCandidate) -> float | None:
+        signal_feature = candidate.signal_feature
+        if signal_feature is None:
+            return None
+        option_indicators = getattr(signal_feature, "option_indicators", None)
+        if option_indicators is None:
+            return None
+        return self._as_float(getattr(option_indicators, "term_structure_slope", None))
+
+    def _as_float(self, value: Any) -> float | None:
+        try:
+            return float(value) if value is not None else None
+        except (TypeError, ValueError):
+            return None
+
+    def _candidate_ref(self, candidate: PlanCandidate) -> str:
+        chunk_ref = candidate.chunk_id or f"chunk-{candidate.chunk_index}"
+        return f"{candidate.plan.underlying.upper()}::{chunk_ref}::{candidate.original_order}"
+
+    def _candidate_earnings_proximity_days(self, candidate: PlanCandidate) -> int | None:
+        signal_feature = candidate.signal_feature
+        if signal_feature is None:
+            return None
+        cross_asset_indicators = getattr(signal_feature, "cross_asset_indicators", None)
+        earnings_days = getattr(cross_asset_indicators, "earnings_proximity_days", None)
+        if isinstance(earnings_days, int):
+            return earnings_days
+        try:
+            return int(earnings_days) if earnings_days is not None else None
+        except (TypeError, ValueError):
+            return None
+
+    def _candidate_event_risk_agents(self, candidate: PlanCandidate) -> list[str]:
+        event_risk_agents: list[str] = []
+        for agent_name in self._EVENT_RISK_AGENT_NAMES:
+            symbol_analysis = self._symbol_agent_analysis(candidate, agent_name)
+            if symbol_analysis and symbol_analysis.get("event_risk_present"):
+                event_risk_agents.append(agent_name)
+        return event_risk_agents
+
+    def _candidate_single_indicator_agents(self, candidate: PlanCandidate) -> list[str]:
+        single_indicator_agents: list[str] = []
+        for agent_name in self._SIGNAL_TYPE_AGENT_NAMES:
+            symbol_analysis = self._symbol_agent_analysis(candidate, agent_name)
+            if not symbol_analysis:
+                continue
+            if str(symbol_analysis.get("signal_type") or "").strip().lower() == "single_indicator":
+                single_indicator_agents.append(agent_name)
+        return single_indicator_agents
+
+    def _candidate_signal_type(self, candidate: PlanCandidate) -> str:
+        return "single_indicator" if self._candidate_single_indicator_agents(candidate) else "multi_indicator"
 
     def _machine_readable_gate_ok(self, candidate: PlanCandidate, *, allowed_strategy_types: list[str]) -> bool:
         strategy_type = str(getattr(candidate.plan.strategy_type, "value", candidate.plan.strategy_type)).lower()
@@ -538,7 +889,10 @@ class PortfolioSelector:
         same_direction_count = position_context.direction_counts.get(plan_direction, 0)
 
         strategy_penalty = round(strategy_weight * 0.18, 6)
-        size_penalty = round(min(0.22, max(0.0, float(plan.max_position_size)) / 1.5 * 0.22), 6)
+        if isinstance(plan.max_position_size, (int, float)):
+            size_penalty = round(min(0.22, max(0.0, float(plan.max_position_size)) / 1.5 * 0.22), 6)
+        else:
+            size_penalty = 0.0
         contracts_penalty = round(min(0.18, max(1, int(plan.max_contracts)) / 4 * 0.18), 6)
         existing_underlying_penalty = round(0.12 if symbol_position_count > 0 else 0.0, 6)
 
@@ -580,80 +934,6 @@ class PortfolioSelector:
                 "total_positions": position_context.total_positions,
             },
         }
-
-    def _position_count(self, current_positions: dict | None) -> int:
-        if not current_positions:
-            return 0
-        positions = current_positions.get("positions")
-        if isinstance(positions, list):
-            return len(positions)
-        count = current_positions.get("count")
-        if isinstance(count, int):
-            return count
-        return 0
-
-    def _build_position_context(self, current_positions: dict | None) -> PositionContext:
-        if not current_positions:
-            return PositionContext(
-                open_underlyings=set(),
-                counts_by_underlying={},
-                direction_by_underlying={},
-                total_positions=0,
-                direction_counts={"bullish": 0, "bearish": 0, "neutral": 0},
-            )
-        positions = current_positions.get("positions")
-        if not isinstance(positions, list):
-            return PositionContext(
-                open_underlyings=set(),
-                counts_by_underlying={},
-                direction_by_underlying={},
-                total_positions=0,
-                direction_counts={"bullish": 0, "bearish": 0, "neutral": 0},
-            )
-        open_underlyings: set[str] = set()
-        counts_by_underlying: dict[str, int] = {}
-        direction_by_underlying: dict[str, str] = {}
-        direction_counts = {"bullish": 0, "bearish": 0, "neutral": 0}
-        for position in positions:
-            if not isinstance(position, dict):
-                continue
-            symbol = str(position.get("underlying") or position.get("symbol") or "").strip().upper()
-            if symbol:
-                open_underlyings.add(symbol)
-                counts_by_underlying[symbol] = counts_by_underlying.get(symbol, 0) + 1
-                direction = self._position_direction(position)
-                direction_by_underlying[symbol] = direction
-                direction_counts[direction] = direction_counts.get(direction, 0) + 1
-        return PositionContext(
-            open_underlyings=open_underlyings,
-            counts_by_underlying=counts_by_underlying,
-            direction_by_underlying=direction_by_underlying,
-            total_positions=len(positions),
-            direction_counts=direction_counts,
-        )
-
-    def _position_direction(self, position: dict[str, Any]) -> str:
-        raw_direction = str(
-            position.get("direction")
-            or position.get("side")
-            or position.get("position_side")
-            or ""
-        ).strip().lower()
-        if raw_direction in {"bullish", "long", "buy"}:
-            return "bullish"
-        if raw_direction in {"bearish", "short", "sell"}:
-            return "bearish"
-
-        quantity = position.get("quantity")
-        try:
-            numeric_quantity = float(quantity)
-        except (TypeError, ValueError):
-            numeric_quantity = 0.0
-        if numeric_quantity > 0:
-            return "bullish"
-        if numeric_quantity < 0:
-            return "bearish"
-        return "neutral"
 
     def _llm_rank_positions(self, llm_review: dict[str, Any] | None) -> dict[str, int]:
         if not llm_review:

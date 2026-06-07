@@ -4,6 +4,46 @@ from datetime import date, datetime
 from pydantic import BaseModel, Field
 
 
+class SpreadExecutionCandidate(BaseModel):
+    """Representative execution summary for one spread structure candidate."""
+
+    strategy_type: str = ""
+    candidate_available: bool = False
+    expiry: str | None = None
+    expiry_dte: int | None = None
+    front_expiry: str | None = None
+    front_expiry_dte: int | None = None
+    back_expiry: str | None = None
+    back_expiry_dte: int | None = None
+    long_strike: float | None = None
+    short_strike: float | None = None
+    lower_strike: float | None = None
+    center_strike: float | None = None
+    upper_strike: float | None = None
+    long_put_strike: float | None = None
+    short_put_strike: float | None = None
+    short_call_strike: float | None = None
+    long_call_strike: float | None = None
+    net_debit: float | None = None
+    net_credit: float | None = None
+    width: float | None = None
+    max_profit_before_cost: float | None = None
+    max_loss_before_cost: float | None = None
+    estimated_round_trip_cost: float | None = None
+    estimated_roll_cost: float | None = None
+    raw_rr: float | None = None
+    effective_rr: float | None = None
+    gross_theta_capture_per_day: float | None = None
+    effective_theta_capture_per_day: float | None = None
+    pricing_error: float | None = None
+    gross_edge_ratio: float | None = None
+    net_edge_after_cost: float | None = None
+    net_profit_after_cost: float | None = None
+    worst_leg_bid_ask_spread_ratio: float | None = None
+    average_leg_bid_ask_spread_ratio: float | None = None
+    leg_bid_ask_spread_ratios: list[float] = Field(default_factory=list)
+
+
 class OptionIndicators(BaseModel):
     """期权指标集"""
     iv_rank: float = 0.0  # IV Rank: min-max归一化 (current - min) / (max - min) * 100
@@ -14,6 +54,7 @@ class OptionIndicators(BaseModel):
     pcr_oi: float = 0.0  # Put/Call 持仓量比
     iv_skew: float = 0.0  # IV偏斜（25delta put IV - 25delta call IV）
     term_structure_slope: float = 0.0  # 期限结构斜率
+    front_expiry_dte: int | None = None  # 最近到期日距当前交易日的自然日天数；0=同日到期(0DTE)
     atm_iv: dict[str, float] = Field(default_factory=dict)  # {expiry_str: atm_iv}
 
     # Professional volatility surface features
@@ -37,6 +78,7 @@ class OptionIndicators(BaseModel):
     calendar_spread_theta_capture: float = 0.0
     butterfly_pricing_error: float = 0.0
     box_spread_arbitrage: float = 0.0
+    spread_execution_inputs: dict[str, SpreadExecutionCandidate] = Field(default_factory=dict)
 
     confidence_scores: dict[str, float] = Field(default_factory=dict)
     extreme_flags: list[str] = Field(default_factory=list)
@@ -62,6 +104,8 @@ class StockIndicators(BaseModel):
 
     # Professional trend features
     adx_14: float = 0.0
+    adx_z_score: float = 0.0
+    adx_change_2d: float = 0.0
     keltner_mid: float = 0.0
     keltner_upper: float = 0.0
     keltner_lower: float = 0.0
@@ -79,6 +123,7 @@ class StockIndicators(BaseModel):
 
     # Professional flow features
     vwap: float = 0.0
+    liquidity_threshold: float = 0.0
     volume_profile_poc: float = 0.0
     volume_profile_val: float = 0.0
     volume_profile_vah: float = 0.0
@@ -127,6 +172,12 @@ class CrossAssetIndicators(BaseModel):
     # ── Placeholders (next iteration) ─────────────────────
     sector_relative_strength: float = 0.0  # Relative strength vs sector ETF
     earnings_proximity_days: int | None = None  # Days until next earnings (None = unknown)
+    regime_days: int | None = None
+    regime_transition: bool = False
+    regime_flip_count_10d: int = 0
+    market_shock_return_1d: float = 0.0
+    market_shock_source: str | None = None
+    gex_regime: str = "neutral"
 
     confidence_scores: dict[str, float] = Field(default_factory=dict)
 

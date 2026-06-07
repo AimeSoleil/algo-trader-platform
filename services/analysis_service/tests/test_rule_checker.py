@@ -63,35 +63,35 @@ def _blueprint(**overrides) -> dict:
 
 
 class TestPlanRisk:
-    def test_missing_stop_loss(self):
+    def test_missing_stop_loss_is_allowed_in_manual_trader_mode(self):
         result = check_blueprint(_blueprint(symbol_plans=[_plan(stop_loss_amount=None)]))
-        assert any(i.rule == "stop_loss_required" for i in result.issues)
+        assert not any(i.rule == "stop_loss_required" for i in result.issues)
 
-    def test_zero_stop_loss(self):
+    def test_zero_stop_loss_is_allowed_in_manual_trader_mode(self):
         result = check_blueprint(_blueprint(symbol_plans=[_plan(stop_loss_amount=0)]))
-        assert any(i.rule == "stop_loss_required" for i in result.issues)
+        assert not any(i.rule == "stop_loss_required" for i in result.issues)
 
     def test_low_confidence_warning(self):
         result = check_blueprint(_blueprint(symbol_plans=[_plan(confidence=0.2)]))
         assert any(i.rule == "low_confidence" for i in result.issues)
 
-    def test_stop_loss_exceeds_max_loss_error(self):
+    def test_stop_loss_exceeds_max_loss_not_checked_in_manual_trader_mode(self):
         result = check_blueprint(
             _blueprint(symbol_plans=[_plan(stop_loss_amount=700.0, max_loss_per_trade=500.0)])
         )
-        assert any(i.rule == "stop_loss_exceeds_max_loss" for i in result.issues)
+        assert not any(i.rule == "stop_loss_exceeds_max_loss" for i in result.issues)
 
-    def test_stop_loss_equal_max_loss_error(self):
+    def test_stop_loss_equal_max_loss_not_checked_in_manual_trader_mode(self):
         result = check_blueprint(
             _blueprint(symbol_plans=[_plan(stop_loss_amount=500.0, max_loss_per_trade=500.0)])
         )
-        assert any(i.rule == "stop_loss_equals_max_loss" for i in result.issues)
+        assert not any(i.rule == "stop_loss_equals_max_loss" for i in result.issues)
 
-    def test_risk_reward_below_one_warning(self):
+    def test_risk_reward_below_one_not_checked_in_manual_trader_mode(self):
         result = check_blueprint(
             _blueprint(symbol_plans=[_plan(take_profit_amount=300.0, max_loss_per_trade=500.0)])
         )
-        assert any(i.rule == "risk_reward_below_one" for i in result.issues)
+        assert not any(i.rule == "risk_reward_below_one" for i in result.issues)
 
 
 # ---------------------------------------------------------------------------
@@ -160,6 +160,68 @@ class TestContextAwareChecks:
         )
         assert not any(i.rule == "counter_trend_adx30" for i in result.issues)
 
+    def test_counter_trend_adx_zscore_error(self):
+        signals = {
+            "AAPL": {
+                "volume": 1_500_000,
+                "stock_indicators": {
+                    "adx_14": 32.0,
+                    "adx_z_score": 1.8,
+                    "trend": "bullish",
+                    "liquidity_threshold": 750_000.0,
+                },
+                "option_indicators": {},
+            }
+        }
+        result = check_blueprint(
+            _blueprint(symbol_plans=[_plan(direction="bearish")]),
+            signal_features=signals,
+        )
+        assert any(i.rule == "counter_trend_adx_zscore" and i.severity == "error" for i in result.issues)
+
+    def test_trend_low_liquidity_no_longer_caps_size(self):
+        signals = {
+            "AAPL": {
+                "volume": 400_000,
+                "stock_indicators": {
+                    "liquidity_threshold": 750_000.0,
+                    "trend": "bullish",
+                },
+                "option_indicators": {},
+            }
+        }
+        result = check_blueprint(
+            _blueprint(symbol_plans=[_plan(max_position_size=0.5)]),
+            signal_features=signals,
+        )
+        assert not any(i.rule == "trend_low_liquidity_size_cap" for i in result.issues)
+
+    def test_trend_low_liquidity_requires_simple_structure(self):
+        signals = {
+            "AAPL": {
+                "volume": 400_000,
+                "stock_indicators": {
+                    "liquidity_threshold": 750_000.0,
+                    "trend": "neutral",
+                },
+                "option_indicators": {},
+            }
+        }
+        result = check_blueprint(
+            _blueprint(symbol_plans=[_plan(
+                strategy_type="butterfly",
+                direction="neutral",
+                max_position_size=0.2,
+                legs=[
+                    _leg(strike=145, option_type="call", side="buy"),
+                    _leg(strike=150, option_type="call", side="sell"),
+                    _leg(strike=155, option_type="call", side="buy"),
+                ],
+            )]),
+            signal_features=signals,
+        )
+        assert any(i.rule == "trend_low_liquidity_simple_structures_only" and i.severity == "error" for i in result.issues)
+
     def test_bid_ask_hard_block(self):
         signals = {
             "AAPL": {
@@ -208,7 +270,31 @@ class TestContextAwareChecks:
         )
         warns = [i for i in result.issues if i.rule == "bid_ask_illiquid"]
         assert len(warns) == 1
-        assert warns[0].severity == "warning"
+
+    def test_volatility_backwardation_short_dte_blocks_short_vol_structures(self):
+        signals = {
+            "AAPL": {
+                "close_price": 150.0,
+                "option_indicators": {
+                    "term_structure_slope": -0.02,
+                    "front_expiry_dte": 7,
+                },
+            }
+        }
+        result = check_blueprint(
+            _blueprint(symbol_plans=[_plan(
+                strategy_type="iron_condor",
+                direction="neutral",
+                legs=[
+                    _leg(strike=140, option_type="put", side="buy"),
+                    _leg(strike=145, option_type="put", side="sell"),
+                    _leg(strike=155, option_type="call", side="sell"),
+                    _leg(strike=160, option_type="call", side="buy"),
+                ],
+            )]),
+            signal_features=signals,
+        )
+        assert any(i.rule == "volatility_backwardation_short_dte_short_vol" and i.severity == "error" for i in result.issues)
 
     def test_fully_itm_vertical_spread_error(self):
         signals = {
@@ -388,13 +474,36 @@ class TestGreeksDirection:
 
 class TestDTEBounds:
     def test_dte_too_short_error(self):
-        """Legs expiring within 7 days should error."""
+        """Default structures still reject very short DTE legs."""
         from datetime import date, timedelta
         short_expiry = (date.today() + timedelta(days=3)).isoformat()
         result = check_blueprint(_blueprint(symbol_plans=[_plan(
             legs=[_leg(expiry=short_expiry)],
         )]))
         assert any(i.rule == "dte_bounds" and i.severity == "error" for i in result.issues)
+
+    def test_single_leg_dte_five_days_is_allowed(self):
+        """single_leg now allows DTE >= 5."""
+        from datetime import date, timedelta
+        short_expiry = (date.today() + timedelta(days=5)).isoformat()
+        result = check_blueprint(_blueprint(symbol_plans=[_plan(
+            strategy_type="single_leg",
+            legs=[_leg(expiry=short_expiry)],
+        )]))
+        assert not any(i.rule == "dte_bounds" and i.severity == "error" for i in result.issues)
+
+    def test_vertical_spread_dte_five_days_is_allowed(self):
+        """vertical_spread now allows DTE >= 5."""
+        from datetime import date, timedelta
+        short_expiry = (date.today() + timedelta(days=5)).isoformat()
+        result = check_blueprint(_blueprint(symbol_plans=[_plan(
+            strategy_type="vertical_spread",
+            legs=[
+                _leg(expiry=short_expiry, strike=150, option_type="call", side="buy"),
+                _leg(expiry=short_expiry, strike=155, option_type="call", side="sell"),
+            ],
+        )]))
+        assert not any(i.rule == "dte_bounds" and i.severity == "error" for i in result.issues)
 
     def test_dte_too_long_warning(self):
         """Legs expiring beyond 180 days should warn."""
@@ -520,6 +629,176 @@ class TestCalendarPrecisionFirstGates:
         assert not any(i.rule in {"calendar_requires_contango", "calendar_near_earnings"} for i in result.issues)
 
 
+class TestSpreadExecutionCandidateConflicts:
+    def test_calendar_conflict_when_vertical_candidate_is_materially_stronger(self):
+        signals = {
+            "AAPL": {
+                "close_price": 150.0,
+                "option_indicators": {
+                    "term_structure_slope": 0.02,
+                    "spread_execution_inputs": {
+                        "calendar": {
+                            "candidate_available": True,
+                            "effective_theta_capture_per_day": -0.01,
+                            "worst_leg_bid_ask_spread_ratio": 0.05,
+                        },
+                        "vertical": {
+                            "candidate_available": True,
+                            "effective_rr": 1.0,
+                            "raw_rr": 1.05,
+                            "worst_leg_bid_ask_spread_ratio": 0.04,
+                        },
+                    },
+                },
+                "cross_asset_indicators": {"earnings_proximity_days": 8},
+            }
+        }
+        result = check_blueprint(
+            _blueprint(symbol_plans=[_plan(
+                strategy_type="calendar_spread",
+                direction="neutral",
+                legs=[
+                    _leg(expiry="2026-05-15", strike=150, side="sell"),
+                    _leg(expiry="2026-06-19", strike=150, side="buy"),
+                ],
+            )]),
+            signal_features=signals,
+        )
+        assert any(i.rule == "spread_execution_candidate_conflict" and i.severity == "error" for i in result.issues)
+
+    def test_vertical_conflict_when_calendar_candidate_is_materially_stronger(self):
+        signals = {
+            "AAPL": {
+                "close_price": 150.0,
+                "option_indicators": {
+                    "term_structure_slope": 0.05,
+                    "spread_execution_inputs": {
+                        "vertical": {
+                            "candidate_available": True,
+                            "effective_rr": 0.62,
+                            "raw_rr": 0.65,
+                            "worst_leg_bid_ask_spread_ratio": 0.04,
+                        },
+                        "calendar": {
+                            "candidate_available": True,
+                            "effective_theta_capture_per_day": 0.05,
+                            "worst_leg_bid_ask_spread_ratio": 0.03,
+                        },
+                    },
+                },
+                "cross_asset_indicators": {"earnings_proximity_days": 10},
+            }
+        }
+        result = check_blueprint(
+            _blueprint(symbol_plans=[_plan(
+                strategy_type="vertical_spread",
+                legs=[
+                    _leg(expiry="2026-05-15", strike=150, side="buy"),
+                    _leg(expiry="2026-05-15", strike=155, side="sell"),
+                ],
+            )]),
+            signal_features=signals,
+        )
+        assert any(i.rule == "spread_execution_candidate_conflict" and i.severity == "error" for i in result.issues)
+
+    def test_no_conflict_when_stronger_calendar_candidate_is_blocked_by_earnings(self):
+        signals = {
+            "AAPL": {
+                "close_price": 150.0,
+                "option_indicators": {
+                    "term_structure_slope": 0.05,
+                    "spread_execution_inputs": {
+                        "vertical": {
+                            "candidate_available": True,
+                            "effective_rr": 0.72,
+                            "raw_rr": 0.75,
+                            "worst_leg_bid_ask_spread_ratio": 0.04,
+                        },
+                        "calendar": {
+                            "candidate_available": True,
+                            "effective_theta_capture_per_day": 0.05,
+                            "worst_leg_bid_ask_spread_ratio": 0.03,
+                        },
+                    },
+                },
+                "cross_asset_indicators": {"earnings_proximity_days": 3},
+            }
+        }
+        result = check_blueprint(
+            _blueprint(symbol_plans=[_plan(
+                strategy_type="vertical_spread",
+                legs=[
+                    _leg(expiry="2026-05-15", strike=150, side="buy"),
+                    _leg(expiry="2026-05-15", strike=155, side="sell"),
+                ],
+            )]),
+            signal_features=signals,
+        )
+        assert not any(i.rule == "spread_execution_candidate_conflict" for i in result.issues)
+
+    def test_no_conflict_when_simple_structure_only_blocks_complex_alternative(self):
+        signals = {
+            "AAPL": {
+                "close_price": 150.0,
+                "option_indicators": {
+                    "term_structure_slope": 0.05,
+                    "spread_execution_inputs": {
+                        "vertical": {
+                            "candidate_available": True,
+                            "effective_rr": 0.72,
+                            "raw_rr": 0.75,
+                            "worst_leg_bid_ask_spread_ratio": 0.04,
+                        },
+                        "calendar": {
+                            "candidate_available": True,
+                            "effective_theta_capture_per_day": 0.05,
+                            "worst_leg_bid_ask_spread_ratio": 0.03,
+                        },
+                    },
+                },
+                "cross_asset_indicators": {"earnings_proximity_days": 10},
+            }
+        }
+        agent_outputs = _agent_outputs(
+            flow=[{"symbol": "AAPL", "simple_structures_only": True}],
+        )
+        result = check_blueprint(
+            _blueprint(symbol_plans=[_plan(
+                strategy_type="vertical_spread",
+                legs=[
+                    _leg(expiry="2026-05-15", strike=150, side="buy"),
+                    _leg(expiry="2026-05-15", strike=155, side="sell"),
+                ],
+            )]),
+            signal_features=signals,
+            agent_outputs=agent_outputs,
+        )
+        assert not any(i.rule == "spread_execution_candidate_conflict" for i in result.issues)
+
+    def test_missing_execution_candidates_downgrades_to_warning(self):
+        signals = {
+            "AAPL": {
+                "close_price": 150.0,
+                "option_indicators": {
+                    "term_structure_slope": 0.02,
+                },
+                "cross_asset_indicators": {"earnings_proximity_days": 8},
+            }
+        }
+        result = check_blueprint(
+            _blueprint(symbol_plans=[_plan(
+                strategy_type="calendar_spread",
+                direction="neutral",
+                legs=[
+                    _leg(expiry="2026-05-15", strike=150, side="sell"),
+                    _leg(expiry="2026-06-19", strike=150, side="buy"),
+                ],
+            )]),
+            signal_features=signals,
+        )
+        assert any(i.rule == "spread_execution_candidate_data_missing" and i.severity == "warning" for i in result.issues)
+
+
 # ---------------------------------------------------------------------------
 # Duplicate symbols check
 # ---------------------------------------------------------------------------
@@ -631,7 +910,7 @@ class TestCascadingModifiers:
         # 0.8 × 0.9 = 0.72 ≥ 0.3 → ok
         assert not any(i.rule == "cascading_size_modifiers" for i in result.issues)
 
-    def test_missing_agent_no_issue(self):
+    def test_missing_agent_uses_default_modifier_and_still_checks_floor(self):
         ao = _agent_outputs(
             flow=[{"symbol": "AAPL", "position_size_modifier": 0.1}],
         )
@@ -639,7 +918,39 @@ class TestCascadingModifiers:
             _blueprint(),
             agent_outputs=ao,
         )
-        assert not any(i.rule == "cascading_size_modifiers" for i in result.issues)
+        assert any(i.rule == "cascading_size_modifiers" for i in result.issues)
+
+
+class TestFlowPositionSizeModifierCaps:
+    def test_flow_modifier_no_longer_caps_blueprint_max_position_size(self):
+        ao = _agent_outputs(
+            flow=[{"symbol": "AAPL", "position_size_modifier": 0.3}],
+        )
+        result = check_blueprint(
+            _blueprint(symbol_plans=[_plan(max_position_size=0.5)]),
+            agent_outputs=ao,
+        )
+        assert not any(i.rule == "flow_position_size_modifier_cap" for i in result.issues)
+
+    def test_flow_modifier_allows_equal_or_smaller_blueprint_size(self):
+        ao = _agent_outputs(
+            flow=[{"symbol": "AAPL", "position_size_modifier": 0.5}],
+        )
+        result = check_blueprint(
+            _blueprint(symbol_plans=[_plan(max_position_size=0.5)]),
+            agent_outputs=ao,
+        )
+        assert not any(i.rule == "flow_position_size_modifier_cap" for i in result.issues)
+
+    def test_flow_modifier_skips_when_blueprint_has_no_max_position_size(self):
+        ao = _agent_outputs(
+            flow=[{"symbol": "AAPL", "position_size_modifier": 0.3}],
+        )
+        result = check_blueprint(
+            _blueprint(),
+            agent_outputs=ao,
+        )
+        assert not any(i.rule == "flow_position_size_modifier_cap" for i in result.issues)
 
 
 class TestChainHardBlock:
@@ -683,7 +994,7 @@ class TestChainHardBlock:
 
 
 class TestMasterOverride:
-    def test_override_exceeded_error(self):
+    def test_override_exceeded_is_not_enforced_in_manual_trader_mode(self):
         ao = _agent_outputs(
             cross_asset=[{
                 "symbol": "AAPL",
@@ -695,9 +1006,9 @@ class TestMasterOverride:
             _blueprint(symbol_plans=[_plan(max_position_size=0.8)]),
             agent_outputs=ao,
         )
-        assert any(i.rule == "master_override_exceeded" and i.severity == "error" for i in result.issues)
+        assert not any(i.rule == "master_override_exceeded" for i in result.issues)
 
-    def test_override_skip_when_below_floor(self):
+    def test_override_skip_when_below_floor_is_not_enforced_in_manual_trader_mode(self):
         ao = _agent_outputs(
             cross_asset=[{
                 "symbol": "AAPL",
@@ -709,7 +1020,7 @@ class TestMasterOverride:
             _blueprint(),
             agent_outputs=ao,
         )
-        assert any(i.rule == "master_override_skip" and i.severity == "error" for i in result.issues)
+        assert not any(i.rule == "master_override_skip" for i in result.issues)
 
     def test_override_within_limit_ok(self):
         ao = _agent_outputs(
@@ -740,10 +1051,36 @@ class TestMasterOverride:
         assert not any(i.rule.startswith("master_override") for i in result.issues)
 
 
+class TestGlobalPositionSizeCap:
+    def test_default_global_cap_is_not_enforced_in_manual_trader_mode(self):
+        result = check_blueprint(
+            _blueprint(symbol_plans=[_plan(max_position_size=2.1)]),
+        )
+        assert not any(i.rule == "max_position_size_global_cap" for i in result.issues)
+
+    def test_configured_global_cap_is_respected(self, monkeypatch):
+        settings = SimpleNamespace(
+            analysis_service=SimpleNamespace(
+                llm=SimpleNamespace(
+                    max_position_size_cap=2.2,
+                    precision_first=SimpleNamespace(enabled=True, allowed_strategy_types=["single_leg", "vertical_spread"]),
+                )
+            )
+        )
+        monkeypatch.setattr(
+            "services.analysis_service.app.evaluation.rule_checker.get_settings",
+            lambda: settings,
+        )
+        result = check_blueprint(
+            _blueprint(symbol_plans=[_plan(max_position_size=2.1)]),
+        )
+        assert not any(i.rule == "max_position_size_global_cap" for i in result.issues)
+
+
 class TestSpreadEffectiveRR:
-    def test_effective_rr_below_one_error(self):
+    def test_vertical_rr_below_floor_error(self):
         ao = _agent_outputs(
-            spread=[{"symbol": "AAPL", "effective_rr": 0.7}],
+            spread=[{"symbol": "AAPL", "effective_rr": 0.6}],
         )
         result = check_blueprint(
             _blueprint(symbol_plans=[_plan(
@@ -752,9 +1089,22 @@ class TestSpreadEffectiveRR:
             )]),
             agent_outputs=ao,
         )
-        assert any(i.rule == "spread_effective_rr_reject" and i.severity == "error" for i in result.issues)
+        assert any(i.rule == "spread_vertical_rr_reject" and i.severity == "error" for i in result.issues)
 
-    def test_effective_rr_null_rejected(self):
+    def test_vertical_falls_back_to_raw_risk_reward_when_effective_rr_missing(self):
+        ao = _agent_outputs(
+            spread=[{"symbol": "AAPL", "effective_rr": None, "risk_reward_ratio": 0.6}],
+        )
+        result = check_blueprint(
+            _blueprint(symbol_plans=[_plan(
+                strategy_type="vertical_spread",
+                legs=[_leg(strike=150, option_type="call", side="buy"), _leg(strike=160, option_type="call", side="sell")],
+            )]),
+            agent_outputs=ao,
+        )
+        assert any(i.rule == "spread_vertical_rr_reject" and i.severity == "error" for i in result.issues)
+
+    def test_iron_condor_effective_rr_null_is_allowed(self):
         ao = _agent_outputs(
             spread=[{"symbol": "AAPL", "effective_rr": None}],
         )
@@ -772,7 +1122,7 @@ class TestSpreadEffectiveRR:
             )]),
             agent_outputs=ao,
         )
-        assert any(i.rule == "spread_effective_rr_unknown" and i.severity == "error" for i in result.issues)
+        assert not any(i.rule.startswith("spread_vertical_rr") for i in result.issues)
 
     def test_effective_rr_ok_for_single_leg(self):
         """Single leg is not a spread strategy — skip check."""
@@ -783,7 +1133,7 @@ class TestSpreadEffectiveRR:
             _blueprint(),
             agent_outputs=ao,
         )
-        assert not any(i.rule.startswith("spread_effective_rr") for i in result.issues)
+        assert not any(i.rule.startswith("spread_vertical_rr") for i in result.issues)
 
 
 class TestStructuredAgentTradeGates:
@@ -872,6 +1222,41 @@ class TestStructuredAgentTradeGates:
         )
         assert not any(i.rule == "trend_simple_structures_only" for i in result.issues)
 
+    def test_trend_false_positive_risk_high_no_longer_caps_size(self):
+        ao = _agent_outputs(
+            trend=[{
+                "symbol": "AAPL",
+                "false_positive_risk": "high",
+            }],
+        )
+        result = check_blueprint(
+            _blueprint(symbol_plans=[_plan(max_position_size=0.5)]),
+            agent_outputs=ao,
+        )
+        assert not any(i.rule == "trend_false_positive_risk_size_cap" for i in result.issues)
+
+    def test_trend_false_positive_risk_high_requires_simple_structures(self):
+        ao = _agent_outputs(
+            trend=[{
+                "symbol": "AAPL",
+                "false_positive_risk": "high",
+            }],
+        )
+        result = check_blueprint(
+            _blueprint(symbol_plans=[_plan(
+                strategy_type="butterfly",
+                direction="neutral",
+                max_position_size=0.2,
+                legs=[
+                    _leg(strike=145, option_type="call", side="buy"),
+                    _leg(strike=150, option_type="call", side="sell"),
+                    _leg(strike=155, option_type="call", side="buy"),
+                ],
+            )]),
+            agent_outputs=ao,
+        )
+        assert any(i.rule == "trend_false_positive_risk_simple_structures_only" and i.severity == "error" for i in result.issues)
+
     def test_flow_trade_allowed_false_error(self):
         ao = _agent_outputs(
             flow=[{
@@ -930,6 +1315,81 @@ class TestStructuredAgentTradeGates:
         )
         assert any(i.rule == "chain_simple_structures_only" for i in result.issues)
 
+    def test_chain_gamma_pin_exception_allows_butterfly_when_centered_and_liquid(self):
+        ao = _agent_outputs(
+            chain=[{
+                "symbol": "AAPL",
+                "simple_structures_only": True,
+                "gamma_pin_active": True,
+                "pin_strength": 0.82,
+                "gamma_pin_strike": 150.0,
+                "liquidity_tier": "L1",
+            }],
+        )
+        result = check_blueprint(
+            _blueprint(symbol_plans=[_plan(
+                strategy_type="butterfly",
+                direction="neutral",
+                legs=[
+                    _leg(strike=145, option_type="call", side="buy"),
+                    _leg(strike=150, option_type="call", side="sell"),
+                    _leg(strike=155, option_type="call", side="buy"),
+                ],
+            )]),
+            agent_outputs=ao,
+        )
+        assert not any(i.rule == "chain_simple_structures_only" for i in result.issues)
+        assert not any(i.rule.startswith("chain_gamma_pin_") for i in result.issues)
+
+    def test_chain_gamma_pin_requires_allowed_structure(self):
+        ao = _agent_outputs(
+            chain=[{
+                "symbol": "AAPL",
+                "simple_structures_only": True,
+                "gamma_pin_active": True,
+                "pin_strength": 0.88,
+                "gamma_pin_strike": 150.0,
+                "liquidity_tier": "L1",
+            }],
+        )
+        result = check_blueprint(
+            _blueprint(symbol_plans=[_plan(
+                strategy_type="vertical_spread",
+                direction="bullish",
+                legs=[
+                    _leg(strike=145, option_type="call", side="buy"),
+                    _leg(strike=150, option_type="call", side="sell"),
+                ],
+            )]),
+            agent_outputs=ao,
+        )
+        assert any(i.rule == "chain_gamma_pin_structure_required" for i in result.issues)
+
+    def test_chain_gamma_pin_requires_centered_short_strike(self):
+        ao = _agent_outputs(
+            chain=[{
+                "symbol": "AAPL",
+                "simple_structures_only": True,
+                "gamma_pin_active": True,
+                "pin_strength": 0.9,
+                "gamma_pin_strike": 150.0,
+                "liquidity_tier": "L2",
+            }],
+        )
+        result = check_blueprint(
+            _blueprint(symbol_plans=[_plan(
+                strategy_type="butterfly",
+                direction="neutral",
+                legs=[
+                    _leg(strike=147, option_type="call", side="buy"),
+                    _leg(strike=152, option_type="call", side="sell"),
+                    _leg(strike=157, option_type="call", side="buy"),
+                ],
+            )]),
+            agent_outputs=ao,
+        )
+        assert any(i.rule == "chain_gamma_pin_strike_centering" for i in result.issues)
+
     def test_volatility_trade_allowed_false_error(self):
         ao = _agent_outputs(
             volatility=[{
@@ -963,6 +1423,32 @@ class TestStructuredAgentTradeGates:
         )
         assert any(i.rule == "volatility_simple_structures_only" for i in result.issues)
 
+    def test_volatility_single_indicator_caps_confidence(self):
+        ao = _agent_outputs(
+            volatility=[{
+                "symbol": "AAPL",
+                "signal_type": "single_indicator",
+            }],
+        )
+        result = check_blueprint(
+            _blueprint(symbol_plans=[_plan(confidence=0.7)]),
+            agent_outputs=ao,
+        )
+        assert any(i.rule == "volatility_single_indicator_confidence_cap" and i.severity == "error" for i in result.issues)
+
+    def test_volatility_single_indicator_no_longer_caps_size(self):
+        ao = _agent_outputs(
+            volatility=[{
+                "symbol": "AAPL",
+                "signal_type": "single_indicator",
+            }],
+        )
+        result = check_blueprint(
+            _blueprint(symbol_plans=[_plan(max_position_size=0.5)]),
+            agent_outputs=ao,
+        )
+        assert not any(i.rule == "volatility_single_indicator_size_cap" for i in result.issues)
+
     def test_spread_confidence_cap_error(self):
         ao = _agent_outputs(
             spread=[{
@@ -990,7 +1476,7 @@ class TestStructuredAgentTradeGates:
 
 
 class TestEventRiskConsensus:
-    def test_three_agents_require_reduced_position_size(self):
+    def test_three_agents_no_longer_require_reduced_position_size(self):
         ao = _agent_outputs(
             volatility=[{"symbol": "AAPL", "event_risk_present": True}],
             flow=[{"symbol": "AAPL", "event_risk_present": True}],
@@ -1000,7 +1486,7 @@ class TestEventRiskConsensus:
             _blueprint(symbol_plans=[_plan(confidence=0.7, max_position_size=1.0)]),
             agent_outputs=ao,
         )
-        assert any(i.rule == "event_risk_consensus_position_size" and i.severity == "error" for i in result.issues)
+        assert not any(i.rule == "event_risk_consensus_position_size" for i in result.issues)
 
     def test_two_agents_flag_no_warning(self):
         ao = _agent_outputs(
@@ -1013,6 +1499,18 @@ class TestEventRiskConsensus:
             agent_outputs=ao,
         )
         assert not any(i.rule.startswith("event_risk_consensus") for i in result.issues)
+
+    def test_cross_asset_event_risk_no_longer_imposes_position_cap(self):
+        ao = _agent_outputs(
+            volatility=[{"symbol": "AAPL", "event_risk_present": True}],
+            flow=[{"symbol": "AAPL", "event_risk_present": True}],
+            cross_asset=[{"symbol": "AAPL", "event_risk_present": True, "correlation_regime": "event_driven"}],
+        )
+        result = check_blueprint(
+            _blueprint(symbol_plans=[_plan(confidence=0.7, max_position_size=1.0)]),
+            agent_outputs=ao,
+        )
+        assert not any(i.rule == "event_risk_consensus_position_size" for i in result.issues)
 
     def test_three_agents_with_reduced_size_pass_event_risk_check(self):
         ao = _agent_outputs(
@@ -1057,6 +1555,58 @@ class TestEventRiskConsensus:
             agent_outputs=ao,
         )
         assert not any(i.rule == "event_risk_consensus_confidence_cap" for i in result.issues)
+
+    def test_cross_asset_event_risk_can_be_the_second_event_flag_in_event_driven_consensus(self):
+        ao = _agent_outputs(
+            flow=[{"symbol": "AAPL", "event_risk_present": True}],
+            cross_asset=[{"symbol": "AAPL", "event_risk_present": True, "correlation_regime": "event_driven"}],
+        )
+        result = check_blueprint(
+            _blueprint(symbol_plans=[_plan(confidence=0.6, strategy_type="single_leg")]),
+            agent_outputs=ao,
+        )
+        assert any(i.rule == "event_risk_consensus_confidence_cap" and i.severity == "error" for i in result.issues)
+
+    def test_market_shock_escalation_caps_directional_plan_when_not_aligned(self):
+        ao = _agent_outputs(
+            cross_asset=[{
+                "symbol": "AAPL",
+                "market_shock_return_1d": -0.05,
+                "market_shock_source": "macro_gap_down",
+            }],
+        )
+        result = check_blueprint(
+            _blueprint(symbol_plans=[_plan(
+                direction="bullish",
+                confidence=0.7,
+                max_position_size=0.8,
+                reasoning="Bullish continuation despite recent macro stress.",
+            )]),
+            agent_outputs=ao,
+        )
+        assert any(i.rule == "event_risk_market_shock_confidence_cap" and i.severity == "error" for i in result.issues)
+        assert not any(i.rule == "event_risk_market_shock_position_size_cap" for i in result.issues)
+
+    def test_market_shock_directional_alignment_allows_exemption_with_reasoning(self):
+        ao = _agent_outputs(
+            cross_asset=[{
+                "symbol": "AAPL",
+                "market_shock_return_1d": -0.05,
+                "market_shock_source": "macro_gap_down",
+            }],
+        )
+        result = check_blueprint(
+            _blueprint(symbol_plans=[_plan(
+                direction="bearish",
+                confidence=0.7,
+                max_position_size=0.8,
+                reasoning="Macro_gap_down shock supports bearish protection; keep strict stop-loss and defined max loss.",
+            )]),
+            agent_outputs=ao,
+        )
+        assert not any(i.rule == "event_risk_market_shock_confidence_cap" for i in result.issues)
+        assert not any(i.rule == "event_risk_market_shock_position_size_cap" for i in result.issues)
+        assert not any(i.rule == "event_risk_market_shock_exemption_reasoning" for i in result.issues)
 
 
 class TestConfirmingIndicators:
@@ -1157,7 +1707,7 @@ class TestCrossAssetQualityGuards:
         )
         assert any(i.rule == "cross_asset_stale_data_aggressive_direction" for i in result.issues)
 
-    def test_low_quality_caps_position_size(self):
+    def test_low_quality_no_longer_caps_position_size(self):
         signals = {
             "AAPL": {
                 "stock_indicators": {},
@@ -1174,7 +1724,7 @@ class TestCrossAssetQualityGuards:
             _blueprint(symbol_plans=[_plan(max_position_size=0.9)]),
             signal_features=signals,
         )
-        assert any(i.rule == "cross_asset_low_quality_position_size" for i in result.issues)
+        assert not any(i.rule == "cross_asset_low_quality_position_size" for i in result.issues)
 
 
 class TestCrossAssetAgentGuards:
@@ -1188,7 +1738,7 @@ class TestCrossAssetAgentGuards:
         )
         assert any(i.rule == "cross_asset_agent_confidence_cap" and i.severity == "error" for i in result.issues)
 
-    def test_cross_asset_effective_size_modifier_caps_position_size(self):
+    def test_cross_asset_effective_size_modifier_no_longer_caps_position_size(self):
         ao = _agent_outputs(
             cross_asset=[{"symbol": "AAPL", "effective_size_modifier": 0.4, "master_override": False}],
         )
@@ -1196,11 +1746,24 @@ class TestCrossAssetAgentGuards:
             _blueprint(symbol_plans=[_plan(max_position_size=0.6)]),
             agent_outputs=ao,
         )
-        assert any(i.rule == "cross_asset_effective_size_modifier_cap" and i.severity == "error" for i in result.issues)
+        assert not any(i.rule == "cross_asset_effective_size_modifier_cap" for i in result.issues)
 
     def test_cross_asset_regime_transition_blocks_aggressive_directional_plan(self):
         ao = _agent_outputs(
             cross_asset=[{"symbol": "AAPL", "regime_transition": True, "regime_days": 1}],
+        )
+        result = check_blueprint(
+            _blueprint(symbol_plans=[_plan(direction="bullish", confidence=0.7, max_position_size=0.8)]),
+            agent_outputs=ao,
+        )
+        assert any(
+            i.rule == "cross_asset_regime_transition_directional_aggression" and i.severity == "error"
+            for i in result.issues
+        )
+
+    def test_cross_asset_regime_transition_without_regime_days_still_blocks_aggressive_directional_plan(self):
+        ao = _agent_outputs(
+            cross_asset=[{"symbol": "AAPL", "regime_transition": True, "regime_days": None}],
         )
         result = check_blueprint(
             _blueprint(symbol_plans=[_plan(direction="bullish", confidence=0.7, max_position_size=0.8)]),

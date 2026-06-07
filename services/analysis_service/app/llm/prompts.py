@@ -29,21 +29,14 @@ Rules:
    or language-specific literals like True/False/None.
 2. Every condition must be mechanically evaluable with concrete numeric thresholds.
 3. Every option leg must be fully defined (expiry, strike, option_type, side, quantity).
-4. Every symbol_plan MUST include at least one stop-loss exit condition.
+4. Every symbol_plan MUST include at least one mechanically evaluable exit condition.
 5. The reasoning field must reference which indicators drove the decision.
 6. Respect all portfolio-level risk limits (see risk constraints in data).
-7. **Position-aware analysis**: The prompt may include a "Current Portfolio" section. \
-If open positions are present, you MUST: \
-(a) evaluate whether to hold, increase, decrease, or close each existing position; \
-(b) ensure aggregate portfolio Greeks stay within limits after any proposed changes; \
-(c) document how existing exposure influenced your decision in the reasoning field. \
-Do NOT ignore existing positions — every new plan must be justified relative to current exposure. \
-If no positions are provided or the portfolio is flat, focus on fresh entry opportunities.
-8. **Data quality awareness**: If a symbol's data includes a "data_quality" section with \
+7. **Data quality awareness**: If a symbol's data includes a "data_quality" section with \
 `complete: false`, you MUST: \
 (a) note which indicators are degraded in the reasoning field; \
 (b) reduce confidence proportionally — score < 0.5 should cap confidence at 0.5; \
-(c) prefer conservative strategies (smaller position sizes, wider stops) for low-quality data symbols; \
+(c) prefer conservative structures and lower conviction for low-quality data symbols; \
 (d) never rely on degraded indicators for entry/exit conditions.
 
 ## Data Interpretation Guide
@@ -61,6 +54,8 @@ All specialist agents receive the same signal data. Key unit conventions, calcul
 **delta_exposure_profile: Total market delta exposure for DEX/GEX analysis, calculated as raw sum of delta × open interest
 **earnings_proximity_days: Trading days remaining until next earnings release; null = unknown or not applicable (e.g. ETFs)
 **rsi_14: 0–100 oscillator; >70 = overbought, <30 = oversold
+**adx_z_score: Latest ADX normalized against trailing valid ADX history; >0.8 = trending, >1.8 = extreme trend, <-0.8 = range-bound
+**adx_change_2d: Latest ADX minus the ADX value 2 sessions earlier; <= -2 suggests easing trend strength
 **stoch_rsi: 0–1 scale, higher sensitivity than standard RSI; >0.7 = overbought alert, >0.8 = severely overbought; <0.3 = oversold alert, <0.2 = severely oversold
 **rsi_divergence: Score {-1, 0, +1}; +1 = bearish divergence (price makes new highs while RSI weakens / price falls while RSI deteriorates); -1 = bullish divergence (price makes new lows while RSI strengthens / price rebounds while RSI improves); 0 = no divergence
 **macd_hist_divergence: Score {-1, 0, +1}; +1 = price and MACD histogram move in the same direction; -1 = clear divergence between price and MACD histogram; 0 = sideways movement / undetermined
@@ -87,8 +82,6 @@ All specialist agents receive the same signal data. Key unit conventions, calcul
 
 def build_blueprint_prompt(
     signal_features: list[SignalFeatures],
-    current_positions: dict | None = None,
-    previous_execution: dict | None = None,
     *,
     signal_date: date | None = None,
 ) -> str:
@@ -101,17 +94,6 @@ def build_blueprint_prompt(
     sections.append(
         f"## Market Signal Data (computed after {data_date} close)\n\n{signal_section}"
     )
-
-    # Current Positions & Portfolio Context
-    sections.append(_build_positions_section(current_positions))
-
-    # Previous Execution Review
-    prev_exec_text = (
-        json.dumps(previous_execution, indent=2, ensure_ascii=False)
-        if previous_execution
-        else "No previous execution data available."
-    )
-    sections.append(f"## Previous Execution Review\n\n{prev_exec_text}")
 
     # Task
     sections.append(_build_task_section(signal_date=signal_date))
@@ -134,7 +116,14 @@ def _serialize_signals(features: list[SignalFeatures]) -> str:
 
 def _prune_defaults(d: dict[str, Any]) -> dict[str, Any]:
     """Remove placeholder defaults while preserving a small set of meaningful zeros."""
-    meaningful_zero_keys = {"rsi_divergence", "macd_hist_divergence", "earnings_proximity_days"}
+    meaningful_zero_keys = {
+        "rsi_divergence",
+        "macd_hist_divergence",
+        "earnings_proximity_days",
+        "front_expiry_dte",
+        "regime_flip_count_10d",
+        "market_shock_return_1d",
+    }
 
     return {
         k: v for k, v in d.items()
@@ -169,6 +158,8 @@ def _serialize_one_signal(sf: SignalFeatures) -> str:
         "macd_histogram": round(si.macd_histogram, 4),
         "macd_hist_divergence": round(si.macd_hist_divergence, 4),
         "adx_14": round(si.adx_14, 2),
+        "adx_z_score": round(si.adx_z_score, 4),
+        "adx_change_2d": round(si.adx_change_2d, 4),
         "ema_20": round(si.ema_20, 2),
         "ema_50": round(si.ema_50, 2),
         "sma_200": round(si.sma_200, 2),
@@ -212,6 +203,12 @@ def _serialize_one_signal(sf: SignalFeatures) -> str:
         "spy_beta": round(ca.spy_beta, 4),
         "sector_relative_strength": round(ca.sector_relative_strength, 4),
         "earnings_proximity_days": ca.earnings_proximity_days,
+        "regime_days": ca.regime_days,
+        "regime_transition": ca.regime_transition,
+        "regime_flip_count_10d": ca.regime_flip_count_10d,
+        "market_shock_return_1d": round(ca.market_shock_return_1d, 4),
+        "market_shock_source": ca.market_shock_source,
+        "gex_regime": ca.gex_regime,
         "spy_correlation_20d": round(ca.index_correlation_20d, 4),
         "qqq_beta": round(ca.qqq_beta, 4),
         "qqq_correlation_20d": round(ca.qqq_correlation_20d, 4),
@@ -244,6 +241,7 @@ def _serialize_one_signal(sf: SignalFeatures) -> str:
         }),
         "stock_flow": _prune_defaults({
             "vwap": round(si.vwap, 2),
+            "liquidity_threshold": round(si.liquidity_threshold, 4),
             "volume_profile_poc": round(si.volume_profile_poc, 2),
             "volume_profile_val": round(si.volume_profile_val, 2),
             "volume_profile_vah": round(si.volume_profile_vah, 2),
@@ -257,6 +255,7 @@ def _serialize_one_signal(sf: SignalFeatures) -> str:
             "historical_iv_30d": round(oi.historical_iv_30d, 4),
             "iv_skew": round(oi.iv_skew, 4),
             "term_structure_slope": round(oi.term_structure_slope, 4),
+            "front_expiry_dte": oi.front_expiry_dte,
             "atm_iv": {k: round(v, 4) for k, v in oi.atm_iv.items()},
             "vol_surface_fit_error": round(oi.vol_surface_fit_error, 6),
         }),
@@ -274,6 +273,10 @@ def _serialize_one_signal(sf: SignalFeatures) -> str:
             "calendar_spread_theta_capture": round(oi.calendar_spread_theta_capture, 4),
             "butterfly_pricing_error": round(oi.butterfly_pricing_error, 4),
             "box_spread_arbitrage": round(oi.box_spread_arbitrage, 4),
+            "execution_candidates": {
+                name: candidate.model_dump(exclude_none=True)
+                for name, candidate in oi.spread_execution_inputs.items()
+            },
         }),
         "cross_asset": _prune_defaults(cross_asset),
     }
@@ -357,9 +360,24 @@ def _build_positions_section(current_positions: dict | None) -> str:
 
 def _build_task_section(*, is_chunk: bool = False, signal_date: date | None = None) -> str:
     from shared.config import get_settings
+    settings = get_settings()
     target_date = _next_trading_day(from_date=signal_date)
+    try:
+        max_output_plans = max(1, int(settings.analysis_service.llm.max_output_plans))
+    except (TypeError, ValueError, AttributeError):
+        max_output_plans = 10
+    precision_first = getattr(settings.analysis_service.llm, "precision_first", None)
+    precision_scope = ""
+    if getattr(precision_first, "enabled", False):
+        allowed = [str(item) for item in getattr(precision_first, "allowed_strategy_types", []) if str(item).strip()]
+        if allowed:
+            allowed_csv = ", ".join(allowed)
+            precision_scope = (
+                f"\n\nPrecision-first mode is ENABLED. You may output symbol_plans ONLY with strategy_type in: {allowed_csv}. "
+                "If a symbol requires a disallowed structure, omit that symbol instead of emitting an out-of-scope strategy."
+            )
     if is_chunk:
-        benchmark_str = ", ".join(get_settings().common.watchlist.for_trade_benchmark)
+        benchmark_str = ", ".join(settings.common.watchlist.for_trade_benchmark)
         return (
             f"## Task\n\n"
             f"Generate a Trading Blueprint for **{target_date}**.\n\n"
@@ -368,18 +386,14 @@ def _build_task_section(*, is_chunk: bool = False, signal_date: date | None = No
             f"If any of them appear in this chunk's signal data, they remain tradable and may receive plans.\n\n"
             f"Use the embedded analysis rules in this prompt. Generate trading plans for "
             f"ALL actionable symbols provided in the signal data. Design concrete "
-            f"strategies with fully defined legs for each.\n\n"
-            f"If the Current Portfolio section shows open positions, evaluate each for "
-            f"hold / increase / decrease / close before proposing new trades.\n\n"
+            f"strategies with fully defined legs for each.{precision_scope}\n\n"
             f"Output ONLY raw JSON — no markdown code fences, no commentary.\n\n"
         )
     return (
         f"## Task\n\n"
         f"Generate a Trading Blueprint for **{target_date}**.\n\n"
-        f"Use the embedded analysis rules in this prompt. Select 1-3 optimal underlyings "
-        f"from the signal data, design concrete strategies with fully defined legs.\n\n"
-        f"If the Current Portfolio section shows open positions, evaluate each for "
-        f"hold / increase / decrease / close before proposing new trades.\n\n"
+        f"Use the embedded analysis rules in this prompt. Select up to {max_output_plans} actionable underlyings "
+        f"from the signal data, and emit fewer only when fewer symbols satisfy the rules. Design concrete strategies with fully defined legs.{precision_scope}\n\n"
         f"Output ONLY raw JSON — no markdown code fences, no commentary."
     )
 

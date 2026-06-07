@@ -14,6 +14,9 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from services.analysis_service.app.llm.agents import base_agent
+from services.analysis_service.app.llm.agents.chain_agent import ChainAgent
+from services.analysis_service.app.llm.agents.trend_agent import TrendAgent
+from services.analysis_service.app.llm.agents.volatility_agent import VolatilityAgent
 from services.analysis_service.app.llm.agents.models import TrendAnalysis, VolRegime, VolatilityAnalysis
 
 
@@ -49,6 +52,15 @@ class _RepairOutput(BaseModel):
     symbols: list[_RepairSymbol] = Field(default_factory=list)
 
 
+class _GateRepairSymbol(BaseModel):
+    symbol: str
+    trade_allowed: bool = True
+
+
+class _GateRepairOutput(BaseModel):
+    symbols: list[_GateRepairSymbol] = Field(default_factory=list)
+
+
 class _RepairAgent(base_agent.AnalysisAgent):
     @property
     def name(self) -> str:
@@ -61,6 +73,23 @@ class _RepairAgent(base_agent.AnalysisAgent):
     @property
     def output_model(self):
         return _RepairOutput
+
+    def extract_signal_data(self, signals: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        return signals
+
+
+class _GateRepairAgent(base_agent.AnalysisAgent):
+    @property
+    def name(self) -> str:
+        return "gate_repair"
+
+    @property
+    def system_prompt(self) -> str:
+        return "system"
+
+    @property
+    def output_model(self):
+        return _GateRepairOutput
 
     def extract_signal_data(self, signals: list[dict[str, Any]]) -> list[dict[str, Any]]:
         return signals
@@ -142,7 +171,33 @@ def test_build_user_prompt_includes_compact_output_guidance() -> None:
     assert "Avoid long reasoning paragraphs or chain-of-thought" in prompt
 
 
-def test_trend_analysis_coerces_null_iv_rank() -> None:
+def test_chain_agent_extracts_front_expiry_dte_from_option_vol_surface() -> None:
+    agent = ChainAgent()
+
+    extracted = agent.extract_signal_data([
+        {
+            "symbol": "AAPL",
+            "option_vol_surface": {"iv_rank": 42.0, "front_expiry_dte": 0},
+        }
+    ])
+
+    assert extracted == [{"symbol": "AAPL", "iv_rank": 42.0, "front_expiry_dte": 0}]
+
+
+def test_trend_agent_preserves_unknown_iv_rank() -> None:
+    agent = TrendAgent()
+
+    extracted = agent.extract_signal_data([
+        {
+            "symbol": "AAPL",
+            "option_vol_surface": {"iv_rank": None},
+        }
+    ])
+
+    assert extracted == [{"symbol": "AAPL", "iv_rank": None}]
+
+
+def test_trend_analysis_preserves_null_iv_rank() -> None:
     parsed = TrendAnalysis.model_validate({
         "symbols": [
             {
@@ -168,7 +223,25 @@ def test_trend_analysis_coerces_null_iv_rank() -> None:
         "market_trend_summary": "ok",
     })
 
-    assert parsed.symbols[0].iv_rank == 0.0
+    assert parsed.symbols[0].iv_rank is None
+
+
+def test_volatility_agent_extracts_bollinger_band_width_for_squeeze_logic() -> None:
+    agent = VolatilityAgent()
+
+    extracted = agent.extract_signal_data([
+        {
+            "symbol": "AAPL",
+            "option_vol_surface": {"iv_rank": 22.0, "front_expiry_dte": 12},
+            "stock_trend": {"bollinger_band_width": 0.012},
+        }
+    ])
+
+    assert extracted == [{
+        "symbol": "AAPL",
+        "option_vol_surface": {"iv_rank": 22.0, "front_expiry_dte": 12},
+        "stock_trend": {"bollinger_band_width": 0.012},
+    }]
 
 
 @pytest.mark.parametrize(
@@ -336,6 +409,36 @@ async def test_analyze_unrepairable_validation_error_does_not_retry(monkeypatch)
 
     agent = _RepairAgent()
     provider = _RepairProvider(json.dumps({"symbols": [{"iv_rank": 42.0}]}))
+
+    with pytest.raises(ValidationError):
+        await agent.analyze(
+            [{"symbol": "AAPL", "price": 100}],
+            provider=provider,
+        )
+
+    assert provider.calls == 1
+
+
+@pytest.mark.asyncio
+async def test_analyze_does_not_repair_trade_gate_defaults(monkeypatch) -> None:
+    mock_settings = SimpleNamespace(
+        analysis_service=SimpleNamespace(
+            llm=SimpleNamespace(
+                max_retries=3,
+                backoff_base_seconds=0,
+                backoff_max_seconds=0,
+                openai=SimpleNamespace(temperature=0.11, max_tokens=1111),
+                closeai=SimpleNamespace(temperature=0.33, max_tokens=3333),
+                deepseek=SimpleNamespace(temperature=0.44, max_tokens=4444),
+                output_budget_ratio=0.8,
+                output_truncation_threshold_ratio=0.95,
+            )
+        )
+    )
+    monkeypatch.setattr(base_agent, "get_settings", lambda: mock_settings)
+
+    agent = _GateRepairAgent()
+    provider = _RepairProvider(json.dumps({"symbols": [{"symbol": "AAPL", "trade_allowed": None}]}))
 
     with pytest.raises(ValidationError):
         await agent.analyze(

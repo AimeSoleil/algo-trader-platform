@@ -10,7 +10,7 @@ from scipy import stats
 from sqlalchemy import text
 
 from shared.db.session import get_timescale_session
-from shared.models.signal import OptionIndicators
+from shared.models.signal import OptionIndicators, SpreadExecutionCandidate
 from shared.utils import get_logger, today_trading
 
 from .cal_utils import sanitize_float as _sanitize_float
@@ -24,6 +24,9 @@ MONEYNESS_OTM_CALL = 1.05      # Fallback: OTM call moneyness 阈值
 MIN_IV_SKEW_DELTA = 0.01       # IV skew 中排除 delta 过小的合约
 MIN_POLY_FIT_POINTS = 5        # Vol surface 多项式拟合最少数据点
 TRADING_TO_CALENDAR_DAYS = 365 / 252
+OPTION_CONTRACT_MULTIPLIER = 100.0
+SPREAD_SLIPPAGE_COEFFICIENT = 1.15
+MIN_POSITIVE_DENOMINATOR = 1e-9
 
 
 def _rows_to_iv_series(rows: list[tuple]) -> pd.Series:
@@ -251,6 +254,26 @@ def calculate_term_structure(option_data: pd.DataFrame, underlying_price: float)
             result[str(expiry)] = round(float(atm.iloc[0]["iv"]), 4)
 
     return result
+
+
+def calculate_front_expiry_dte(option_data: pd.DataFrame) -> int | None:
+    """Return calendar days to the nearest listed expiry in the current snapshot."""
+    if option_data.empty or "expiry" not in option_data.columns:
+        return None
+
+    expiry_ts = pd.to_datetime(option_data["expiry"], errors="coerce")
+    if expiry_ts.empty:
+        return None
+    if expiry_ts.dt.tz is not None:
+        expiry_ts = expiry_ts.dt.tz_convert(None)
+
+    valid_expiries = expiry_ts.dropna()
+    if valid_expiries.empty:
+        return None
+
+    front_expiry = valid_expiries.min().normalize()
+    trading_day = pd.Timestamp(today_trading()).normalize()
+    return max(0, int((front_expiry - trading_day).days))
 
 
 # ═══════════════════════════════════════════════════════════
@@ -503,12 +526,362 @@ def _compute_strategy_metrics(
             far_theta = float(far["theta"].fillna(0).abs().mean()) if not far.empty else 0.0
             calendar_scores.append(max(near_theta - far_theta, 0.0))
 
+    execution_candidates = _compute_spread_execution_candidates(tradeable_data, underlying_price)
+
     return {
         "vertical_spread_risk_reward": round(float(np.mean(vertical_scores)) if vertical_scores else 0.0, 6),
         "calendar_spread_theta_capture": round(float(np.mean(calendar_scores)) if calendar_scores else 0.0, 6),
         "butterfly_pricing_error": round(float(np.mean(butterfly_errors)) if butterfly_errors else 0.0, 6),
         "box_spread_arbitrage": round(float(np.mean(box_errors)) if box_errors else 0.0, 6),
+        "spread_execution_inputs": execution_candidates,
     }
+
+
+def _to_mid(row: pd.Series) -> float:
+    return float(((row.get("bid", 0.0) or 0.0) + (row.get("ask", 0.0) or 0.0)) / 2.0)
+
+
+def _to_abs_spread(row: pd.Series) -> float:
+    return max(float((row.get("ask", 0.0) or 0.0) - (row.get("bid", 0.0) or 0.0)), 0.0)
+
+
+def _to_spread_ratio(row: pd.Series) -> float:
+    mid = _to_mid(row)
+    if mid <= MIN_POSITIVE_DENOMINATOR:
+        return 1.0
+    return _to_abs_spread(row) / mid
+
+
+def _round_or_none(value: float | None, digits: int = 4) -> float | None:
+    if value is None:
+        return None
+    return round(float(value), digits)
+
+
+def _expiry_to_str(expiry: object) -> str | None:
+    ts = pd.to_datetime(expiry, errors="coerce")
+    if pd.isna(ts):
+        return None
+    return ts.date().isoformat()
+
+
+def _expiry_to_dte(expiry: object) -> int | None:
+    ts = pd.to_datetime(expiry, errors="coerce")
+    if pd.isna(ts):
+        return None
+    return max(int((ts.normalize() - pd.Timestamp(today_trading())).days), 0)
+
+
+def _estimate_round_trip_cost(legs: list[tuple[pd.Series, int]]) -> float:
+    total_spread = sum(_to_abs_spread(row) * qty for row, qty in legs)
+    return round(total_spread * OPTION_CONTRACT_MULTIPLIER * 2.0 * SPREAD_SLIPPAGE_COEFFICIENT, 4)
+
+
+def _leg_spread_ratios(legs: list[tuple[pd.Series, int]]) -> list[float]:
+    ratios: list[float] = []
+    for row, qty in legs:
+        ratio = _to_spread_ratio(row)
+        ratios.extend([round(ratio, 6)] * max(int(qty), 1))
+    return ratios
+
+
+def _build_execution_candidate(
+    *,
+    strategy_type: str,
+    legs: list[tuple[pd.Series, int]],
+    **kwargs,
+) -> SpreadExecutionCandidate:
+    ratios = _leg_spread_ratios(legs)
+    worst_ratio = max(ratios) if ratios else None
+    avg_ratio = float(np.mean(ratios)) if ratios else None
+    return SpreadExecutionCandidate(
+        strategy_type=strategy_type,
+        candidate_available=True,
+        worst_leg_bid_ask_spread_ratio=_round_or_none(worst_ratio, 6),
+        average_leg_bid_ask_spread_ratio=_round_or_none(avg_ratio, 6),
+        leg_bid_ask_spread_ratios=ratios,
+        **kwargs,
+    )
+
+
+def _choose_best_candidate(
+    candidates: list[tuple[float, SpreadExecutionCandidate]],
+) -> SpreadExecutionCandidate | None:
+    valid = [item for item in candidates if not math.isnan(item[0])]
+    if not valid:
+        return None
+    _, candidate = max(valid, key=lambda item: item[0])
+    return candidate
+
+
+def _build_vertical_execution_candidate(tradeable_data: pd.DataFrame) -> SpreadExecutionCandidate | None:
+    candidates: list[tuple[float, SpreadExecutionCandidate]] = []
+    for expiry, group in tradeable_data.groupby("expiry"):
+        calls = group[group["option_type"] == "call"].sort_values("strike").copy()
+        if len(calls) < 2:
+            continue
+        calls["mid"] = (calls["bid"].fillna(0) + calls["ask"].fillna(0)) / 2
+        for i in range(len(calls) - 1):
+            low = calls.iloc[i]
+            high = calls.iloc[i + 1]
+            width = float(high["strike"] - low["strike"])
+            debit_share = float(low["mid"] - high["mid"])
+            if width <= 0 or debit_share <= 0:
+                continue
+            max_profit = max((width - debit_share) * OPTION_CONTRACT_MULTIPLIER, 0.0)
+            max_loss = max(debit_share * OPTION_CONTRACT_MULTIPLIER, MIN_POSITIVE_DENOMINATOR)
+            round_trip_cost = _estimate_round_trip_cost([(low, 1), (high, 1)])
+            raw_rr = max_profit / max_loss if max_loss > MIN_POSITIVE_DENOMINATOR else None
+            effective_rr = (max_profit - round_trip_cost) / max(max_loss + round_trip_cost, MIN_POSITIVE_DENOMINATOR)
+            candidate = _build_execution_candidate(
+                strategy_type="vertical",
+                legs=[(low, 1), (high, 1)],
+                expiry=_expiry_to_str(expiry),
+                expiry_dte=_expiry_to_dte(expiry),
+                long_strike=_round_or_none(float(low["strike"]), 4),
+                short_strike=_round_or_none(float(high["strike"]), 4),
+                width=_round_or_none(width, 4),
+                net_debit=_round_or_none(debit_share * OPTION_CONTRACT_MULTIPLIER, 4),
+                max_profit_before_cost=_round_or_none(max_profit, 4),
+                max_loss_before_cost=_round_or_none(max_loss, 4),
+                estimated_round_trip_cost=_round_or_none(round_trip_cost, 4),
+                raw_rr=_round_or_none(raw_rr, 4),
+                effective_rr=_round_or_none(effective_rr, 4),
+            )
+            score = effective_rr if effective_rr is not None else (raw_rr if raw_rr is not None else -math.inf)
+            candidates.append((score, candidate))
+    return _choose_best_candidate(candidates)
+
+
+def _build_iron_condor_execution_candidate(
+    tradeable_data: pd.DataFrame,
+    underlying_price: float,
+) -> SpreadExecutionCandidate | None:
+    candidates: list[tuple[float, SpreadExecutionCandidate]] = []
+    for expiry, group in tradeable_data.groupby("expiry"):
+        puts = group[(group["option_type"] == "put") & (group["strike"] < underlying_price)].sort_values("strike").copy()
+        calls = group[(group["option_type"] == "call") & (group["strike"] > underlying_price)].sort_values("strike").copy()
+        if len(puts) < 2 or len(calls) < 2:
+            continue
+        puts["mid"] = (puts["bid"].fillna(0) + puts["ask"].fillna(0)) / 2
+        calls["mid"] = (calls["bid"].fillna(0) + calls["ask"].fillna(0)) / 2
+        put_spreads: list[tuple[pd.Series, pd.Series, float]] = []
+        call_spreads: list[tuple[pd.Series, pd.Series, float]] = []
+        for i in range(len(puts) - 1):
+            long_put = puts.iloc[i]
+            short_put = puts.iloc[i + 1]
+            width = float(short_put["strike"] - long_put["strike"])
+            if width > 0:
+                put_spreads.append((long_put, short_put, width))
+        for i in range(len(calls) - 1):
+            short_call = calls.iloc[i]
+            long_call = calls.iloc[i + 1]
+            width = float(long_call["strike"] - short_call["strike"])
+            if width > 0:
+                call_spreads.append((short_call, long_call, width))
+
+        for long_put, short_put, put_width in put_spreads:
+            for short_call, long_call, call_width in call_spreads:
+                credit_share = float(short_put["mid"] - long_put["mid"] + short_call["mid"] - long_call["mid"])
+                if credit_share <= 0:
+                    continue
+                max_profit = credit_share * OPTION_CONTRACT_MULTIPLIER
+                max_loss = max(max(put_width, call_width) * OPTION_CONTRACT_MULTIPLIER - max_profit, MIN_POSITIVE_DENOMINATOR)
+                round_trip_cost = _estimate_round_trip_cost(
+                    [(long_put, 1), (short_put, 1), (short_call, 1), (long_call, 1)]
+                )
+                raw_rr = max_profit / max_loss if max_loss > MIN_POSITIVE_DENOMINATOR else None
+                effective_rr = (max_profit - round_trip_cost) / max(max_loss + round_trip_cost, MIN_POSITIVE_DENOMINATOR)
+                candidate = _build_execution_candidate(
+                    strategy_type="iron_condor",
+                    legs=[(long_put, 1), (short_put, 1), (short_call, 1), (long_call, 1)],
+                    expiry=_expiry_to_str(expiry),
+                    expiry_dte=_expiry_to_dte(expiry),
+                    long_put_strike=_round_or_none(float(long_put["strike"]), 4),
+                    short_put_strike=_round_or_none(float(short_put["strike"]), 4),
+                    short_call_strike=_round_or_none(float(short_call["strike"]), 4),
+                    long_call_strike=_round_or_none(float(long_call["strike"]), 4),
+                    width=_round_or_none(max(put_width, call_width), 4),
+                    net_credit=_round_or_none(max_profit, 4),
+                    max_profit_before_cost=_round_or_none(max_profit, 4),
+                    max_loss_before_cost=_round_or_none(max_loss, 4),
+                    estimated_round_trip_cost=_round_or_none(round_trip_cost, 4),
+                    raw_rr=_round_or_none(raw_rr, 4),
+                    effective_rr=_round_or_none(effective_rr, 4),
+                )
+                score = effective_rr if effective_rr is not None else (raw_rr if raw_rr is not None else -math.inf)
+                candidates.append((score, candidate))
+    return _choose_best_candidate(candidates)
+
+
+def _build_butterfly_execution_candidate(tradeable_data: pd.DataFrame) -> SpreadExecutionCandidate | None:
+    candidates: list[tuple[float, SpreadExecutionCandidate]] = []
+    for expiry, group in tradeable_data.groupby("expiry"):
+        calls = group[group["option_type"] == "call"].sort_values("strike").copy()
+        if len(calls) < 3:
+            continue
+        calls["mid"] = (calls["bid"].fillna(0) + calls["ask"].fillna(0)) / 2
+        strikes = sorted(calls["strike"].unique())
+        for i in range(1, len(strikes) - 1):
+            k1, k2, k3 = strikes[i - 1], strikes[i], strikes[i + 1]
+            if abs((k2 - k1) - (k3 - k2)) > 1e-9:
+                continue
+            c1 = calls.loc[calls["strike"] == k1].iloc[0]
+            c2 = calls.loc[calls["strike"] == k2].iloc[0]
+            c3 = calls.loc[calls["strike"] == k3].iloc[0]
+            debit_share = float(c1["mid"] - 2.0 * c2["mid"] + c3["mid"])
+            if debit_share <= 0:
+                continue
+            wing_width = float(k2 - k1)
+            max_profit = max((wing_width - debit_share) * OPTION_CONTRACT_MULTIPLIER, 0.0)
+            max_loss = max(debit_share * OPTION_CONTRACT_MULTIPLIER, MIN_POSITIVE_DENOMINATOR)
+            pricing_error = abs(debit_share)
+            round_trip_cost = _estimate_round_trip_cost([(c1, 1), (c2, 2), (c3, 1)])
+            raw_rr = max_profit / max_loss if max_loss > MIN_POSITIVE_DENOMINATOR else None
+            effective_rr = (max_profit - round_trip_cost) / max(max_loss + round_trip_cost, MIN_POSITIVE_DENOMINATOR)
+            candidate = _build_execution_candidate(
+                strategy_type="butterfly",
+                legs=[(c1, 1), (c2, 2), (c3, 1)],
+                expiry=_expiry_to_str(expiry),
+                expiry_dte=_expiry_to_dte(expiry),
+                lower_strike=_round_or_none(float(k1), 4),
+                center_strike=_round_or_none(float(k2), 4),
+                upper_strike=_round_or_none(float(k3), 4),
+                width=_round_or_none(wing_width, 4),
+                net_debit=_round_or_none(debit_share * OPTION_CONTRACT_MULTIPLIER, 4),
+                max_profit_before_cost=_round_or_none(max_profit, 4),
+                max_loss_before_cost=_round_or_none(max_loss, 4),
+                estimated_round_trip_cost=_round_or_none(round_trip_cost, 4),
+                raw_rr=_round_or_none(raw_rr, 4),
+                effective_rr=_round_or_none(effective_rr, 4),
+                pricing_error=_round_or_none(pricing_error, 6),
+            )
+            candidates.append((pricing_error, candidate))
+    return _choose_best_candidate(candidates)
+
+
+def _build_box_execution_candidate(tradeable_data: pd.DataFrame) -> SpreadExecutionCandidate | None:
+    candidates: list[tuple[float, SpreadExecutionCandidate]] = []
+    for expiry, group in tradeable_data.groupby("expiry"):
+        calls = group[group["option_type"] == "call"].copy()
+        puts = group[group["option_type"] == "put"].copy()
+        if calls.empty or puts.empty:
+            continue
+        calls["mid"] = (calls["bid"].fillna(0) + calls["ask"].fillna(0)) / 2
+        puts["mid"] = (puts["bid"].fillna(0) + puts["ask"].fillna(0)) / 2
+        common_strikes = sorted(set(calls["strike"].tolist()) & set(puts["strike"].tolist()))
+        for i in range(len(common_strikes) - 1):
+            for j in range(i + 1, len(common_strikes)):
+                k_low = common_strikes[i]
+                k_high = common_strikes[j]
+                c_low = calls.loc[calls["strike"] == k_low].iloc[0]
+                c_high = calls.loc[calls["strike"] == k_high].iloc[0]
+                p_low = puts.loc[puts["strike"] == k_low].iloc[0]
+                p_high = puts.loc[puts["strike"] == k_high].iloc[0]
+                fair_value = float(k_high - k_low) * OPTION_CONTRACT_MULTIPLIER
+                if fair_value <= 0:
+                    continue
+                box_price_share = float(c_low["mid"] - c_high["mid"] + p_high["mid"] - p_low["mid"])
+                gross_profit = (float(k_high - k_low) - box_price_share) * OPTION_CONTRACT_MULTIPLIER
+                round_trip_cost = _estimate_round_trip_cost([(c_low, 1), (c_high, 1), (p_high, 1), (p_low, 1)])
+                net_profit_after_cost = gross_profit - round_trip_cost
+                gross_edge_ratio = gross_profit / fair_value
+                net_edge_after_cost = net_profit_after_cost / fair_value
+                candidate = _build_execution_candidate(
+                    strategy_type="box_arb",
+                    legs=[(c_low, 1), (c_high, 1), (p_high, 1), (p_low, 1)],
+                    expiry=_expiry_to_str(expiry),
+                    expiry_dte=_expiry_to_dte(expiry),
+                    lower_strike=_round_or_none(float(k_low), 4),
+                    upper_strike=_round_or_none(float(k_high), 4),
+                    width=_round_or_none(float(k_high - k_low), 4),
+                    estimated_round_trip_cost=_round_or_none(round_trip_cost, 4),
+                    gross_edge_ratio=_round_or_none(gross_edge_ratio, 6),
+                    net_edge_after_cost=_round_or_none(net_edge_after_cost, 6),
+                    net_profit_after_cost=_round_or_none(net_profit_after_cost, 4),
+                )
+                candidates.append((net_profit_after_cost, candidate))
+    return _choose_best_candidate(candidates)
+
+
+def _build_calendar_execution_candidate(
+    tradeable_data: pd.DataFrame,
+    *,
+    reverse: bool = False,
+) -> SpreadExecutionCandidate | None:
+    if tradeable_data.empty or tradeable_data["expiry"].nunique() < 2:
+        return None
+    expiry_order = sorted(tradeable_data["expiry"].unique())
+    near_expiry = expiry_order[0]
+    far_expiry = expiry_order[-1]
+    near_dte = _expiry_to_dte(near_expiry)
+    far_dte = _expiry_to_dte(far_expiry)
+    candidates: list[tuple[float, SpreadExecutionCandidate]] = []
+
+    for option_type in ("call", "put"):
+        near = tradeable_data[
+            (tradeable_data["expiry"] == near_expiry) & (tradeable_data["option_type"] == option_type)
+        ].copy()
+        far = tradeable_data[
+            (tradeable_data["expiry"] == far_expiry) & (tradeable_data["option_type"] == option_type)
+        ].copy()
+        if near.empty or far.empty:
+            continue
+        near["mid"] = (near["bid"].fillna(0) + near["ask"].fillna(0)) / 2
+        far["mid"] = (far["bid"].fillna(0) + far["ask"].fillna(0)) / 2
+        common_strikes = sorted(set(near["strike"].tolist()) & set(far["strike"].tolist()))
+        for strike in common_strikes:
+            near_leg = near.loc[near["strike"] == strike].iloc[0]
+            far_leg = far.loc[far["strike"] == strike].iloc[0]
+            if reverse:
+                debit_share = float(near_leg["mid"] - far_leg["mid"])
+                gross_theta = float(abs(far_leg["theta"]) - abs(near_leg["theta"]))
+                strategy_type = "reverse_calendar"
+            else:
+                debit_share = float(far_leg["mid"] - near_leg["mid"])
+                gross_theta = float(abs(near_leg["theta"]) - abs(far_leg["theta"]))
+                strategy_type = "calendar"
+            if debit_share <= 0:
+                continue
+            round_trip_cost = _estimate_round_trip_cost([(near_leg, 1), (far_leg, 1)])
+            avg_spread = float(np.mean([_to_abs_spread(near_leg), _to_abs_spread(far_leg)]))
+            estimated_roll_cost = avg_spread * OPTION_CONTRACT_MULTIPLIER * 2.0 * SPREAD_SLIPPAGE_COEFFICIENT
+            carry_days = max(int(near_dte or 1), 1)
+            effective_theta = gross_theta - ((round_trip_cost + estimated_roll_cost) / OPTION_CONTRACT_MULTIPLIER / carry_days)
+            candidate = _build_execution_candidate(
+                strategy_type=strategy_type,
+                legs=[(near_leg, 1), (far_leg, 1)],
+                front_expiry=_expiry_to_str(near_expiry),
+                front_expiry_dte=near_dte,
+                back_expiry=_expiry_to_str(far_expiry),
+                back_expiry_dte=far_dte,
+                long_strike=_round_or_none(float(strike), 4),
+                net_debit=_round_or_none(debit_share * OPTION_CONTRACT_MULTIPLIER, 4),
+                estimated_round_trip_cost=_round_or_none(round_trip_cost, 4),
+                estimated_roll_cost=_round_or_none(estimated_roll_cost, 4),
+                gross_theta_capture_per_day=_round_or_none(gross_theta, 6),
+                effective_theta_capture_per_day=_round_or_none(effective_theta, 6),
+            )
+            candidates.append((effective_theta, candidate))
+    return _choose_best_candidate(candidates)
+
+
+def _compute_spread_execution_candidates(
+    tradeable_data: pd.DataFrame,
+    underlying_price: float,
+) -> dict[str, SpreadExecutionCandidate]:
+    if tradeable_data.empty:
+        return {}
+
+    candidates = {
+        "vertical": _build_vertical_execution_candidate(tradeable_data),
+        "iron_condor": _build_iron_condor_execution_candidate(tradeable_data, underlying_price),
+        "calendar": _build_calendar_execution_candidate(tradeable_data, reverse=False),
+        "reverse_calendar": _build_calendar_execution_candidate(tradeable_data, reverse=True),
+        "butterfly": _build_butterfly_execution_candidate(tradeable_data),
+        "box_arb": _build_box_execution_candidate(tradeable_data),
+    }
+    return {name: candidate for name, candidate in candidates.items() if candidate is not None}
 
 
 def _assess_confidence_and_flags(
@@ -606,6 +979,7 @@ async def compute_option_indicators(
     iv_metrics = await _compute_iv_metrics(symbol, option_data, underlying_price, historical_iv)
     greek_metrics = _compute_greek_aggregations(option_data)
     flow_metrics = _compute_flow_metrics(option_data)
+    front_expiry_dte = calculate_front_expiry_dte(option_data)
 
     # ── Strategy indicators (tradeable contracts only) ──
     strategy_metrics = _compute_strategy_metrics(option_data, underlying_price, iv_metrics["atm_iv"])
@@ -622,6 +996,7 @@ async def compute_option_indicators(
         pcr_oi=flow_metrics["pcr_oi"],
         iv_skew=iv_metrics["iv_skew"],
         term_structure_slope=iv_metrics["term_structure_slope"],
+        front_expiry_dte=front_expiry_dte,
         atm_iv=iv_metrics["atm_iv"],
         vol_surface_fit_error=iv_metrics["vol_surface_fit_error"],
         delta_exposure_profile=greek_metrics["delta_exposure_profile"],
@@ -637,6 +1012,7 @@ async def compute_option_indicators(
         calendar_spread_theta_capture=strategy_metrics["calendar_spread_theta_capture"],
         butterfly_pricing_error=strategy_metrics["butterfly_pricing_error"],
         box_spread_arbitrage=strategy_metrics["box_spread_arbitrage"],
+        spread_execution_inputs=strategy_metrics["spread_execution_inputs"],
         confidence_scores=quality["confidence_scores"],
         extreme_flags=quality["extreme_flags"],
         degraded_indicators=quality["degraded_indicators"],

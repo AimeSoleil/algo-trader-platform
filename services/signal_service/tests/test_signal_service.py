@@ -37,9 +37,11 @@ from services.signal_service.app.indicators.stock_indicators import (
 )
 from services.signal_service.app.indicators.option_indicators import (
     _sanitize_option_indicators,
+    calculate_front_expiry_dte,
     calculate_iv_skew,
     calculate_pcr,
     calculate_term_structure,
+    compute_option_indicators,
 )
 from services.signal_service.app.signal_generator import generate_signal
 
@@ -76,35 +78,41 @@ def make_bars_df(
 def make_option_df(
     underlying_price: float = 100.0,
     num_strikes: int = 10,
+    expiries: list[str] | None = None,
 ) -> pd.DataFrame:
     """Generate synthetic option chain data."""
     np.random.seed(42)
     rows: list[dict] = []
+    expiry_values = expiries or ["2025-02-15"]
     for i in range(num_strikes):
         strike = underlying_price * (0.9 + 0.02 * i)
-        for opt_type in ("call", "put"):
-            rows.append(
-                {
-                    "underlying": "TEST",
-                    "symbol": f"TEST{strike}{opt_type[0].upper()}",
-                    "expiry": "2025-02-15",
-                    "strike": strike,
-                    "option_type": opt_type,
-                    "last_price": max(0.5, abs(underlying_price - strike) * 0.3),
-                    "bid": max(0.1, abs(underlying_price - strike) * 0.25),
-                    "ask": max(0.5, abs(underlying_price - strike) * 0.35),
-                    "volume": np.random.randint(10, 5000),
-                    "open_interest": np.random.randint(100, 50000),
-                    "iv": 0.25 + np.random.uniform(-0.05, 0.05),
-                    "delta": 0.5
-                    * (1 if opt_type == "call" else -1)
-                    * (1 - abs(strike - underlying_price) / underlying_price),
-                    "gamma": 0.02 + np.random.uniform(0, 0.01),
-                    "theta": -(0.05 + np.random.uniform(0, 0.03)),
-                    "vega": 0.1 + np.random.uniform(0, 0.05),
-                    "timestamp": "2025-01-15 16:00:00",
-                }
-            )
+        for expiry_index, expiry in enumerate(expiry_values):
+            expiry_theta_shift = 0.01 * expiry_index
+            expiry_iv_shift = 0.02 * expiry_index
+            expiry_time_value_shift = 0.2 * expiry_index
+            for opt_type in ("call", "put"):
+                rows.append(
+                    {
+                        "underlying": "TEST",
+                        "symbol": f"TEST{strike}{expiry_index}{opt_type[0].upper()}",
+                        "expiry": expiry,
+                        "strike": strike,
+                        "option_type": opt_type,
+                        "last_price": max(0.5, abs(underlying_price - strike) * 0.3 + expiry_time_value_shift),
+                        "bid": max(0.1, abs(underlying_price - strike) * 0.25 + expiry_time_value_shift),
+                        "ask": max(0.5, abs(underlying_price - strike) * 0.35 + expiry_time_value_shift),
+                        "volume": np.random.randint(10, 5000),
+                        "open_interest": np.random.randint(100, 50000),
+                        "iv": 0.25 + expiry_iv_shift + np.random.uniform(-0.05, 0.05),
+                        "delta": 0.5
+                        * (1 if opt_type == "call" else -1)
+                        * (1 - abs(strike - underlying_price) / underlying_price),
+                        "gamma": 0.02 + np.random.uniform(0, 0.01),
+                        "theta": -(0.05 + expiry_theta_shift + np.random.uniform(0, 0.03)),
+                        "vega": 0.1 + np.random.uniform(0, 0.05),
+                        "timestamp": "2025-01-15 16:00:00",
+                    }
+                )
     return pd.DataFrame(rows)
 
 
@@ -333,6 +341,34 @@ class TestComputeStockIndicators:
         assert "momentum" in result.confidence_scores
         assert "flow" in result.confidence_scores
 
+    def test_adx_stat_fields_are_finite(self):
+        df = make_bars_df(rows=90)
+        result = compute_stock_indicators(df)
+        assert isinstance(result.adx_z_score, float)
+        assert isinstance(result.adx_change_2d, float)
+        assert not math.isnan(result.adx_z_score)
+        assert not math.isnan(result.adx_change_2d)
+        assert not math.isinf(result.adx_z_score)
+        assert not math.isinf(result.adx_change_2d)
+
+    def test_liquidity_threshold_is_capped_for_high_adv(self):
+        df = make_bars_df(rows=60)
+        df["volume"] = 50_000_000
+        result = compute_stock_indicators(df)
+        assert result.liquidity_threshold == 3_000_000.0
+
+    def test_liquidity_threshold_uses_adv_fraction_with_floor(self):
+        df = make_bars_df(rows=60)
+        df["volume"] = 200_000
+        result = compute_stock_indicators(df)
+        assert result.liquidity_threshold == 300_000.0
+
+    def test_liquidity_threshold_scales_with_mid_adv(self):
+        df = make_bars_df(rows=60)
+        df["volume"] = 15_000_000
+        result = compute_stock_indicators(df)
+        assert result.liquidity_threshold == 1_500_000.0
+
 
 # ===================================================================
 # 3. Option Indicators — sync helpers
@@ -441,6 +477,82 @@ class TestCalculateTermStructure:
         assert len(result) == 2
         assert "2025-02-15" in result
         assert "2025-03-15" in result
+
+
+class TestCalculateFrontExpiryDte:
+    def test_empty_returns_none(self):
+        assert calculate_front_expiry_dte(pd.DataFrame()) is None
+
+    def test_nearest_expiry_returns_calendar_days(self, monkeypatch):
+        monkeypatch.setattr(
+            "services.signal_service.app.indicators.option_indicators.today_trading",
+            lambda: date(2025, 2, 12),
+        )
+        df = make_option_df()
+        result = calculate_front_expiry_dte(df)
+        assert result == 3
+
+    def test_same_day_expiry_preserves_zero(self, monkeypatch):
+        monkeypatch.setattr(
+            "services.signal_service.app.indicators.option_indicators.today_trading",
+            lambda: date(2025, 2, 15),
+        )
+        df = make_option_df()
+        result = calculate_front_expiry_dte(df)
+        assert result == 0
+
+
+@pytest.mark.asyncio
+async def test_compute_option_indicators_sets_front_expiry_dte(monkeypatch):
+    monkeypatch.setattr(
+        "services.signal_service.app.indicators.option_indicators.today_trading",
+        lambda: date(2025, 2, 12),
+    )
+    df = make_option_df()
+
+    indicators = await compute_option_indicators(
+        "TEST",
+        df,
+        100.0,
+        historical_iv=[0.2, 0.22, 0.24, 0.26, 0.28],
+    )
+
+    assert indicators.front_expiry_dte == 3
+
+
+@pytest.mark.asyncio
+async def test_compute_option_indicators_populates_spread_execution_candidates(monkeypatch):
+    monkeypatch.setattr(
+        "services.signal_service.app.indicators.option_indicators.today_trading",
+        lambda: date(2025, 2, 12),
+    )
+    df = make_option_df(expiries=["2025-02-15", "2025-03-21"])
+
+    indicators = await compute_option_indicators(
+        "TEST",
+        df,
+        100.0,
+        historical_iv=[0.2, 0.22, 0.24, 0.26, 0.28],
+    )
+
+    assert "vertical" in indicators.spread_execution_inputs
+    assert "calendar" in indicators.spread_execution_inputs
+    assert "butterfly" in indicators.spread_execution_inputs
+    assert "box_arb" in indicators.spread_execution_inputs
+
+    vertical = indicators.spread_execution_inputs["vertical"]
+    assert vertical.candidate_available is True
+    assert vertical.effective_rr is not None
+    assert vertical.estimated_round_trip_cost is not None
+    assert vertical.worst_leg_bid_ask_spread_ratio is not None
+
+    calendar = indicators.spread_execution_inputs["calendar"]
+    assert calendar.candidate_available is True
+    assert calendar.estimated_roll_cost is not None
+    assert calendar.effective_theta_capture_per_day is not None
+
+    box_arb = indicators.spread_execution_inputs["box_arb"]
+    assert box_arb.net_edge_after_cost is not None
 
 
 # ===================================================================
