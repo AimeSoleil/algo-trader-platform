@@ -10,6 +10,7 @@ from scipy import stats
 from sqlalchemy import text
 
 from shared.db.session import get_timescale_session
+from shared.models.filter import FilterResult
 from shared.models.signal import OptionIndicators, OptionLegLiquidityFloorProfile, SpreadExecutionCandidate
 from shared.utils import get_logger, today_trading
 
@@ -465,7 +466,7 @@ def _compute_strategy_metrics(
     """
     from services.signal_service.app.filters.option_filters import apply_trading_filter
 
-    tradeable_data, _filter_result = apply_trading_filter(option_data, underlying_price)
+    tradeable_data, filter_result = apply_trading_filter(option_data, underlying_price)
 
     vertical_scores: list[float] = []
     calendar_scores: list[float] = []
@@ -527,7 +528,11 @@ def _compute_strategy_metrics(
             calendar_scores.append(max(near_theta - far_theta, 0.0))
 
     execution_candidates = _compute_spread_execution_candidates(tradeable_data, underlying_price)
-    leg_liquidity_floor_profile = _build_leg_liquidity_floor_profile(tradeable_data, execution_candidates)
+    leg_liquidity_floor_profile = _build_leg_liquidity_floor_profile(
+        tradeable_data,
+        execution_candidates,
+        filter_result,
+    )
 
     return {
         "vertical_spread_risk_reward": round(float(np.mean(vertical_scores)) if vertical_scores else 0.0, 6),
@@ -889,18 +894,51 @@ def _compute_spread_execution_candidates(
 def _build_leg_liquidity_floor_profile(
     tradeable_data: pd.DataFrame,
     execution_candidates: dict[str, SpreadExecutionCandidate],
+    filter_result: FilterResult,
 ) -> OptionLegLiquidityFloorProfile:
     from shared.config import get_settings
 
     cfg = get_settings().signal_service.filters.options.leg_liquidity_floor
+    tradeable_contract_count = int(len(tradeable_data))
+    execution_candidate_count = int(len(execution_candidates))
+    best_worst_leg_ratio = min(
+        (
+            float(candidate.worst_leg_bid_ask_spread_ratio)
+            for candidate in execution_candidates.values()
+            if candidate.worst_leg_bid_ask_spread_ratio is not None
+        ),
+        default=None,
+    )
+    fallback_mode = str(filter_result.details.get("fallback") or "").strip().lower()
+
+    if fallback_mode == "no_filter":
+        selected = cfg.relaxed
+        source = "signal_service.filters.options.leg_liquidity_floor.dynamic_selector:no_filter_fallback"
+    elif fallback_mode == "is_tradeable":
+        selected = cfg.relaxed
+        source = "signal_service.filters.options.leg_liquidity_floor.dynamic_selector:is_tradeable_fallback"
+    elif execution_candidate_count == 0 or best_worst_leg_ratio is None:
+        selected = cfg.relaxed
+        source = "signal_service.filters.options.leg_liquidity_floor.dynamic_selector:no_execution_candidates"
+    elif (
+        tradeable_contract_count >= int(cfg.selector.rich_tradeable_contract_count_min)
+        and execution_candidate_count >= int(cfg.selector.rich_execution_candidate_count_min)
+        and best_worst_leg_ratio <= float(cfg.selector.rich_best_worst_leg_bid_ask_spread_ratio_max)
+    ):
+        selected = cfg.rich
+        source = "signal_service.filters.options.leg_liquidity_floor.dynamic_selector:data_rich"
+    else:
+        selected = cfg.standard
+        source = "signal_service.filters.options.leg_liquidity_floor.dynamic_selector:stage3_aligned"
+
     return OptionLegLiquidityFloorProfile(
-        profile_name=str(cfg.profile_name),
-        min_leg_volume=int(cfg.min_leg_volume),
-        min_exit_strike_open_interest=int(cfg.min_exit_strike_open_interest),
-        max_worst_leg_bid_ask_spread_ratio=float(cfg.max_worst_leg_bid_ask_spread_ratio),
-        source="signal_service.filters.options.leg_liquidity_floor",
-        tradeable_contract_count=int(len(tradeable_data)),
-        execution_candidate_count=int(len(execution_candidates)),
+        profile_name=str(selected.profile_name),
+        min_leg_volume=int(selected.min_leg_volume),
+        min_exit_strike_open_interest=int(selected.min_exit_strike_open_interest),
+        max_worst_leg_bid_ask_spread_ratio=float(selected.max_worst_leg_bid_ask_spread_ratio),
+        source=source,
+        tradeable_contract_count=tradeable_contract_count,
+        execution_candidate_count=execution_candidate_count,
     )
 
 

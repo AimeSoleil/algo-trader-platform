@@ -559,7 +559,7 @@ def test_stock_signal_serializes_spread_execution_candidates():
     oi = OptionIndicators(
         vertical_spread_risk_reward=1.1,
         leg_liquidity_floor_profile=OptionLegLiquidityFloorProfile(
-            profile_name="stage3_aligned",
+            profile_name="tradable_liquidity",
             min_leg_volume=25,
             min_exit_strike_open_interest=100,
             max_worst_leg_bid_ask_spread_ratio=0.20,
@@ -592,7 +592,7 @@ def test_stock_signal_serializes_spread_execution_candidates():
     assert execution_candidates["vertical"]["estimated_round_trip_cost"] == 14.0
 
     liquidity_profile = data.get("option_chain", {}).get("liquidity_profile", {})
-    assert liquidity_profile["profile_name"] == "stage3_aligned"
+    assert liquidity_profile["profile_name"] == "tradable_liquidity"
     assert liquidity_profile["min_leg_volume"] == 25
     assert liquidity_profile["min_exit_strike_open_interest"] == 100
     assert liquidity_profile["execution_candidate_count"] == 1

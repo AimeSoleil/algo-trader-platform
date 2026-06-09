@@ -283,10 +283,25 @@ signal_service:
         min_dte: 5                     # 最短到期日（天）— 允许更近的高流动性周度结构
         max_dte: 120                   # 最长到期日（天）
       leg_liquidity_floor:
-        profile_name: "stage3_aligned"        # upstream explicit per-leg floor contract for analysis-service
-        min_leg_volume: 25                     # align to Stage 3 executable contract floor
-        min_exit_strike_open_interest: 100    # align to Stage 3 executable contract floor
-        max_worst_leg_bid_ask_spread_ratio: 0.20
+        rich:
+          profile_name: "deep_liquidity"            # deep chain coverage and tight candidate spreads
+          min_leg_volume: 40
+          min_exit_strike_open_interest: 200
+          max_worst_leg_bid_ask_spread_ratio: 0.12
+        standard:
+          profile_name: "tradable_liquidity"        # normal executable baseline for routine trade selection
+          min_leg_volume: 25
+          min_exit_strike_open_interest: 100
+          max_worst_leg_bid_ask_spread_ratio: 0.20
+        relaxed:
+          profile_name: "constrained_liquidity"     # sparse or fallback chain state; usable only with more caution
+          min_leg_volume: 10
+          min_exit_strike_open_interest: 50
+          max_worst_leg_bid_ask_spread_ratio: 0.20
+        selector:
+          rich_tradeable_contract_count_min: 24
+          rich_execution_candidate_count_min: 3
+          rich_best_worst_leg_bid_ask_spread_ratio_max: 0.12
     # stocks:                          # 预留 — 未来股票交易级过滤
     #   trading:
     #     min_avg_volume_20d: 100000

@@ -169,19 +169,28 @@ common:
 
 
 def test_signal_option_trading_filter_defaults_relax_weekly_spread_and_dte() -> None:
-  defaults = SignalOptionTradingFilterSettings()
+    defaults = SignalOptionTradingFilterSettings()
 
-  assert defaults.max_relative_spread == 0.10
-  assert defaults.min_dte == 5
+    assert defaults.max_relative_spread == 0.10
+    assert defaults.min_dte == 5
 
 
 def test_signal_option_leg_liquidity_floor_defaults_align_with_stage3_contract() -> None:
-  defaults = SignalOptionLegLiquidityFloorSettings()
+    defaults = SignalOptionLegLiquidityFloorSettings()
 
-  assert defaults.profile_name == "stage3_aligned"
-  assert defaults.min_leg_volume == 25
-  assert defaults.min_exit_strike_open_interest == 100
-  assert defaults.max_worst_leg_bid_ask_spread_ratio == 0.20
+    assert defaults.rich.profile_name == "deep_liquidity"
+    assert defaults.rich.min_leg_volume == 40
+    assert defaults.rich.min_exit_strike_open_interest == 200
+    assert defaults.rich.max_worst_leg_bid_ask_spread_ratio == 0.12
+    assert defaults.standard.profile_name == "tradable_liquidity"
+    assert defaults.standard.min_leg_volume == 25
+    assert defaults.standard.min_exit_strike_open_interest == 100
+    assert defaults.relaxed.profile_name == "constrained_liquidity"
+    assert defaults.relaxed.min_leg_volume == 10
+    assert defaults.relaxed.min_exit_strike_open_interest == 50
+    assert defaults.selector.rich_tradeable_contract_count_min == 24
+    assert defaults.selector.rich_execution_candidate_count_min == 3
+    assert defaults.selector.rich_best_worst_leg_bid_ask_spread_ratio_max == 0.12
 
 
 def test_signal_option_leg_liquidity_floor_loads_from_yaml(tmp_path: Path) -> None:
@@ -192,10 +201,25 @@ signal_service:
   filters:
     options:
       leg_liquidity_floor:
-        profile_name: custom_floor
-        min_leg_volume: 30
-        min_exit_strike_open_interest: 150
-        max_worst_leg_bid_ask_spread_ratio: 0.18
+        rich:
+          profile_name: custom_deep
+          min_leg_volume: 60
+          min_exit_strike_open_interest: 300
+          max_worst_leg_bid_ask_spread_ratio: 0.10
+        standard:
+          profile_name: custom_tradable
+          min_leg_volume: 30
+          min_exit_strike_open_interest: 150
+          max_worst_leg_bid_ask_spread_ratio: 0.18
+        relaxed:
+          profile_name: custom_constrained
+          min_leg_volume: 12
+          min_exit_strike_open_interest: 60
+          max_worst_leg_bid_ask_spread_ratio: 0.20
+        selector:
+          rich_tradeable_contract_count_min: 40
+          rich_execution_candidate_count_min: 4
+          rich_best_worst_leg_bid_ask_spread_ratio_max: 0.09
 """.strip(),
         encoding="utf-8",
     )
@@ -203,7 +227,15 @@ signal_service:
     settings = Settings.from_yaml(yaml_path)
 
     profile = settings.signal_service.filters.options.leg_liquidity_floor
-    assert profile.profile_name == "custom_floor"
-    assert profile.min_leg_volume == 30
-    assert profile.min_exit_strike_open_interest == 150
-    assert profile.max_worst_leg_bid_ask_spread_ratio == 0.18
+    assert profile.rich.profile_name == "custom_deep"
+    assert profile.rich.min_leg_volume == 60
+    assert profile.rich.min_exit_strike_open_interest == 300
+    assert profile.standard.profile_name == "custom_tradable"
+    assert profile.standard.min_leg_volume == 30
+    assert profile.standard.min_exit_strike_open_interest == 150
+    assert profile.relaxed.profile_name == "custom_constrained"
+    assert profile.relaxed.min_leg_volume == 12
+    assert profile.relaxed.min_exit_strike_open_interest == 60
+    assert profile.selector.rich_tradeable_contract_count_min == 40
+    assert profile.selector.rich_execution_candidate_count_min == 4
+    assert profile.selector.rich_best_worst_leg_bid_ask_spread_ratio_max == 0.09

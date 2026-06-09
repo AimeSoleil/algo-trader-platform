@@ -378,12 +378,44 @@ class SignalOptionTradingFilterSettings(BaseSettings):
 
 
 class SignalOptionLegLiquidityFloorSettings(BaseSettings):
-    """Explicit upstream leg-level liquidity floor contract for analysis consumers."""
+    """Data-driven upstream leg-level liquidity floor selector for analysis consumers."""
 
-    profile_name: str = "stage3_aligned"
-    min_leg_volume: int = 25
-    min_exit_strike_open_interest: int = 100
-    max_worst_leg_bid_ask_spread_ratio: float = 0.20
+    class ProfileSettings(BaseSettings):
+        profile_name: str = ""
+        min_leg_volume: int = 0
+        min_exit_strike_open_interest: int = 0
+        max_worst_leg_bid_ask_spread_ratio: float = 0.20
+
+    class SelectorSettings(BaseSettings):
+        rich_tradeable_contract_count_min: int = 24
+        rich_execution_candidate_count_min: int = 3
+        rich_best_worst_leg_bid_ask_spread_ratio_max: float = 0.12
+
+    rich: ProfileSettings = Field(
+        default_factory=lambda: SignalOptionLegLiquidityFloorSettings.ProfileSettings(
+            profile_name="deep_liquidity",
+            min_leg_volume=40,
+            min_exit_strike_open_interest=200,
+            max_worst_leg_bid_ask_spread_ratio=0.12,
+        )
+    )
+    standard: ProfileSettings = Field(
+        default_factory=lambda: SignalOptionLegLiquidityFloorSettings.ProfileSettings(
+            profile_name="tradable_liquidity",
+            min_leg_volume=25,
+            min_exit_strike_open_interest=100,
+            max_worst_leg_bid_ask_spread_ratio=0.20,
+        )
+    )
+    relaxed: ProfileSettings = Field(
+        default_factory=lambda: SignalOptionLegLiquidityFloorSettings.ProfileSettings(
+            profile_name="constrained_liquidity",
+            min_leg_volume=10,
+            min_exit_strike_open_interest=50,
+            max_worst_leg_bid_ask_spread_ratio=0.20,
+        )
+    )
+    selector: SelectorSettings = Field(default_factory=SelectorSettings)
 
 class SignalOptionFilterSettings(BaseSettings):
     """signal_service.filters.options — 期权交易级过滤."""

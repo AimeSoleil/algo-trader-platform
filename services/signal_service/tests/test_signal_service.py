@@ -22,9 +22,11 @@ from shared.models.signal import (
     CrossAssetIndicators,
     OptionLegLiquidityFloorProfile,
     OptionIndicators,
+    SpreadExecutionCandidate,
     SignalFeatures,
     StockIndicators,
 )
+from shared.models.filter import FilterResult
 from services.signal_service.app.indicators.stock_indicators import (
     _atr,
     _adx,
@@ -37,6 +39,7 @@ from services.signal_service.app.indicators.stock_indicators import (
     compute_stock_indicators,
 )
 from services.signal_service.app.indicators.option_indicators import (
+    _build_leg_liquidity_floor_profile,
     _sanitize_option_indicators,
     calculate_front_expiry_dte,
     calculate_iv_skew,
@@ -557,12 +560,120 @@ async def test_compute_option_indicators_populates_spread_execution_candidates(m
 
     profile = indicators.leg_liquidity_floor_profile
     assert profile is not None
-    assert profile.profile_name == "stage3_aligned"
-    assert profile.min_leg_volume == 25
-    assert profile.min_exit_strike_open_interest == 100
+    assert profile.profile_name in {"deep_liquidity", "tradable_liquidity", "constrained_liquidity"}
+    assert profile.min_leg_volume > 0
+    assert profile.min_exit_strike_open_interest > 0
     assert profile.max_worst_leg_bid_ask_spread_ratio == 0.20
     assert profile.tradeable_contract_count > 0
     assert profile.execution_candidate_count == len(indicators.spread_execution_inputs)
+
+
+def test_build_leg_liquidity_floor_profile_selects_data_rich_profile(monkeypatch):
+    settings = SimpleNamespace(
+        signal_service=SimpleNamespace(
+            filters=SimpleNamespace(
+                options=SimpleNamespace(
+                    leg_liquidity_floor=SimpleNamespace(
+                        rich=SimpleNamespace(
+                            profile_name="deep_liquidity",
+                            min_leg_volume=40,
+                            min_exit_strike_open_interest=200,
+                            max_worst_leg_bid_ask_spread_ratio=0.12,
+                        ),
+                        standard=SimpleNamespace(
+                            profile_name="tradable_liquidity",
+                            min_leg_volume=25,
+                            min_exit_strike_open_interest=100,
+                            max_worst_leg_bid_ask_spread_ratio=0.20,
+                        ),
+                        relaxed=SimpleNamespace(
+                            profile_name="constrained_liquidity",
+                            min_leg_volume=10,
+                            min_exit_strike_open_interest=50,
+                            max_worst_leg_bid_ask_spread_ratio=0.20,
+                        ),
+                        selector=SimpleNamespace(
+                            rich_tradeable_contract_count_min=24,
+                            rich_execution_candidate_count_min=3,
+                            rich_best_worst_leg_bid_ask_spread_ratio_max=0.12,
+                        ),
+                    )
+                )
+            )
+        )
+    )
+    monkeypatch.setattr(
+        "shared.config.get_settings",
+        lambda: settings,
+    )
+
+    tradeable_data = pd.DataFrame({"strike": list(range(30))})
+    execution_candidates = {
+        "vertical": SpreadExecutionCandidate(worst_leg_bid_ask_spread_ratio=0.07),
+        "calendar": SpreadExecutionCandidate(worst_leg_bid_ask_spread_ratio=0.09),
+        "butterfly": SpreadExecutionCandidate(worst_leg_bid_ask_spread_ratio=0.08),
+    }
+    filter_result = FilterResult(total_input=30, details={"method": "config_based"})
+
+    profile = _build_leg_liquidity_floor_profile(tradeable_data, execution_candidates, filter_result)
+
+    assert profile.profile_name == "deep_liquidity"
+    assert profile.min_leg_volume == 40
+    assert profile.min_exit_strike_open_interest == 200
+    assert profile.source.endswith("data_rich")
+
+
+def test_build_leg_liquidity_floor_profile_selects_relaxed_profile_on_no_filter_fallback(monkeypatch):
+    settings = SimpleNamespace(
+        signal_service=SimpleNamespace(
+            filters=SimpleNamespace(
+                options=SimpleNamespace(
+                    leg_liquidity_floor=SimpleNamespace(
+                        rich=SimpleNamespace(
+                            profile_name="deep_liquidity",
+                            min_leg_volume=40,
+                            min_exit_strike_open_interest=200,
+                            max_worst_leg_bid_ask_spread_ratio=0.12,
+                        ),
+                        standard=SimpleNamespace(
+                            profile_name="tradable_liquidity",
+                            min_leg_volume=25,
+                            min_exit_strike_open_interest=100,
+                            max_worst_leg_bid_ask_spread_ratio=0.20,
+                        ),
+                        relaxed=SimpleNamespace(
+                            profile_name="constrained_liquidity",
+                            min_leg_volume=10,
+                            min_exit_strike_open_interest=50,
+                            max_worst_leg_bid_ask_spread_ratio=0.20,
+                        ),
+                        selector=SimpleNamespace(
+                            rich_tradeable_contract_count_min=24,
+                            rich_execution_candidate_count_min=3,
+                            rich_best_worst_leg_bid_ask_spread_ratio_max=0.12,
+                        ),
+                    )
+                )
+            )
+        )
+    )
+    monkeypatch.setattr(
+        "shared.config.get_settings",
+        lambda: settings,
+    )
+
+    tradeable_data = pd.DataFrame({"strike": list(range(8))})
+    execution_candidates = {
+        "vertical": SpreadExecutionCandidate(worst_leg_bid_ask_spread_ratio=0.06),
+    }
+    filter_result = FilterResult(total_input=8, details={"fallback": "no_filter"})
+
+    profile = _build_leg_liquidity_floor_profile(tradeable_data, execution_candidates, filter_result)
+
+    assert profile.profile_name == "constrained_liquidity"
+    assert profile.min_leg_volume == 10
+    assert profile.min_exit_strike_open_interest == 50
+    assert profile.source.endswith("no_filter_fallback")
 
 
 # ===================================================================
@@ -636,7 +747,7 @@ class TestSanitizeOptionIndicators:
     def test_leg_liquidity_floor_profile_is_preserved(self):
         ind = OptionIndicators(
             leg_liquidity_floor_profile=OptionLegLiquidityFloorProfile(
-                profile_name="stage3_aligned",
+                profile_name="tradable_liquidity",
                 min_leg_volume=25,
                 min_exit_strike_open_interest=100,
                 max_worst_leg_bid_ask_spread_ratio=0.20,
