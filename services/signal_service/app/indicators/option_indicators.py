@@ -10,7 +10,7 @@ from scipy import stats
 from sqlalchemy import text
 
 from shared.db.session import get_timescale_session
-from shared.models.signal import OptionIndicators, SpreadExecutionCandidate
+from shared.models.signal import OptionIndicators, OptionLegLiquidityFloorProfile, SpreadExecutionCandidate
 from shared.utils import get_logger, today_trading
 
 from .cal_utils import sanitize_float as _sanitize_float
@@ -527,6 +527,7 @@ def _compute_strategy_metrics(
             calendar_scores.append(max(near_theta - far_theta, 0.0))
 
     execution_candidates = _compute_spread_execution_candidates(tradeable_data, underlying_price)
+    leg_liquidity_floor_profile = _build_leg_liquidity_floor_profile(tradeable_data, execution_candidates)
 
     return {
         "vertical_spread_risk_reward": round(float(np.mean(vertical_scores)) if vertical_scores else 0.0, 6),
@@ -534,6 +535,7 @@ def _compute_strategy_metrics(
         "butterfly_pricing_error": round(float(np.mean(butterfly_errors)) if butterfly_errors else 0.0, 6),
         "box_spread_arbitrage": round(float(np.mean(box_errors)) if box_errors else 0.0, 6),
         "spread_execution_inputs": execution_candidates,
+        "leg_liquidity_floor_profile": leg_liquidity_floor_profile,
     }
 
 
@@ -884,6 +886,24 @@ def _compute_spread_execution_candidates(
     return {name: candidate for name, candidate in candidates.items() if candidate is not None}
 
 
+def _build_leg_liquidity_floor_profile(
+    tradeable_data: pd.DataFrame,
+    execution_candidates: dict[str, SpreadExecutionCandidate],
+) -> OptionLegLiquidityFloorProfile:
+    from shared.config import get_settings
+
+    cfg = get_settings().signal_service.filters.options.leg_liquidity_floor
+    return OptionLegLiquidityFloorProfile(
+        profile_name=str(cfg.profile_name),
+        min_leg_volume=int(cfg.min_leg_volume),
+        min_exit_strike_open_interest=int(cfg.min_exit_strike_open_interest),
+        max_worst_leg_bid_ask_spread_ratio=float(cfg.max_worst_leg_bid_ask_spread_ratio),
+        source="signal_service.filters.options.leg_liquidity_floor",
+        tradeable_contract_count=int(len(tradeable_data)),
+        execution_candidate_count=int(len(execution_candidates)),
+    )
+
+
 def _assess_confidence_and_flags(
     iv_metrics: dict,
     flow_metrics: dict,
@@ -1013,6 +1033,7 @@ async def compute_option_indicators(
         butterfly_pricing_error=strategy_metrics["butterfly_pricing_error"],
         box_spread_arbitrage=strategy_metrics["box_spread_arbitrage"],
         spread_execution_inputs=strategy_metrics["spread_execution_inputs"],
+        leg_liquidity_floor_profile=strategy_metrics["leg_liquidity_floor_profile"],
         confidence_scores=quality["confidence_scores"],
         extreme_flags=quality["extreme_flags"],
         degraded_indicators=quality["degraded_indicators"],

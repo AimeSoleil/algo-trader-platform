@@ -44,6 +44,18 @@ class SpreadExecutionCandidate(BaseModel):
     leg_bid_ask_spread_ratios: list[float] = Field(default_factory=list)
 
 
+class OptionLegLiquidityFloorProfile(BaseModel):
+    """Explicit upstream per-leg liquidity floor contract for analysis consumers."""
+
+    profile_name: str = ""
+    min_leg_volume: int = 0
+    min_exit_strike_open_interest: int = 0
+    max_worst_leg_bid_ask_spread_ratio: float = 0.0
+    source: str = ""
+    tradeable_contract_count: int = 0
+    execution_candidate_count: int = 0
+
+
 class OptionIndicators(BaseModel):
     """期权指标集"""
     iv_rank: float = 0.0  # IV Rank: min-max归一化 (current - min) / (max - min) * 100
@@ -79,6 +91,7 @@ class OptionIndicators(BaseModel):
     butterfly_pricing_error: float = 0.0
     box_spread_arbitrage: float = 0.0
     spread_execution_inputs: dict[str, SpreadExecutionCandidate] = Field(default_factory=dict)
+    leg_liquidity_floor_profile: OptionLegLiquidityFloorProfile | None = None
 
     confidence_scores: dict[str, float] = Field(default_factory=dict)
     extreme_flags: list[str] = Field(default_factory=list)

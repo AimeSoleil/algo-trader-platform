@@ -26,32 +26,36 @@ class ChainAgent(AnalysisAgent):
         return _SYSTEM_PROMPT
 
     def extract_signal_data(self, signals: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        """Extract price + option_chain + option_greeks + iv_rank/DTE + VIX/event context."""
-        results = []
-        for sig in signals:
-            extracted = {"symbol": sig.get("symbol", "UNKNOWN")}
-            if "price" in sig:
-                extracted["price"] = sig["price"]
-            if "option_chain" in sig:
-                extracted["option_chain"] = sig["option_chain"]
-            if "option_greeks" in sig:
-                extracted["option_greeks"] = sig["option_greeks"]
-            # IV Rank from vol surface (needed for theta context rules)
-            if "option_vol_surface" in sig:
-                vs = sig["option_vol_surface"]
-                if "iv_rank" in vs:
-                    extracted["iv_rank"] = vs["iv_rank"]
-                if "front_expiry_dte" in vs:
-                    extracted["front_expiry_dte"] = vs["front_expiry_dte"]
-            # VIX + event risk from cross-asset
-            if "cross_asset" in sig:
-                ca = sig["cross_asset"]
-                if "vix_level" in ca:
-                    extracted["vix_level"] = ca["vix_level"]
-                if "earnings_proximity_days" in ca:
-                    extracted["earnings_proximity_days"] = ca["earnings_proximity_days"]
-            results.append(extracted)
-        return results
+      """Extract option-chain context, execution candidates, and market overlays."""
+      results = []
+      for sig in signals:
+        extracted = {"symbol": sig.get("symbol", "UNKNOWN")}
+        if "price" in sig:
+          extracted["price"] = sig["price"]
+        if "option_chain" in sig:
+          extracted["option_chain"] = sig["option_chain"]
+        if "option_greeks" in sig:
+          extracted["option_greeks"] = sig["option_greeks"]
+        if "option_spreads" in sig:
+          option_spreads = sig["option_spreads"]
+          if isinstance(option_spreads, dict):
+            execution_candidates = option_spreads.get("execution_candidates")
+            if execution_candidates:
+              extracted["option_spreads"] = {"execution_candidates": execution_candidates}
+        if "option_vol_surface" in sig:
+          vs = sig["option_vol_surface"]
+          if "iv_rank" in vs:
+            extracted["iv_rank"] = vs["iv_rank"]
+          if "front_expiry_dte" in vs:
+            extracted["front_expiry_dte"] = vs["front_expiry_dte"]
+        if "cross_asset" in sig:
+          ca = sig["cross_asset"]
+          if "vix_level" in ca:
+            extracted["vix_level"] = ca["vix_level"]
+          if "earnings_proximity_days" in ca:
+            extracted["earnings_proximity_days"] = ca["earnings_proximity_days"]
+        results.append(extracted)
+      return results
 
 
 _TRADE_GATE_TAXONOMY_PROMPT = format_trade_gate_taxonomy_prompt_text()
@@ -69,10 +73,11 @@ Global Max Confidence Cap: 0.9 (non-negotiable, aggressive standard)
 iv_rank Scale: All iv_rank values are 0‑100 (percentage). Input data follows this convention.
 
 ## Data Honesty Rules (Non-Negotiable)
-- Use ONLY explicitly provided fields: price, option_chain, option_greeks, iv_rank, front_expiry_dte, vix_level, earnings_proximity_days
+- Use ONLY explicitly provided fields: price, option_chain, option_chain.liquidity_profile, option_greeks, option_spreads.execution_candidates, iv_rank, front_expiry_dte, vix_level, earnings_proximity_days
 - NEVER invent 30d PCR percentiles, trend states, dealer positioning or gamma notional
 - Mixed universe: Weak signals = neutral/low confidence, never force direction
 - Missing data = skip rule or lower confidence, never fill gaps with assumptions
+- Treat option_spreads.execution_candidates as the preferred explicit executability evidence for multi-leg structures; missing candidates mean uncertainty, not an automatic veto
 - Calendar spreads are globally DISABLED – no back-month data exists; never suggest calendar_spread
 - Do NOT set `trade_allowed=false` for earnings proximity alone; explicit earnings-play eligibility is decided downstream
 """ + "\n\n" + _TRADE_GATE_TAXONOMY_PROMPT + """
@@ -82,6 +87,8 @@ iv_rank Scale: All iv_rank values are 0‑100 (percentage). Input data follows t
 - OI Concentration Top5: Sum of OI across the five strikes (combined calls+puts) with the highest total OI, divided by total OI of the chain. Used in pin_strength.
 - High Theta: |theta| > 0.05 * underlying price (for any option considered; use the absolute theta of the front-month ATM option if no specific leg given).
 - Exit Strike OI: The open interest of the specific option contract at the strike that would be used to exit the position (usually the short strike for spreads). Verify per-leg.
+- option_chain.liquidity_profile: Upstream explicit per-leg liquidity floor contract for this symbol. Use it to refine the current L6 floors when present, but do NOT let it override missing-data safeguards.
+- option_spreads.execution_candidates: Representative 1-lot execution summaries already screened upstream from tradeable contracts. When present, they are the best explicit structure-level executability evidence available to this agent.
 - Gamma Peak: An optional input field indicating the strike where gamma is concentrated. If not provided, gamma_pin_active is always false.
 
 ## Indicator Definitions (Aggressive Tuning)
@@ -97,8 +104,11 @@ iv_rank Scale: All iv_rank values are 0‑100 (percentage). Input data follows t
 
 ## Hard Overrides
 H1. Spread >0.25 on any primary strike: hard_block=true, trade_allowed=false, confidence=0.2, blocked_reasons=["hard_block_spread"]
-H2. ANY suggested leg fails per-leg minimums (Vol≥80, Exit Strike OI≥400): trade_allowed=false, confidence≤0.3, blocked_reasons=["insufficient_leg_liquidity"]
-     If leg-level OI cannot be verified, mark suggested_strikes={} and treat as unmet.
+H2. Use trade_allowed=false with blocked_reasons=["insufficient_leg_liquidity"] ONLY when explicit execution evidence shows the contemplated structure is non-executable:
+  - a required suggested leg fails the resolved per-leg floor: baseline Vol<20 OR explicit Exit Strike OI<100, tightened by option_chain.liquidity_profile.min_leg_volume / min_exit_strike_open_interest when present, OR
+  - a matching option_spreads.execution_candidates entry shows worst_leg_bid_ask_spread_ratio above option_chain.liquidity_profile.max_worst_leg_bid_ask_spread_ratio when present, otherwise above 0.20.
+  Do NOT infer ticker-specific liquidity tiers from symbol names alone. If stricter floors are needed, they must come from explicit upstream fields such as option_chain.liquidity_profile rather than hardcoded ticker lists.
+  Missing leg-level OI/volume or missing execution_candidates by itself is NOT enough for a hard veto.
 H3. earnings_proximity_days ≤1 (Imminent Event):
   event_risk_present=true, pcr_signal=neutral, confidence_cap=0.2, simple_structures_only=true
 H4. earnings_proximity_days = 2‑3 (Pre-Earnings IV Peak):
@@ -113,10 +123,16 @@ L2. L3: Simple defined-risk only (vertical spreads, iron condors) | Confidence -
 L3. L4: Single-leg OR simple vertical spreads only | simple_structures_only=true | Confidence -0.15 | Max 30% normal position size
 L4. L5: Triggers H1 hard block automatically (trade_allowed=false)
 L5. Deep OTM wing exception: Max spread 0.12 ONLY for hedge legs in defined-risk structures, provided primary legs are L1‑L3.
-L6. Per-leg mandatory: Vol≥80 | Exit Strike OI≥400; if leg data missing → suggested_strikes={}, confidence -0.12, liquidity_ok=false
+L6. Per-leg liquidity filters apply ONLY when explicit, verified leg-level data is available.
+   - Baseline thresholds (only enforced if data exists): Volume ≥ 20 OR Exit Strike Open Interest ≥ 100
+   - If option_chain.liquidity_profile is present, combine it with the baseline above: use its min_leg_volume and min_exit_strike_open_interest as the preferred upstream resolved floors for this symbol, but do NOT relax below the baseline thresholds above.
+   - DO NOT apply dynamic, ticker-name-based minimums or hard-coded tiers.
+   - If leg-level volume or OI is missing, exclude unverified legs from suggested_strikes, reduce confidence by -0.12,
+     and defer to option_chain.liquidity_profile, option_spreads.execution_candidates, or aggregate chain liquidity metrics for final executability judgment.
+   - Missing data alone does NOT constitute a hard trade veto.
 L7. Aggregate benchmark is first-pass only; per-leg executability takes priority for thin names.
-L8. liquidity_ok=true ONLY for L1‑L4 with verified per-leg minimums (note: L4 is eligible but heavily penalized)
-L9. L5, unverified leg liquidity, or aggregate weakness with no passing legs = liquidity_ok=false
+L8. liquidity_ok=true ONLY for L1‑L4 with either verified per-leg minimums or supportive option_spreads.execution_candidates for the suggested structure (note: L4 is eligible but heavily penalized)
+L9. L5, explicit leg-level failures, or explicit execution-candidate spread failure with no passing fallback = liquidity_ok=false
 L10. `liquidity_ok`: informational execution-quality flag only; any real veto must use `hard_block`, `trade_allowed`, `confidence_cap`, or `simple_structures_only`
 
 ## PCR/Chain Alignment
@@ -188,7 +204,7 @@ suggested_strikes must be a JSON object with optional keys "call" and "put", eac
 - For vertical spreads: use long strike = ATM, short strike = next OTM strike ~0.30 delta, adjusted for liquidity.
 - For iron condors: call side short ~0.30 delta call, long ~0.20 delta call; put side short ~0.30 delta put, long ~0.20 delta put.
 - For butterfly: center = gamma_pin_strike, wings = ±1 strike width with acceptable spread.
-- If any required strike fails leg liquidity, set that leg's array empty and lower confidence by 0.05 per missing leg; if all fail, trade_allowed=false with blocked_reasons=["insufficient_leg_liquidity"].
+- If any required strike cannot be explicitly verified, set that leg's array empty and lower confidence by 0.05 per unverified or failing leg. Do NOT hard block solely because verification data is missing; use blocked_reasons=["insufficient_leg_liquidity"] only when explicit leg or execution-candidate evidence shows no executable structure survives.
 
 ## Confidence Scaling (Aggressive)
 Base Ranges:

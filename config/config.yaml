@@ -277,11 +277,16 @@ signal_service:
       trading:
         min_volume: 25                 # 最低日成交量
         min_open_interest: 100         # 最低持仓量
-        max_relative_spread: 0.08      # 最大相对价差 8%
+        max_relative_spread: 0.10      # 最大相对价差 10%（先小幅放松，补回周度链覆盖）
         min_delta: 0.08                # Call delta 最小 / Put |delta| 最小
         max_delta: 0.90                # Call delta 最大 / Put |delta| 最大
-        min_dte: 7                     # 最短到期日（天）
+        min_dte: 5                     # 最短到期日（天）— 允许更近的高流动性周度结构
         max_dte: 120                   # 最长到期日（天）
+      leg_liquidity_floor:
+        profile_name: "stage3_aligned"        # upstream explicit per-leg floor contract for analysis-service
+        min_leg_volume: 25                     # align to Stage 3 executable contract floor
+        min_exit_strike_open_interest: 100    # align to Stage 3 executable contract floor
+        max_worst_leg_bid_ask_spread_ratio: 0.20
     # stocks:                          # 预留 — 未来股票交易级过滤
     #   trading:
     #     min_avg_volume_20d: 100000

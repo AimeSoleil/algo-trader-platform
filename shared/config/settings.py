@@ -370,15 +370,25 @@ class SignalOptionTradingFilterSettings(BaseSettings):
     """Stage 3: 交易级过滤 — 仅用于策略类指标，不影响分析类指标."""
     min_volume: int = 25
     min_open_interest: int = 100
-    max_relative_spread: float = 0.08
+    max_relative_spread: float = 0.10
     min_delta: float = 0.08
     max_delta: float = 0.90
-    min_dte: int = 7
+    min_dte: int = 5
     max_dte: int = 120
+
+
+class SignalOptionLegLiquidityFloorSettings(BaseSettings):
+    """Explicit upstream leg-level liquidity floor contract for analysis consumers."""
+
+    profile_name: str = "stage3_aligned"
+    min_leg_volume: int = 25
+    min_exit_strike_open_interest: int = 100
+    max_worst_leg_bid_ask_spread_ratio: float = 0.20
 
 class SignalOptionFilterSettings(BaseSettings):
     """signal_service.filters.options — 期权交易级过滤."""
     trading: SignalOptionTradingFilterSettings = Field(default_factory=SignalOptionTradingFilterSettings)
+    leg_liquidity_floor: SignalOptionLegLiquidityFloorSettings = Field(default_factory=SignalOptionLegLiquidityFloorSettings)
 
 class SignalServiceFilterSettings(BaseSettings):
     """signal_service.filters — 按资产类型组织."""

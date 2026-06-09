@@ -20,6 +20,7 @@ import pytest
 
 from shared.models.signal import (
     CrossAssetIndicators,
+    OptionLegLiquidityFloorProfile,
     OptionIndicators,
     SignalFeatures,
     StockIndicators,
@@ -554,6 +555,15 @@ async def test_compute_option_indicators_populates_spread_execution_candidates(m
     box_arb = indicators.spread_execution_inputs["box_arb"]
     assert box_arb.net_edge_after_cost is not None
 
+    profile = indicators.leg_liquidity_floor_profile
+    assert profile is not None
+    assert profile.profile_name == "stage3_aligned"
+    assert profile.min_leg_volume == 25
+    assert profile.min_exit_strike_open_interest == 100
+    assert profile.max_worst_leg_bid_ask_spread_ratio == 0.20
+    assert profile.tradeable_contract_count > 0
+    assert profile.execution_candidate_count == len(indicators.spread_execution_inputs)
+
 
 # ===================================================================
 # 4. NaN Sanitization
@@ -622,6 +632,23 @@ class TestSanitizeOptionIndicators:
         cleaned = _sanitize_option_indicators(ind)
         assert cleaned.iv_rank == 75.0
         assert cleaned.pcr_volume == 1.2
+
+    def test_leg_liquidity_floor_profile_is_preserved(self):
+        ind = OptionIndicators(
+            leg_liquidity_floor_profile=OptionLegLiquidityFloorProfile(
+                profile_name="stage3_aligned",
+                min_leg_volume=25,
+                min_exit_strike_open_interest=100,
+                max_worst_leg_bid_ask_spread_ratio=0.20,
+                source="signal_service.filters.options.leg_liquidity_floor",
+                tradeable_contract_count=42,
+                execution_candidate_count=3,
+            )
+        )
+        cleaned = _sanitize_option_indicators(ind)
+        assert cleaned.leg_liquidity_floor_profile is not None
+        assert cleaned.leg_liquidity_floor_profile.min_leg_volume == 25
+        assert cleaned.leg_liquidity_floor_profile.execution_candidate_count == 3
 
     def test_all_float_fields_cleaned(self):
         fields = {}

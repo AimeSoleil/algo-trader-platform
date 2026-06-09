@@ -11,6 +11,7 @@ from types import SimpleNamespace
 from shared.models.signal import (
     CrossAssetIndicators,
     DataQuality,
+    OptionLegLiquidityFloorProfile,
     OptionIndicators,
     SignalFeatures,
     SpreadExecutionCandidate,
@@ -452,6 +453,20 @@ def test_chain_prompt_excludes_gamma_pin_from_directional_confirming_count():
     assert "`liquidity_ok`: informational execution-quality flag only" in chain_prompt
 
 
+def test_chain_prompt_uses_execution_candidates_and_treats_missing_leg_data_as_uncertainty():
+    from services.analysis_service.app.llm.agents.chain_agent import _SYSTEM_PROMPT as chain_prompt
+
+    assert "option_spreads.execution_candidates" in chain_prompt
+    assert "option_chain.liquidity_profile" in chain_prompt
+    assert "preferred explicit executability evidence for multi-leg structures" in chain_prompt
+    assert "Upstream explicit per-leg liquidity floor contract for this symbol" in chain_prompt
+    assert "Missing leg-level OI/volume or missing execution_candidates by itself is NOT enough for a hard veto" in chain_prompt
+    assert "baseline Vol<20 OR explicit Exit Strike OI<100, tightened by option_chain.liquidity_profile.min_leg_volume / min_exit_strike_open_interest when present" in chain_prompt
+    assert "use its min_leg_volume and min_exit_strike_open_interest as the preferred upstream resolved floors for this symbol, but do NOT relax below the baseline thresholds above" in chain_prompt
+    assert "Do NOT infer ticker-specific liquidity tiers from symbol names alone" in chain_prompt
+    assert "Do NOT hard block solely because verification data is missing" in chain_prompt
+
+
 def test_flow_prompt_keeps_false_breakout_as_directional_caution_not_symbol_veto():
     from services.analysis_service.app.llm.agents.flow_agent import _SYSTEM_PROMPT as flow_prompt
 
@@ -543,6 +558,15 @@ def test_stock_signal_serializes_spread_execution_candidates():
 
     oi = OptionIndicators(
         vertical_spread_risk_reward=1.1,
+        leg_liquidity_floor_profile=OptionLegLiquidityFloorProfile(
+            profile_name="stage3_aligned",
+            min_leg_volume=25,
+            min_exit_strike_open_interest=100,
+            max_worst_leg_bid_ask_spread_ratio=0.20,
+            source="signal_service.filters.options.leg_liquidity_floor",
+            tradeable_contract_count=42,
+            execution_candidate_count=1,
+        ),
         spread_execution_inputs={
             "vertical": SpreadExecutionCandidate(
                 strategy_type="vertical",
@@ -566,6 +590,12 @@ def test_stock_signal_serializes_spread_execution_candidates():
     execution_candidates = data.get("option_spreads", {}).get("execution_candidates", {})
     assert execution_candidates["vertical"]["effective_rr"] == 0.93
     assert execution_candidates["vertical"]["estimated_round_trip_cost"] == 14.0
+
+    liquidity_profile = data.get("option_chain", {}).get("liquidity_profile", {})
+    assert liquidity_profile["profile_name"] == "stage3_aligned"
+    assert liquidity_profile["min_leg_volume"] == 25
+    assert liquidity_profile["min_exit_strike_open_interest"] == 100
+    assert liquidity_profile["execution_candidate_count"] == 1
 
 
 def test_spread_prompt_consumes_execution_candidates_for_cost_aware_fields():

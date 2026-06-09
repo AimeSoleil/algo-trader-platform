@@ -184,6 +184,37 @@ def test_chain_agent_extracts_front_expiry_dte_from_option_vol_surface() -> None
     assert extracted == [{"symbol": "AAPL", "iv_rank": 42.0, "front_expiry_dte": 0}]
 
 
+def test_chain_agent_extracts_execution_candidates_for_structure_liquidity_context() -> None:
+    agent = ChainAgent()
+
+    extracted = agent.extract_signal_data([
+        {
+            "symbol": "AAPL",
+            "option_spreads": {
+                "vertical_spread_risk_reward": 1.15,
+                "execution_candidates": {
+                    "vertical": {
+                        "effective_rr": 0.92,
+                        "worst_leg_bid_ask_spread_ratio": 0.08,
+                    }
+                },
+            },
+        }
+    ])
+
+    assert extracted == [{
+        "symbol": "AAPL",
+        "option_spreads": {
+            "execution_candidates": {
+                "vertical": {
+                    "effective_rr": 0.92,
+                    "worst_leg_bid_ask_spread_ratio": 0.08,
+                }
+            }
+        },
+    }]
+
+
 def test_trend_agent_preserves_unknown_iv_rank() -> None:
     agent = TrendAgent()
 

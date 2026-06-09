@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
-from shared.config.settings import Settings
+from shared.config.settings import Settings, SignalOptionLegLiquidityFloorSettings, SignalOptionTradingFilterSettings
 
 
 def test_env_overrides_yaml_for_infra_urls(tmp_path: Path, monkeypatch) -> None:
@@ -166,3 +166,44 @@ common:
 
     with pytest.raises(ValidationError, match="common.watchlist.for_trade_benchmark must be a subset"):
         Settings.from_yaml(yaml_path)
+
+
+def test_signal_option_trading_filter_defaults_relax_weekly_spread_and_dte() -> None:
+  defaults = SignalOptionTradingFilterSettings()
+
+  assert defaults.max_relative_spread == 0.10
+  assert defaults.min_dte == 5
+
+
+def test_signal_option_leg_liquidity_floor_defaults_align_with_stage3_contract() -> None:
+  defaults = SignalOptionLegLiquidityFloorSettings()
+
+  assert defaults.profile_name == "stage3_aligned"
+  assert defaults.min_leg_volume == 25
+  assert defaults.min_exit_strike_open_interest == 100
+  assert defaults.max_worst_leg_bid_ask_spread_ratio == 0.20
+
+
+def test_signal_option_leg_liquidity_floor_loads_from_yaml(tmp_path: Path) -> None:
+    yaml_path = tmp_path / "config.yaml"
+    yaml_path.write_text(
+        """
+signal_service:
+  filters:
+    options:
+      leg_liquidity_floor:
+        profile_name: custom_floor
+        min_leg_volume: 30
+        min_exit_strike_open_interest: 150
+        max_worst_leg_bid_ask_spread_ratio: 0.18
+""".strip(),
+        encoding="utf-8",
+    )
+
+    settings = Settings.from_yaml(yaml_path)
+
+    profile = settings.signal_service.filters.options.leg_liquidity_floor
+    assert profile.profile_name == "custom_floor"
+    assert profile.min_leg_volume == 30
+    assert profile.min_exit_strike_open_interest == 150
+    assert profile.max_worst_leg_bid_ask_spread_ratio == 0.18

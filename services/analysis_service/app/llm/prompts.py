@@ -190,6 +190,8 @@ def _serialize_one_signal(sf: SignalFeatures) -> str:
         "bid_ask_spread_ratio": round(oi.bid_ask_spread_ratio, 4),
         "option_volume_imbalance": round(oi.option_volume_imbalance, 4),
     }
+    if oi.leg_liquidity_floor_profile is not None:
+        option_chain["liquidity_profile"] = oi.leg_liquidity_floor_profile.model_dump(exclude_none=True)
     if oi.extreme_flags:
         option_chain["extreme_flags"] = oi.extreme_flags
     if oi.confidence_scores:
