@@ -61,6 +61,48 @@ def _market_days_in_range(start_date: date, end_date: date) -> list[date]:
     return [session.date() for session in schedule.index.to_pydatetime()]
 
 
+def _resolve_bypass_cache(bypass_cache: bool, legacy_bypass_cache: bool | None) -> bool:
+    if legacy_bypass_cache is None:
+        return bypass_cache
+    if bypass_cache != legacy_bypass_cache and bypass_cache:
+        raise HTTPException(status_code=422, detail="Conflicting bypass_cache and by_pass_cache values")
+    return legacy_bypass_cache
+
+
+async def _query_signals_response(
+    *,
+    symbols: str | None,
+    start_date: date | None,
+    end_date: date | None,
+    bypass_cache: bool,
+    legacy_bypass_cache: bool | None,
+    volatility_regime: str | None,
+    trend: str | None,
+    sort_by: str | None,
+    sort_order: str,
+    limit: int,
+    offset: int,
+):
+    from services.signal_service.app.queries import query_signals as _query
+
+    symbols_list = None
+    if symbols:
+        symbols_list = [s.strip().upper() for s in symbols.split(",") if s.strip()]
+
+    return await _query(
+        symbols=symbols_list,
+        start_date=start_date,
+        end_date=end_date,
+        bypass_cache=_resolve_bypass_cache(bypass_cache, legacy_bypass_cache),
+        volatility_regime=volatility_regime,
+        trend=trend,
+        sort_by=sort_by,
+        sort_order=sort_order,
+        limit=limit,
+        offset=offset,
+    )
+
+
 # ── Signal query (unified) ────────────────────────────────
 
 
@@ -70,6 +112,12 @@ async def query_signals(
     start_date: date | None = Query(None, description="Start trading date (YYYY-MM-DD). Defaults to today."),
     end_date: date | None = Query(None, description="End trading date (YYYY-MM-DD). Defaults to start_date."),
     bypass_cache: bool = Query(False, description="Skip Redis cache and read directly from DB"),
+    legacy_bypass_cache: bool | None = Query(
+        None,
+        alias="by_pass_cache",
+        include_in_schema=False,
+        description="Legacy alias for bypass_cache",
+    ),
     volatility_regime: str | None = Query(None, description="Filter: high / normal / low"),
     trend: str | None = Query(None, description="Filter stock trend: bullish / bearish / neutral"),
     sort_by: str | None = Query(None, description="Sort field name inside features (e.g. close_price, daily_return)"),
@@ -87,15 +135,12 @@ async def query_signals(
     - ``GET /signals?volatility_regime=high&trend=bullish`` — 条件过滤
     - ``GET /signals?sort_by=daily_return&sort_order=desc&limit=20`` — 排序分页
     """
-    from services.signal_service.app.queries import query_signals as _query
-    symbols_list = None
-    if symbols:
-        symbols_list = [s.strip().upper() for s in symbols.split(",") if s.strip()]
-    return await _query(
-        symbols=symbols_list,
+    return await _query_signals_response(
+        symbols=symbols,
         start_date=start_date,
         end_date=end_date,
         bypass_cache=bypass_cache,
+        legacy_bypass_cache=legacy_bypass_cache,
         volatility_regime=volatility_regime,
         trend=trend,
         sort_by=sort_by,
@@ -103,6 +148,43 @@ async def query_signals(
         limit=limit,
         offset=offset,
     )
+
+
+@router.get("/signals/{symbol}")
+async def query_signal_by_symbol(
+    symbol: str,
+    start_date: date | None = Query(None, description="Start trading date (YYYY-MM-DD). Defaults to today."),
+    end_date: date | None = Query(None, description="End trading date (YYYY-MM-DD). Defaults to start_date."),
+    bypass_cache: bool = Query(False, description="Skip Redis cache and read directly from DB"),
+    legacy_bypass_cache: bool | None = Query(
+        None,
+        alias="by_pass_cache",
+        include_in_schema=False,
+        description="Legacy alias for bypass_cache",
+    ),
+    volatility_regime: str | None = Query(None, description="Filter: high / normal / low"),
+    trend: str | None = Query(None, description="Filter stock trend: bullish / bearish / neutral"),
+    sort_by: str | None = Query(None, description="Sort field name inside features (e.g. close_price, daily_return)"),
+    sort_order: str = Query("asc", description="Sort order: asc / desc"),
+    limit: int = Query(500, ge=1, le=2000, description="Max results per page"),
+    offset: int = Query(0, ge=0, description="Pagination offset"),
+):
+    """兼容旧版单标的查询路径，内部委托给统一的 /signals 查询实现。"""
+    return await _query_signals_response(
+        symbols=symbol,
+        start_date=start_date,
+        end_date=end_date,
+        bypass_cache=bypass_cache,
+        legacy_bypass_cache=legacy_bypass_cache,
+        volatility_regime=volatility_regime,
+        trend=trend,
+        sort_by=sort_by,
+        sort_order=sort_order,
+        limit=limit,
+        offset=offset,
+    )
+
+
 @router.post("/signals/compute", status_code=202, response_model=SignalComputeResponse)
 async def trigger_signal_compute(req: SignalComputeRequest):
     """手动触发当日、单日期或日期范围的批量信号计算任务。

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import date
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -14,6 +14,52 @@ def _build_test_client() -> TestClient:
     app = FastAPI()
     app.include_router(router, prefix="/api/v1")
     return TestClient(app)
+
+
+def test_query_signal_by_symbol_route_uses_unified_query_with_legacy_cache_flag():
+    client = _build_test_client()
+    expected_payload = {
+        "data": [{"symbol": "NVDA"}],
+        "total": 1,
+        "limit": 500,
+        "offset": 0,
+        "count": 1,
+        "filters_applied": {"symbols": ["NVDA"]},
+    }
+
+    with patch(
+        "services.signal_service.app.queries.query_signals",
+        new=AsyncMock(return_value=expected_payload),
+    ) as query_signals:
+        response = client.get("/api/v1/signals/NVDA?by_pass_cache=true&sort_order=asc")
+
+    assert response.status_code == 200
+    assert response.json() == expected_payload
+    query_signals.assert_awaited_once_with(
+        symbols=["NVDA"],
+        start_date=None,
+        end_date=None,
+        bypass_cache=True,
+        volatility_regime=None,
+        trend=None,
+        sort_by=None,
+        sort_order="asc",
+        limit=500,
+        offset=0,
+    )
+
+
+def test_query_signal_by_symbol_does_not_capture_compute_status_route():
+    client = _build_test_client()
+
+    with patch(
+        "services.signal_service.app.routes.AsyncResult",
+        return_value=SimpleNamespace(state="PENDING", info=None, result=None),
+    ):
+        response = client.get("/api/v1/signals/compute/task-123")
+
+    assert response.status_code == 200
+    assert response.json() == {"task_id": "task-123", "state": "PENDING"}
 
 
 def test_trigger_signal_compute_single_date_dispatches_one_task():

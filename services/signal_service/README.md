@@ -108,7 +108,11 @@ Signal Service 有 Redis L1 查询缓存：
 
 - `GET /api/v1/signals`
 
+- `GET /api/v1/signals/{symbol}`
+
 单标的查询使用 `GET /api/v1/signals?symbols=AAPL`。
+
+兼容旧客户端时，也可以使用 `GET /api/v1/signals/AAPL`。缓存参数的规范名称是 `bypass_cache`；旧参数名 `by_pass_cache` 仍然兼容，但建议逐步切换。
 
 统一查询支持：
 
@@ -140,6 +144,12 @@ curl http://localhost:8002/api/v1/signals
 
 ```bash
 curl "http://localhost:8002/api/v1/signals?symbols=AAPL,MSFT"
+```
+
+兼容旧版单标的路径：
+
+```bash
+curl "http://localhost:8002/api/v1/signals/NVDA?bypass_cache=true&sort_order=asc"
 ```
 
 手动触发计算：
