@@ -492,12 +492,18 @@ def test_refine_empty_market_analysis_separates_false_breakout_simple_structures
                 ],
             },
         },
+        deterministic_validation={
+            "pruned_symbol_errors": [
+                {"symbol": "TSLA", "rule": "spread_execution_candidate_conflict"},
+            ]
+        },
     )
 
     assert "Market regime remains neutral. VIX at 18.92, normal environment." in text
     assert "Directional entries were filtered by high false breakout risk for TSLA." in text
     assert "Configured simple-structure gates remained active for TSLA" in text
     assert "Chain/Spread executability did not confirm a qualifying structure for TSLA after liquidity, spread, and DTE checks." in text
+    assert "Deterministic validation then pruned the remaining candidates because a stronger allowed execution candidate outranked the emitted structure for TSLA." in text
 
 
 def test_apply_and_log_deterministic_validation_refines_empty_market_analysis(monkeypatch):
@@ -524,9 +530,17 @@ def test_apply_and_log_deterministic_validation_refines_empty_market_analysis(mo
             "allowed_strategy_types": ["single_leg", "vertical_spread", "iron_condor", "calendar_spread"],
             "emitted_strategy_scope_pruned_symbols": [],
             "emitted_strategy_scope_pruned_plan_count": 0,
-            "pruned_symbols": [],
+            "pruned_symbols": ["MSFT"],
             "pruned_plan_count": 1,
-            "pruned_symbol_errors": [],
+            "pruned_symbol_errors": [
+                {
+                    "rule": "spread_execution_candidate_conflict",
+                    "symbol": "MSFT",
+                    "category": "logic_error",
+                    "severity": "error",
+                    "description": "Selected iron_condor was weaker than a stronger allowed vertical execution candidate.",
+                },
+            ],
             "trade_gate_summary": {},
             "pre_selection_trade_gate_summary": {},
             "empty_after_pruning": True,
@@ -583,3 +597,4 @@ def test_apply_and_log_deterministic_validation_refines_empty_market_analysis(mo
     assert "Directional entries were filtered by high false breakout risk for MSFT." in validated.market_analysis
     assert "Configured simple-structure gates remained active for MSFT" in validated.market_analysis
     assert "Chain/Spread executability did not confirm a qualifying structure for MSFT after liquidity, spread, and DTE checks." in validated.market_analysis
+    assert "Deterministic validation then pruned the remaining candidates because a stronger allowed execution candidate outranked the emitted structure for MSFT." in validated.market_analysis

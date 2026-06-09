@@ -216,6 +216,7 @@ def _refine_empty_market_analysis(
     market_regime: str,
     signal_map: dict[str, dict[str, object]],
     agent_outputs: dict[str, object] | None,
+    deterministic_validation: dict[str, object] | None = None,
 ) -> str:
     if not isinstance(agent_outputs, dict) or not signal_map:
         return market_analysis
@@ -227,6 +228,7 @@ def _refine_empty_market_analysis(
     false_breakout_symbols: list[str] = []
     simple_structure_symbols: list[str] = []
     executability_symbols: list[str] = []
+    structure_priority_symbols: list[str] = []
 
     for symbol in trade_symbols:
         flow_data = _agent_symbol_analysis(agent_outputs, "flow", symbol) or {}
@@ -270,7 +272,23 @@ def _refine_empty_market_analysis(
         ):
             executability_symbols.append(symbol)
 
-    if not (false_breakout_symbols or simple_structure_symbols or executability_symbols):
+    if isinstance(deterministic_validation, dict):
+        for issue in deterministic_validation.get("pruned_symbol_errors", []) or []:
+            if not isinstance(issue, dict):
+                continue
+            symbol = str(issue.get("symbol") or "").strip().upper()
+            if not symbol:
+                continue
+            rule = str(issue.get("rule") or "").strip().lower()
+            if rule == "spread_execution_candidate_conflict":
+                structure_priority_symbols.append(symbol)
+
+    if not (
+        false_breakout_symbols
+        or simple_structure_symbols
+        or executability_symbols
+        or structure_priority_symbols
+    ):
         return market_analysis
 
     parts: list[str] = []
@@ -295,6 +313,12 @@ def _refine_empty_market_analysis(
                 f"Chain/Spread executability did not confirm a qualifying structure for {_preview_symbols(executability_symbols)} after liquidity, spread, and DTE checks"
             )
         parts.append("; ".join(sentence_parts) + ".")
+
+    if structure_priority_symbols:
+        parts.append(
+            "Deterministic validation then pruned the remaining candidates because a stronger allowed execution candidate "
+            f"outranked the emitted structure for {_preview_symbols(structure_priority_symbols)}."
+        )
 
     return " ".join(parts)
 
@@ -591,6 +615,7 @@ def _apply_and_log_deterministic_validation(
             blueprint.market_regime,
             signal_map,
             agent_outputs,
+            deterministic_validation=summary,
         )
     blueprint = blueprint.model_copy(update=update_payload)
 

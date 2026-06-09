@@ -818,7 +818,7 @@ HE1. Chain.hard_block=true OR Chain.liquidity_tier="L5" → EXCLUDE.
 HE2. Any agent.blocked_reasons contains "event_risk_imminent" → EXCLUDE symbol entirely. No exceptions.
 HE3. Do NOT exclude solely because blocked_reasons contains "extreme_option_activity_unconfirmed"; treat it as a participation anomaly and require separate execution or event-risk confirmation before exclusion.
 HE4. Reject vertical_spread only when Spread.effective_rr is explicitly available and <0.7, or when Spread.risk_reward_ratio <0.7. Do NOT exclude iron_condor, butterfly, calendar_spread, or arbitrage setups solely because Spread.effective_rr is null.
-HE5. Cross-Asset.master_override=true AND Cross-Asset.effective_size_modifier < MIN_ACCEPTABLE_POSITION_SIZE → EXCLUDE.
+HE5. Cross-Asset.master_override and effective_size_modifier are advisory-only sizing context in manual-trader mode; do NOT EXCLUDE solely because effective_size_modifier is below a size floor.
 HE6. Cannot justify final confidence ≥ MIN_ACCEPTABLE_CONFIDENCE → EXCLUDE.
 HE7. If ANY agent sets simple_structures_only=true → ONLY allow the configured precision-first simple structure scope (default: single_leg, vertical_spread, iron_condor, calendar_spread). No structures outside that scope, UNLESS GP1 is triggered and its gamma-pin exception conditions are fully satisfied.
 
@@ -876,7 +876,7 @@ AS7. Final confidence cap = MIN(all numeric confidence_cap values from Trend, Vo
 ────────────────────────────────────────────────────────
 CONFIDENCE-WEIGHTED RESOLUTION (Priority 6)
 ────────────────────────────────────────────────────────
-CW1. Cross-Asset Master Override: if Cross-Asset.master_override=true → final_position_size = Cross-Asset.effective_size_modifier. It overrides ALL other agent position size modifiers. No exceptions.
+CW1. Cross-Asset master_override and effective_size_modifier are advisory-only in manual-trader mode; use them for risk framing and confidence calibration, not for serialized or automatic position sizing.
 CW2. Trader decides max loss and sizing manually. Do NOT emit max_position_size, stop_loss_amount, take_profit_amount, or max_loss_per_trade unless a downstream human explicitly fills them later.
 CW3. Position-size modifiers from Flow / Spread / Cross-Asset are advisory-only for reasoning and confidence calibration; do not serialize them into the plan schema.
 CW4. Flow.false_breakout_risk adjustments:

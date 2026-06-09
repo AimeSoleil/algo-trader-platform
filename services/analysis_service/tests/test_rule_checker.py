@@ -873,20 +873,8 @@ def _agent_outputs(**agent_dicts) -> dict:
     }
 
 
-class TestCascadingModifiers:
-    def test_product_below_threshold_error(self):
-        ao = _agent_outputs(
-            flow=[{"symbol": "AAPL", "position_size_modifier": 0.4}],
-            cross_asset=[{"symbol": "AAPL", "effective_size_modifier": 0.5}],
-        )
-        result = check_blueprint(
-            _blueprint(),
-            agent_outputs=ao,
-        )
-        # 0.4 × 0.5 = 0.2 < 0.3 → error
-        assert any(i.rule == "cascading_size_modifiers" and i.severity == "error" for i in result.issues)
-
-    def test_product_near_zero_error(self):
+class TestManualTraderSizingGuards:
+    def test_cascading_size_modifiers_no_longer_blocks_trade(self):
         ao = _agent_outputs(
             flow=[{"symbol": "AAPL", "position_size_modifier": 0.1}],
             cross_asset=[{"symbol": "AAPL", "effective_size_modifier": 0.2}],
@@ -895,30 +883,7 @@ class TestCascadingModifiers:
             _blueprint(),
             agent_outputs=ao,
         )
-        # 0.1 × 0.2 = 0.02 < 0.1 → error (near-zero)
-        assert any(i.rule == "cascading_size_modifiers" for i in result.issues)
-
-    def test_product_above_threshold_ok(self):
-        ao = _agent_outputs(
-            flow=[{"symbol": "AAPL", "position_size_modifier": 0.8}],
-            cross_asset=[{"symbol": "AAPL", "effective_size_modifier": 0.9}],
-        )
-        result = check_blueprint(
-            _blueprint(),
-            agent_outputs=ao,
-        )
-        # 0.8 × 0.9 = 0.72 ≥ 0.3 → ok
         assert not any(i.rule == "cascading_size_modifiers" for i in result.issues)
-
-    def test_missing_agent_uses_default_modifier_and_still_checks_floor(self):
-        ao = _agent_outputs(
-            flow=[{"symbol": "AAPL", "position_size_modifier": 0.1}],
-        )
-        result = check_blueprint(
-            _blueprint(),
-            agent_outputs=ao,
-        )
-        assert any(i.rule == "cascading_size_modifiers" for i in result.issues)
 
 
 class TestFlowPositionSizeModifierCaps:

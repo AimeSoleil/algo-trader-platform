@@ -188,8 +188,8 @@ def check_blueprint(
         Optional dict of specialist agent outputs (as returned by
         ``AgentOrchestrator._run_specialists``).  Enables additional
         checks that validate blueprint plans against agent hard
-        constraints (chain hard-block, master override, cascading
-        modifiers, etc.).
+        constraints (chain hard-block, trade gates, execution-candidate
+        conflicts, etc.).
     account_size:
         Account size in dollars used to compute daily-loss caps.
         Default 100_000 keeps the checker aligned with the configured 2-3% daily-loss bands.
@@ -236,7 +236,6 @@ def check_blueprint(
             _check_chain_hard_block(plan, agent_outputs, result)
             _check_chain_gamma_pin_exception_requirements(plan, agent_outputs, result)
             _check_chain_trade_gate(plan, agent_outputs, result)
-            _check_cascading_modifiers(plan, agent_outputs, result)
             _check_volatility_trade_gate(plan, agent_outputs, result)
             _check_spread_trade_gate(plan, agent_outputs, result)
             _check_soft_trade_block_consensus(plan, agent_outputs, result)
@@ -1480,53 +1479,6 @@ def _check_cross_asset_agent_guards(
         ))
 
 
-def _check_cascading_modifiers(
-    plan: dict, agent_outputs: dict[str, Any], result: CheckResult,
-) -> None:
-    """Validate stacked position-size modifiers from Flow × CrossAsset agents.
-
-    Agent prompt source:
-    - CrossAsset SM1: floor 0.3×; if combined < 0.3× → set to 0.0 (skip trade)
-    - Synthesizer HE2: (flow.position_size_modifier × cross_asset.effective_size_modifier) < 0.3 → SKIP
-    """
-    sym = plan.get("underlying", "UNKNOWN")
-
-    flow_data = _agent_sym(agent_outputs, "flow", sym)
-    cross_data = _agent_sym(agent_outputs, "cross_asset", sym)
-
-    flow_mod = flow_data.get("position_size_modifier") if flow_data else None
-    cross_mod = cross_data.get("effective_size_modifier") if cross_data else None
-
-    try:
-        flow_val = float(flow_mod) if flow_mod is not None else 1.0
-        cross_val = float(cross_mod) if cross_mod is not None else 1.0
-        product = flow_val * cross_val
-    except (TypeError, ValueError):
-        return
-
-    if product >= 0.3:
-        return
-
-    if product < 0.1:
-        result.issues.append(RuleIssue(
-            severity="error", category="risk_breach", symbol=sym,
-            rule="cascading_size_modifiers",
-            description=(
-                f"Stacked modifiers (flow={flow_val:.2f}, cross_asset={cross_val:.2f}, "
-                f"product={product:.2f}) reduce position to near-zero — skip trade"
-            ),
-        ))
-    else:
-        result.issues.append(RuleIssue(
-            severity="error", category="risk_breach", symbol=sym,
-            rule="cascading_size_modifiers",
-            description=(
-                f"Stacked modifiers (flow={flow_val:.2f}, cross_asset={cross_val:.2f}, "
-                f"product={product:.2f}) below 0.30 floor — skip trade"
-            ),
-        ))
-
-
 # ---------------------------------------------------------------------------
 # Agent-output checks: Chain hard block (Chain H1, Synthesizer HE1)
 # ---------------------------------------------------------------------------
@@ -1558,66 +1510,6 @@ def _check_chain_hard_block(
             rule="chain_hard_block",
             description=(
                 f"Chain agent flagged {reason} — symbol must be excluded from plans"
-            ),
-        ))
-
-
-# ---------------------------------------------------------------------------
-# Agent-output checks: Master override (CrossAsset SM2, Synthesizer CW3)
-# ---------------------------------------------------------------------------
-
-
-def _check_master_override(
-    plan: dict, agent_outputs: dict[str, Any], result: CheckResult,
-) -> None:
-    """Enforce CrossAsset master_override sizing constraint.
-
-    Agent prompt source:
-    - CrossAsset SM2: effective_size_modifier is MASTER OVERRIDE
-    - Synthesizer CW3: master_override=true → max_position_size ≤ effective_size_modifier
-    - Critic: master_override + effective_size_modifier < 0.3 → symbol should be skipped
-    """
-    sym = plan.get("underlying", "UNKNOWN")
-    cross_data = _agent_sym(agent_outputs, "cross_asset", sym)
-    if cross_data is None:
-        return
-
-    master = cross_data.get("master_override", False)
-    if not master:
-        return
-
-    eff_mod = cross_data.get("effective_size_modifier")
-    if eff_mod is None:
-        return
-
-    try:
-        eff_val = float(eff_mod)
-    except (TypeError, ValueError):
-        return
-
-    if eff_val < 0.3:
-        result.issues.append(RuleIssue(
-            severity="error",
-            category="risk_breach",
-            symbol=sym,
-            rule="master_override_skip",
-            description=(
-                f"CrossAsset master_override=true with effective_size_modifier="
-                f"{eff_val:.2f} < 0.30 — symbol should be skipped"
-            ),
-        ))
-        return
-
-    max_pos = plan.get("max_position_size")
-    if isinstance(max_pos, (int, float)) and max_pos > eff_val:
-        result.issues.append(RuleIssue(
-            severity="error",
-            category="risk_breach",
-            symbol=sym,
-            rule="master_override_exceeded",
-            description=(
-                f"CrossAsset master_override=true but max_position_size="
-                f"{max_pos:.2f} exceeds effective_size_modifier={eff_val:.2f}"
             ),
         ))
 
@@ -1796,38 +1688,6 @@ def _check_flow_trade_gate(
         agent_name="flow",
         label="Flow",
     )
-
-
-def _check_flow_position_size_modifier_cap(
-    plan: dict, agent_outputs: dict[str, Any], result: CheckResult,
-) -> None:
-    """Flow hard caps must constrain the synthesized max_position_size directly."""
-    sym = plan.get("underlying", "UNKNOWN")
-    flow_data = _agent_sym(agent_outputs, "flow", sym)
-    if flow_data is None:
-        return
-
-    flow_mod = flow_data.get("position_size_modifier")
-    max_pos = plan.get("max_position_size")
-    try:
-        flow_val = float(flow_mod) if flow_mod is not None else None
-    except (TypeError, ValueError):
-        flow_val = None
-
-    if flow_val is None or not isinstance(max_pos, (int, float)):
-        return
-
-    if 0.0 <= flow_val <= 1.0 and max_pos > flow_val:
-        result.issues.append(RuleIssue(
-            severity="error",
-            category="risk_breach",
-            symbol=sym,
-            rule="flow_position_size_modifier_cap",
-            description=(
-                f"Flow position_size_modifier={flow_val:.2f} requires max_position_size "
-                f"<= {flow_val:.2f}, but plan uses {max_pos:.2f}"
-            ),
-        ))
 
 
 def _check_chain_trade_gate(

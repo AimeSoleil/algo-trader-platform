@@ -734,6 +734,8 @@ def test_synthesizer_and_critic_prompts_align_with_manual_trader_risk_contract()
     from services.analysis_service.app.llm.agents.synthesizer_agent import _SYNTHESIZER_SYSTEM_PROMPT
 
     assert "Trader decides max loss and sizing manually" in _SYNTHESIZER_SYSTEM_PROMPT
+    assert "do NOT EXCLUDE solely because effective_size_modifier is below a size floor" in _SYNTHESIZER_SYSTEM_PROMPT
+    assert "advisory-only in manual-trader mode" in _SYNTHESIZER_SYSTEM_PROMPT
     assert "Do NOT emit max_position_size, stop_loss_amount, take_profit_amount, or max_loss_per_trade" in _SYNTHESIZER_SYSTEM_PROMPT
     assert "Do NOT reject a plan solely because stop_loss_amount, take_profit_amount, max_loss_per_trade, or max_position_size is missing" in critic_prompt
     assert "confidence > 0.5 → severity=error" in critic_prompt
