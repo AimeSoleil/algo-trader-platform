@@ -33,6 +33,7 @@ _SOFT_TRADE_BLOCK_REASONS = frozenset({
     "high_false_breakout_risk",
     "extreme_option_activity_unconfirmed",
     "no_vol_edge",
+    "single_indicator_only",
 })
 
 _SOFT_TRADE_BLOCK_REASON_PREFIXES = (

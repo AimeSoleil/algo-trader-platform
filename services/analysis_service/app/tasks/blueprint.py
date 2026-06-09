@@ -166,12 +166,164 @@ def _symbol_trade_gate_summary(
     return {"symbol": symbol_upper, **summary}
 
 
+def _agent_symbol_analysis(
+    agent_outputs: dict[str, object] | None,
+    agent_name: str,
+    symbol: str,
+) -> dict[str, object] | None:
+    if not isinstance(agent_outputs, dict):
+        return None
+
+    agent_output = agent_outputs.get(agent_name)
+    if not isinstance(agent_output, dict):
+        return None
+
+    symbols = agent_output.get("symbols")
+    if not isinstance(symbols, list):
+        return None
+
+    symbol_upper = str(symbol).strip().upper()
+    return next(
+        (
+            item for item in symbols
+            if isinstance(item, dict) and str(item.get("symbol") or "").strip().upper() == symbol_upper
+        ),
+        None,
+    )
+
+
+def _preview_symbols(symbols: list[str], *, limit: int = 3) -> str:
+    cleaned: list[str] = []
+    seen: set[str] = set()
+    for symbol in symbols:
+        token = str(symbol).strip().upper()
+        if not token or token in seen:
+            continue
+        seen.add(token)
+        cleaned.append(token)
+
+    if not cleaned:
+        return "the analyzed symbols"
+    if len(cleaned) == 1:
+        return cleaned[0]
+    preview = ", ".join(cleaned[:limit])
+    remaining = len(cleaned) - limit
+    return f"{preview}, +{remaining} more" if remaining > 0 else preview
+
+
+def _refine_empty_market_analysis(
+    market_analysis: str,
+    market_regime: str,
+    signal_map: dict[str, dict[str, object]],
+    agent_outputs: dict[str, object] | None,
+) -> str:
+    if not isinstance(agent_outputs, dict) or not signal_map:
+        return market_analysis
+
+    trade_symbols = sorted({str(symbol).strip().upper() for symbol in signal_map.keys() if str(symbol).strip()})
+    if not trade_symbols:
+        return market_analysis
+
+    false_breakout_symbols: list[str] = []
+    simple_structure_symbols: list[str] = []
+    executability_symbols: list[str] = []
+
+    for symbol in trade_symbols:
+        flow_data = _agent_symbol_analysis(agent_outputs, "flow", symbol) or {}
+        flow_blocked_reasons = {
+            str(reason).strip().lower()
+            for reason in flow_data.get("blocked_reasons", [])
+            if str(reason).strip()
+        }
+        if flow_data.get("false_breakout_risk") == "high" or "high_false_breakout_risk" in flow_blocked_reasons:
+            false_breakout_symbols.append(symbol)
+
+        if any(
+            (_agent_symbol_analysis(agent_outputs, agent_name, symbol) or {}).get("simple_structures_only")
+            for agent_name in ("trend", "volatility", "flow", "chain", "spread")
+        ):
+            simple_structure_symbols.append(symbol)
+
+        chain_data = _agent_symbol_analysis(agent_outputs, "chain", symbol) or {}
+        chain_blocked_reasons = {
+            str(reason).strip().lower()
+            for reason in chain_data.get("blocked_reasons", [])
+            if str(reason).strip()
+        }
+        spread_data = _agent_symbol_analysis(agent_outputs, "spread", symbol) or {}
+        spread_blocked_reasons = {
+            str(reason).strip().lower()
+            for reason in spread_data.get("blocked_reasons", [])
+            if str(reason).strip()
+        }
+
+        if (
+            chain_data.get("hard_block")
+            or chain_data.get("trade_allowed") is False
+            or chain_data.get("liquidity_ok") is False
+            or str(chain_data.get("liquidity_tier") or "").upper() in {"L4", "L5"}
+            or "insufficient_leg_liquidity" in chain_blocked_reasons
+            or "hard_block_spread" in chain_blocked_reasons
+            or spread_data.get("trade_allowed") is False
+            or str(spread_data.get("liquidity_status") or "").lower() in {"wide", "illiquid"}
+            or "illiquid_spread_proxy" in spread_blocked_reasons
+        ):
+            executability_symbols.append(symbol)
+
+    if not (false_breakout_symbols or simple_structure_symbols or executability_symbols):
+        return market_analysis
+
+    parts: list[str] = []
+    cross_asset_output = agent_outputs.get("cross_asset")
+    vix_summary = str(cross_asset_output.get("vix_summary") or "").strip() if isinstance(cross_asset_output, dict) else ""
+    market_regime_text = f"Market regime remains {str(market_regime or 'neutral').strip() or 'neutral'}."
+    parts.append(f"{market_regime_text} {vix_summary}".strip() if vix_summary else market_regime_text)
+
+    if false_breakout_symbols:
+        parts.append(
+            f"Directional entries were filtered by high false breakout risk for {_preview_symbols(false_breakout_symbols)}."
+        )
+
+    if simple_structure_symbols or executability_symbols:
+        sentence_parts: list[str] = []
+        if simple_structure_symbols:
+            sentence_parts.append(
+                f"Configured simple-structure gates remained active for {_preview_symbols(simple_structure_symbols)}"
+            )
+        if executability_symbols:
+            sentence_parts.append(
+                f"Chain/Spread executability did not confirm a qualifying structure for {_preview_symbols(executability_symbols)} after liquidity, spread, and DTE checks"
+            )
+        parts.append("; ".join(sentence_parts) + ".")
+
+    return " ".join(parts)
+
+
 def _build_validation_trade_gate_summary(
     agent_outputs: dict[str, object] | None,
     pruned_symbols: list[str],
 ) -> dict[str, object]:
     symbol_summaries: list[dict[str, object]] = []
     for symbol in pruned_symbols:
+        summary = _symbol_trade_gate_summary(agent_outputs, symbol)
+        if summary is not None:
+            symbol_summaries.append(summary)
+    aggregate = aggregate_trade_gate_summaries(symbol_summaries)
+    aggregate["trade_gate_taxonomy"] = trade_gate_taxonomy_metadata()
+    return aggregate
+
+
+def _build_trade_gate_summary_for_symbols(
+    agent_outputs: dict[str, object] | None,
+    symbols: list[str],
+) -> dict[str, object]:
+    symbol_summaries: list[dict[str, object]] = []
+    seen: set[str] = set()
+    for symbol in symbols:
+        symbol_upper = str(symbol).strip().upper()
+        if not symbol_upper or symbol_upper in seen:
+            continue
+        seen.add(symbol_upper)
         summary = _symbol_trade_gate_summary(agent_outputs, symbol)
         if summary is not None:
             symbol_summaries.append(summary)
@@ -228,7 +380,14 @@ def _apply_deterministic_validation(
     summary["pruned_symbols"] = pruned_symbols
     summary["pruned_plan_count"] = original_plan_count - len(blueprint.symbol_plans)
     summary["pruned_symbol_errors"] = pruned_symbol_errors
-    summary["trade_gate_summary"] = _build_validation_trade_gate_summary(agent_outputs, validation_pruned_symbols)
+    validation_trade_gate_summary = _build_validation_trade_gate_summary(agent_outputs, validation_pruned_symbols)
+    pre_selection_symbols = sorted({str(symbol).strip().upper() for symbol in signal_map.keys() if str(symbol).strip()})
+    pre_selection_trade_gate_summary = _build_trade_gate_summary_for_symbols(agent_outputs, pre_selection_symbols)
+    summary["pre_selection_trade_gate_summary"] = pre_selection_trade_gate_summary
+    if validation_trade_gate_summary.get("symbols") or blueprint.symbol_plans:
+        summary["trade_gate_summary"] = validation_trade_gate_summary
+    else:
+        summary["trade_gate_summary"] = pre_selection_trade_gate_summary
     summary["empty_after_pruning"] = len(blueprint.symbol_plans) == 0
     summary["passed"] = bool(summary["passed"] and blueprint.symbol_plans)
     return blueprint, summary
@@ -425,7 +584,15 @@ def _apply_and_log_deterministic_validation(
     blueprint, summary = _apply_deterministic_validation(blueprint, signal_map, agent_outputs)
     ctx = dict(blueprint.reasoning_context or {})
     ctx["deterministic_validation"] = summary
-    blueprint = blueprint.model_copy(update={"reasoning_context": ctx})
+    update_payload: dict[str, object] = {"reasoning_context": ctx}
+    if not blueprint.symbol_plans:
+        update_payload["market_analysis"] = _refine_empty_market_analysis(
+            blueprint.market_analysis,
+            blueprint.market_regime,
+            signal_map,
+            agent_outputs,
+        )
+    blueprint = blueprint.model_copy(update=update_payload)
 
     if summary["error_count"] or summary["warning_count"] or summary["pruned_symbols"]:
         logger.warning(

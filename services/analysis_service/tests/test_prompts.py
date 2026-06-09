@@ -460,11 +460,26 @@ def test_chain_prompt_uses_execution_candidates_and_treats_missing_leg_data_as_u
     assert "option_chain.liquidity_profile" in chain_prompt
     assert "preferred explicit executability evidence for multi-leg structures" in chain_prompt
     assert "Upstream explicit per-leg liquidity floor contract for this symbol" in chain_prompt
+    assert 'H6. Single indicator only (excl. thera): trade_allowed=true, confidence_cap=0.35, blocked_reasons=["single_indicator_only"]' in chain_prompt
     assert "Missing leg-level OI/volume or missing execution_candidates by itself is NOT enough for a hard veto" in chain_prompt
     assert "baseline Vol<20 OR explicit Exit Strike OI<100, tightened by option_chain.liquidity_profile.min_leg_volume / min_exit_strike_open_interest when present" in chain_prompt
     assert "use its min_leg_volume and min_exit_strike_open_interest as the preferred upstream resolved floors for this symbol, but do NOT relax below the baseline thresholds above" in chain_prompt
     assert "Do NOT infer ticker-specific liquidity tiers from symbol names alone" in chain_prompt
     assert "Do NOT hard block solely because verification data is missing" in chain_prompt
+
+
+def test_simple_structures_only_prompt_contract_matches_precision_first_scope():
+    from services.analysis_service.app.llm.agents.critic_agent import _CRITIC_SYSTEM_PROMPT as critic_prompt
+    from services.analysis_service.app.llm.agents.spread_agent import _SYSTEM_PROMPT as spread_prompt
+    from services.analysis_service.app.llm.agents.synthesizer_agent import _SYNTHESIZER_SYSTEM_PROMPT
+
+    expected = "configured precision-first simple structure scope"
+    assert expected in _SYNTHESIZER_SYSTEM_PROMPT
+    assert expected in critic_prompt
+    assert expected in spread_prompt
+    assert "HE7. If ANY agent sets simple_structures_only=true → ONLY allow single_leg or vertical_spread." not in _SYNTHESIZER_SYSTEM_PROMPT
+    assert "SE6. If ANY agent sets simple_structures_only=true → ONLY single_leg or vertical_spread allowed." not in critic_prompt
+    assert "simple_structures_only=true means only single_leg or vertical_spread remain allowed while trade_allowed stays true." not in spread_prompt
 
 
 def test_flow_prompt_keeps_false_breakout_as_directional_caution_not_symbol_veto():
@@ -641,6 +656,10 @@ def test_synthesizer_prompt_distinguishes_option_activity_from_executability_in_
     assert 'Distinguish options participation from executability' in _SYNTHESIZER_SYSTEM_PROMPT
     assert '"extreme option activity" refers to unusual flow/participation, not option-chain liquidity by itself' in _SYNTHESIZER_SYSTEM_PROMPT
     assert 'When no symbols survive hard exclusions, summarize the market regime first, then the dominant gating reason' in _SYNTHESIZER_SYSTEM_PROMPT
+    assert 'separate directional rejection, simple-structure gating, and Chain/Spread executability into distinct clauses or sentences' in _SYNTHESIZER_SYSTEM_PROMPT
+    assert 'Flow false_breakout_risk as a directional filter' in _SYNTHESIZER_SYSTEM_PROMPT
+    assert 'simple_structures_only as a structure-scope filter' in _SYNTHESIZER_SYSTEM_PROMPT
+    assert 'Chain/Spread liquidity or DTE checks as executability filters' in _SYNTHESIZER_SYSTEM_PROMPT
 
 
 def test_synthesizer_system_prompt_allows_iron_condor_for_clean_range_bound_setups():

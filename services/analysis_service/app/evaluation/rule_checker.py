@@ -918,7 +918,7 @@ def _is_execution_candidate_allowed(
     slope = _signal_term_structure_slope(signal)
 
     if _has_simple_structures_only_gate(agent_outputs, symbol):
-        return strategy_type == "vertical_spread"
+        return strategy_type in _configured_simple_strategy_types()
 
     if isinstance(earnings_days, int):
         if earnings_days <= 1:

@@ -736,7 +736,7 @@ class TestSpreadExecutionCandidateConflicts:
         )
         assert not any(i.rule == "spread_execution_candidate_conflict" for i in result.issues)
 
-    def test_no_conflict_when_simple_structure_only_blocks_complex_alternative(self):
+    def test_conflict_when_simple_structure_only_still_allows_configured_calendar_alternative(self):
         signals = {
             "AAPL": {
                 "close_price": 150.0,
@@ -773,7 +773,7 @@ class TestSpreadExecutionCandidateConflicts:
             signal_features=signals,
             agent_outputs=agent_outputs,
         )
-        assert not any(i.rule == "spread_execution_candidate_conflict" for i in result.issues)
+        assert any(i.rule == "spread_execution_candidate_conflict" and i.severity == "error" for i in result.issues)
 
     def test_missing_execution_candidates_downgrades_to_warning(self):
         signals = {
@@ -1310,6 +1310,34 @@ class TestStructuredAgentTradeGates:
         )
         assert any(i.rule == "flow_confidence_cap" and i.severity == "error" for i in result.issues)
 
+    def test_chain_single_indicator_trade_allowed_false_is_soft_warning(self):
+        ao = _agent_outputs(
+            chain=[{
+                "symbol": "AAPL",
+                "trade_allowed": False,
+                "blocked_reasons": ["single_indicator_only"],
+            }],
+        )
+        result = check_blueprint(_blueprint(), agent_outputs=ao)
+        assert any(i.rule == "chain_trade_block_soft" and i.severity == "warning" for i in result.issues)
+        assert not any(i.rule == "chain_trade_blocked" and i.severity == "error" for i in result.issues)
+
+    def test_single_indicator_only_counts_toward_soft_trade_block_consensus(self):
+        ao = _agent_outputs(
+            chain=[{
+                "symbol": "AAPL",
+                "trade_allowed": False,
+                "blocked_reasons": ["single_indicator_only"],
+            }],
+            flow=[{
+                "symbol": "AAPL",
+                "trade_allowed": False,
+                "blocked_reasons": ["conflicting_flow"],
+            }],
+        )
+        result = check_blueprint(_blueprint(), agent_outputs=ao)
+        assert any(i.rule == "multi_agent_soft_trade_block" and i.severity == "error" for i in result.issues)
+
     def test_chain_trade_allowed_false_error(self):
         ao = _agent_outputs(
             chain=[{
@@ -1320,6 +1348,34 @@ class TestStructuredAgentTradeGates:
         )
         result = check_blueprint(_blueprint(), agent_outputs=ao)
         assert any(i.rule == "chain_trade_blocked" and i.severity == "error" for i in result.issues)
+
+    def test_simple_structures_only_execution_candidate_allows_configured_precision_first_strategy(self, monkeypatch):
+        from services.analysis_service.app.evaluation.rule_checker import _is_execution_candidate_allowed
+
+        settings = SimpleNamespace(
+            analysis_service=SimpleNamespace(
+                llm=SimpleNamespace(
+                    precision_first=SimpleNamespace(
+                        enabled=True,
+                        allowed_strategy_types=["single_leg", "vertical_spread", "iron_condor", "calendar_spread"],
+                    )
+                )
+            )
+        )
+        monkeypatch.setattr(
+            "services.analysis_service.app.evaluation.rule_checker.get_settings",
+            lambda: settings,
+        )
+
+        signal = {
+            "option_indicators": {"term_structure_slope": 0.05},
+            "cross_asset_indicators": {"earnings_proximity_days": 10},
+        }
+        agent_outputs = _agent_outputs(
+            flow=[{"symbol": "AAPL", "simple_structures_only": True}],
+        )
+
+        assert _is_execution_candidate_allowed("iron_condor", signal, agent_outputs, "AAPL") is True
 
     def test_chain_simple_structures_only_error(self):
         ao = _agent_outputs(

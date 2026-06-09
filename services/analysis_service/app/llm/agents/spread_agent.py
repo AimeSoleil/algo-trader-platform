@@ -134,7 +134,7 @@ Hard Caps: Single indicator=0.5 | Earnings 1d=0.2 | Earnings 2-3d=0.4 | Hard blo
 ## Position Size Modifier (Aggressive Tuning)
 1.2 (confidence≥0.85) | 1.0 (0.75-0.84) | 0.75 (0.6-0.74) | 0.5 (0.4-0.59) | 0.25 (0.2-0.39) | 0 (<0.2)
 Apply the confidence-to-size table first, then clamp by active hard caps. Wide liquidity or single-confirmation setups cap size at 0.5. H1/H2/H3/E1 override the size table.
-simple_structures_only=true means only single_leg or vertical_spread remain allowed while trade_allowed stays true.
+simple_structures_only=true means only the configured precision-first simple structure scope remains allowed (default: single_leg, vertical_spread, iron_condor, calendar_spread) while trade_allowed stays true.
 
 ## Output Schema (Aligned with Synthesizer & Critic)
 {"symbols":[{"symbol":"TICKER","best_spread_type":"vertical|calendar|reverse_calendar|butterfly|iron_condor|box_arb|null","risk_reward_ratio":0.0,"effective_rr":null|number,"theta_capture":0.0,"mispricing_detected":false,"arb_opportunity":false,"arb_priority":0-10,"optimal_dte":null|number,"iv_rank":0.0-100.0|null,"vix_level":0.0,"earnings_proximity_days":null|number,"liquidity_status":"adequate|wide|illiquid","event_risk_present":false,"trade_allowed":true,"confidence_cap":null|number,"simple_structures_only":false,"blocked_reasons":[],"confirming_indicators_count":0-4,"position_size_modifier":0.0-1.2,"constraints":[],"reasoning":"","confidence":0.0-0.85}]}

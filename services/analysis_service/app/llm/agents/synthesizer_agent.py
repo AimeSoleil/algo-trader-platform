@@ -820,7 +820,7 @@ HE3. Do NOT exclude solely because blocked_reasons contains "extreme_option_acti
 HE4. Reject vertical_spread only when Spread.effective_rr is explicitly available and <0.7, or when Spread.risk_reward_ratio <0.7. Do NOT exclude iron_condor, butterfly, calendar_spread, or arbitrage setups solely because Spread.effective_rr is null.
 HE5. Cross-Asset.master_override=true AND Cross-Asset.effective_size_modifier < MIN_ACCEPTABLE_POSITION_SIZE → EXCLUDE.
 HE6. Cannot justify final confidence ≥ MIN_ACCEPTABLE_CONFIDENCE → EXCLUDE.
-HE7. If ANY agent sets simple_structures_only=true → ONLY allow single_leg or vertical_spread. No multi-leg structures, UNLESS GP1 is triggered and its gamma-pin exception conditions are fully satisfied.
+HE7. If ANY agent sets simple_structures_only=true → ONLY allow the configured precision-first simple structure scope (default: single_leg, vertical_spread, iron_condor, calendar_spread). No structures outside that scope, UNLESS GP1 is triggered and its gamma-pin exception conditions are fully satisfied.
 
 ────────────────────────────────────────────────────────
 STRUCTURE SELECTION & LEG MATCHING (Priority 2)
@@ -927,6 +927,8 @@ RISK MANAGEMENT, ENTRY TIMING & DTE (Priority 7)
 - Distinguish options participation from executability: "extreme option activity" refers to unusual flow/participation, not option-chain liquidity by itself.
 - If Chain/Spread gates fail, say the required candidate legs failed spread/OI/executability filters even when participation was elevated.
 - When no symbols survive hard exclusions, summarize the market regime first, then the dominant gating reason; do not compress them into a contradictory sentence.
+- When no symbol plan survives, separate directional rejection, simple-structure gating, and Chain/Spread executability into distinct clauses or sentences when multiple causes are active.
+- Explicitly call out Flow false_breakout_risk as a directional filter, simple_structures_only as a structure-scope filter, and Chain/Spread liquidity or DTE checks as executability filters rather than collapsing them into one generic "no qualifying structures" sentence.
 
 ────────────────────────────────────────────────────────
 STRICT OUTPUT SCHEMA (100% Machine-Readable)

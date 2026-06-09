@@ -114,7 +114,7 @@ H3. earnings_proximity_days ≤1 (Imminent Event):
 H4. earnings_proximity_days = 2‑3 (Pre-Earnings IV Peak):
     event_risk_present=true, contrarian_PCR_invalid=true, confidence_cap=0.35,
   simple_structures_only=true
-H6. Single indicator only (excl. thera): confidence_cap=0.35, blocked_reasons=["single_indicator_only"]
+H6. Single indicator only (excl. thera): trade_allowed=true, confidence_cap=0.35, blocked_reasons=["single_indicator_only"]
 H7. Conflicting signals (PCR vs flow) with no delta resolution: institutional_flow=neutral, confidence_cap=0.45, blocked_reasons=["conflicting_chain_signals"]
 
 ## Liquidity Rules (Aggressive)

@@ -42,6 +42,7 @@ from services.analysis_service.app.llm.agents.synthesizer_agent import Synthesiz
 from services.analysis_service.app.llm.agents.trend_agent import TrendAgent
 from services.analysis_service.app.llm.agents.volatility_agent import VolatilityAgent
 from services.analysis_service.app.llm.prompts import _serialize_one_signal
+from services.analysis_service.app.trade_gate_semantics import classify_reason_token
 
 logger = get_logger("agent_orchestrator")
 
@@ -823,6 +824,8 @@ class AgentOrchestrator:
             agents_failed=agents_failed,
             availability=availability,
         )
+
+        agent_outputs = self._normalize_specialist_outputs(agent_outputs, serialized)
 
         # Compact copy for synthesizer/critic prompts (strip reasoning, trim benchmarks)
         trade_sym_set = set(s.upper() for s in trade_symbols) if trade_symbols else set()
@@ -1848,6 +1851,135 @@ class AgentOrchestrator:
                     "price": {"close_price": sf.close_price},
                 })
         return results
+
+    def _normalize_specialist_outputs(
+        self,
+        agent_outputs: dict[str, Any],
+        serialized_signals: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        if not isinstance(agent_outputs, dict):
+            return agent_outputs
+
+        signal_by_symbol = {
+            str(item.get("symbol") or "").strip().upper(): item
+            for item in serialized_signals
+            if isinstance(item, dict) and str(item.get("symbol") or "").strip()
+        }
+
+        chain_output = agent_outputs.get("chain")
+        if not isinstance(chain_output, dict):
+            return agent_outputs
+
+        symbol_entries = chain_output.get("symbols")
+        if not isinstance(symbol_entries, list):
+            return agent_outputs
+
+        normalized_symbols: list[Any] = []
+        changed = False
+        for symbol_analysis in symbol_entries:
+            if not isinstance(symbol_analysis, dict):
+                normalized_symbols.append(symbol_analysis)
+                continue
+
+            symbol = str(symbol_analysis.get("symbol") or "").strip().upper()
+            normalized = self._normalize_chain_symbol_analysis(
+                symbol_analysis,
+                signal_by_symbol.get(symbol),
+            )
+            changed = changed or normalized != symbol_analysis
+            normalized_symbols.append(normalized)
+
+        if not changed:
+            return agent_outputs
+
+        normalized_chain_output = dict(chain_output)
+        normalized_chain_output["symbols"] = normalized_symbols
+        normalized_outputs = dict(agent_outputs)
+        normalized_outputs["chain"] = normalized_chain_output
+        return normalized_outputs
+
+    def _normalize_chain_symbol_analysis(
+        self,
+        symbol_analysis: dict[str, Any],
+        signal: dict[str, Any] | None,
+    ) -> dict[str, Any]:
+        normalized = dict(symbol_analysis)
+        blocked_reasons = [
+            str(reason).strip().lower()
+            for reason in normalized.get("blocked_reasons", [])
+            if str(reason).strip()
+        ]
+        if blocked_reasons:
+            normalized["blocked_reasons"] = blocked_reasons
+
+        if (
+            normalized.get("trade_allowed") is False
+            and blocked_reasons
+            and all(classify_reason_token(reason) == "soft" for reason in blocked_reasons)
+        ):
+            normalized["trade_allowed"] = True
+
+        if not isinstance(signal, dict):
+            return normalized
+
+        if normalized.get("hard_block"):
+            return normalized
+
+        liquidity_tier = str(normalized.get("liquidity_tier") or "").upper()
+        if liquidity_tier == "L5":
+            return normalized
+
+        supportive_candidates = self._supportive_execution_candidates(signal)
+        if not supportive_candidates:
+            return normalized
+
+        if liquidity_tier in {"L1", "L2", "L3", "L4"}:
+            normalized["liquidity_ok"] = True
+
+        if "insufficient_leg_liquidity" in blocked_reasons:
+            blocked_reasons = [reason for reason in blocked_reasons if reason != "insufficient_leg_liquidity"]
+            normalized["blocked_reasons"] = blocked_reasons
+            if normalized.get("trade_allowed") is False and (
+                not blocked_reasons or all(classify_reason_token(reason) == "soft" for reason in blocked_reasons)
+            ):
+                normalized["trade_allowed"] = True
+
+        return normalized
+
+    def _supportive_execution_candidates(self, signal: dict[str, Any]) -> list[dict[str, Any]]:
+        option_chain = signal.get("option_chain", {})
+        if not isinstance(option_chain, dict):
+            option_chain = {}
+        liquidity_profile = option_chain.get("liquidity_profile", {})
+        if not isinstance(liquidity_profile, dict):
+            liquidity_profile = {}
+        max_worst_leg_ratio = liquidity_profile.get("max_worst_leg_bid_ask_spread_ratio", 0.20)
+        try:
+            ratio_cap = float(max_worst_leg_ratio)
+        except (TypeError, ValueError):
+            ratio_cap = 0.20
+
+        option_spreads = signal.get("option_spreads", {})
+        if not isinstance(option_spreads, dict):
+            return []
+        execution_candidates = option_spreads.get("execution_candidates", {})
+        if not isinstance(execution_candidates, dict):
+            return []
+
+        supportive: list[dict[str, Any]] = []
+        for candidate in execution_candidates.values():
+            if not isinstance(candidate, dict):
+                continue
+            if candidate.get("candidate_available") is not True:
+                continue
+            worst_ratio = candidate.get("worst_leg_bid_ask_spread_ratio")
+            try:
+                worst_ratio_value = float(worst_ratio)
+            except (TypeError, ValueError):
+                continue
+            if worst_ratio_value <= ratio_cap:
+                supportive.append(candidate)
+        return supportive
 
     async def _run_specialists(
         self,

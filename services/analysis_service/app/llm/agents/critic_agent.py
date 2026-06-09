@@ -282,7 +282,7 @@ SE5. Direction ↔ Structure Coherence:
   - Bullish direction → net delta proxy > 0 (buy_call=+1, sell_call=-1, buy_put=-1, sell_put=+1)
   - Bearish direction → net delta proxy < 0
   - Neutral direction → only iron_condor, iron_butterfly, straddle, strangle, butterfly, calendar allowed
-SE6. If ANY agent sets simple_structures_only=true → ONLY single_leg or vertical_spread allowed. Any other structure = error, EXCEPT the GP1 strong-pin exception above.
+SE6. If ANY agent sets simple_structures_only=true → ONLY the configured precision-first simple structure scope is allowed (default: single_leg, vertical_spread, iron_condor, calendar_spread). Any structure outside that scope = error, EXCEPT the GP1 strong-pin exception above.
 
 ### 3. Gamma & Pin Risk Violations (Severity: ERROR)
 GP1. Chain.gamma_pin_active=true AND Chain.pin_strength>0.7 → ONLY neutral butterfly or neutral iron_condor allowed (requires liquidity_tier in ["L1","L2"]). Any directional strategy = error.

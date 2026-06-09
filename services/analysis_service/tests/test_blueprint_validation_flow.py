@@ -10,6 +10,7 @@ from services.analysis_service.app.tasks.blueprint import (
     _apply_and_log_deterministic_validation,
     _format_pre_synthesis_summary_text,
     _is_blueprint_soft_blocked,
+    _refine_empty_market_analysis,
     _resolve_validation_agent_outputs,
     _summarize_pre_synthesis_outcome,
 )
@@ -86,6 +87,25 @@ def test_apply_deterministic_validation_builds_trade_gate_summary_for_pruned_sym
     assert trade_gate_summary["hard_trade_blocked_reasons"] == ["earnings_imminent"]
     assert trade_gate_summary["symbols"][0]["symbol"] == "MSFT"
     assert trade_gate_summary["symbols"][0]["trade_gate_status"] == "hard_blocked"
+
+
+def test_apply_deterministic_validation_uses_pre_selection_trade_gate_summary_when_blueprint_starts_empty():
+    empty_blueprint = _make_blueprint(["MSFT"]).model_copy(update={"symbol_plans": []})
+
+    blueprint, summary = _apply_deterministic_validation(
+        empty_blueprint,
+        {"MSFT": _signal_map()["MSFT"]},
+        agent_outputs={
+            "chain": {"symbols": [{"symbol": "MSFT", "trade_allowed": False, "blocked_reasons": ["single_indicator_only"]}]},
+            "flow": {"symbols": [{"symbol": "MSFT", "trade_allowed": False, "blocked_reasons": ["conflicting_flow"]}]},
+        },
+    )
+
+    assert blueprint.symbol_plans == []
+    assert summary["trade_gate_summary"]["soft_consensus_blocked_symbol_count"] == 1
+    assert summary["trade_gate_summary"]["symbols"][0]["symbol"] == "MSFT"
+    assert summary["trade_gate_summary"]["symbols"][0]["trade_gate_status"] == "soft_consensus_blocked"
+    assert summary["pre_selection_trade_gate_summary"]["soft_consensus_blocked_symbol_count"] == 1
 
 
 def test_resolve_validation_agent_outputs_aggregates_chunk_contexts():
@@ -426,3 +446,140 @@ def test_pre_synthesis_summary_text_appends_trade_gate_rollup():
         "Pre-synthesis analysis priority: AAPL, MSFT. "
         "Trade-gate summary: hard TSLA[earnings_imminent]; soft-consensus NVDA[counter_trend_*, conflicting_*]."
     )
+
+
+def test_refine_empty_market_analysis_separates_false_breakout_simple_structures_and_executability():
+    text = _refine_empty_market_analysis(
+        market_analysis="TSLA shows neutral consensus and no qualifying structures.",
+        market_regime="neutral",
+        signal_map={"TSLA": {"symbol": "TSLA"}},
+        agent_outputs={
+            "flow": {
+                "symbols": [
+                    {
+                        "symbol": "TSLA",
+                        "false_breakout_risk": "high",
+                        "blocked_reasons": ["high_false_breakout_risk"],
+                    }
+                ]
+            },
+            "chain": {
+                "symbols": [
+                    {
+                        "symbol": "TSLA",
+                        "simple_structures_only": True,
+                        "liquidity_ok": False,
+                        "liquidity_tier": "L4",
+                    }
+                ]
+            },
+            "spread": {
+                "symbols": [
+                    {
+                        "symbol": "TSLA",
+                        "liquidity_status": "wide",
+                    }
+                ]
+            },
+            "cross_asset": {
+                "vix_summary": "VIX at 18.92, normal environment.",
+                "symbols": [
+                    {
+                        "symbol": "TSLA",
+                        "vix_level": 18.92,
+                        "vix_environment": "normal",
+                    }
+                ],
+            },
+        },
+    )
+
+    assert "Market regime remains neutral. VIX at 18.92, normal environment." in text
+    assert "Directional entries were filtered by high false breakout risk for TSLA." in text
+    assert "Configured simple-structure gates remained active for TSLA" in text
+    assert "Chain/Spread executability did not confirm a qualifying structure for TSLA after liquidity, spread, and DTE checks." in text
+
+
+def test_apply_and_log_deterministic_validation_refines_empty_market_analysis(monkeypatch):
+    captured: dict[str, object] = {}
+
+    class _FakeSignal:
+        def __init__(self, symbol: str):
+            self.symbol = symbol
+
+        def model_dump(self, mode: str = "json") -> dict[str, object]:
+            return {"symbol": self.symbol}
+
+    def _fake_apply(blueprint, signal_map, agent_outputs):
+        captured["signal_map"] = signal_map
+        captured["agent_outputs"] = agent_outputs
+        return blueprint.model_copy(update={"symbol_plans": []}), {
+            "passed": False,
+            "error_count": 0,
+            "warning_count": 0,
+            "issues": [],
+            "initial_error_count": 0,
+            "initial_warning_count": 0,
+            "precision_first_enabled": True,
+            "allowed_strategy_types": ["single_leg", "vertical_spread", "iron_condor", "calendar_spread"],
+            "emitted_strategy_scope_pruned_symbols": [],
+            "emitted_strategy_scope_pruned_plan_count": 0,
+            "pruned_symbols": [],
+            "pruned_plan_count": 1,
+            "pruned_symbol_errors": [],
+            "trade_gate_summary": {},
+            "pre_selection_trade_gate_summary": {},
+            "empty_after_pruning": True,
+        }
+
+    monkeypatch.setattr(blueprint_task, "_apply_deterministic_validation", _fake_apply)
+
+    blueprint = _make_blueprint(["MSFT"]).model_copy(update={
+        "market_analysis": "Old empty message.",
+        "reasoning_context": {
+            "agent_outputs": {
+                "flow": {
+                    "symbols": [
+                        {
+                            "symbol": "MSFT",
+                            "false_breakout_risk": "high",
+                            "blocked_reasons": ["high_false_breakout_risk"],
+                        }
+                    ]
+                },
+                "chain": {
+                    "symbols": [
+                        {
+                            "symbol": "MSFT",
+                            "simple_structures_only": True,
+                            "liquidity_ok": False,
+                            "liquidity_tier": "L4",
+                        }
+                    ]
+                },
+                "spread": {
+                    "symbols": [
+                        {
+                            "symbol": "MSFT",
+                            "liquidity_status": "wide",
+                        }
+                    ]
+                },
+                "cross_asset": {
+                    "vix_summary": "VIX at 18.92, normal environment.",
+                    "symbols": [{"symbol": "MSFT", "vix_level": 18.92, "vix_environment": "normal"}],
+                },
+            }
+        },
+    })
+
+    validated = _apply_and_log_deterministic_validation(
+        blueprint,
+        [_FakeSignal("MSFT")],
+        td=date(2026, 4, 30),
+    )
+
+    assert captured["signal_map"] == {"MSFT": {"symbol": "MSFT"}}
+    assert "Directional entries were filtered by high false breakout risk for MSFT." in validated.market_analysis
+    assert "Configured simple-structure gates remained active for MSFT" in validated.market_analysis
+    assert "Chain/Spread executability did not confirm a qualifying structure for MSFT after liquidity, spread, and DTE checks." in validated.market_analysis
