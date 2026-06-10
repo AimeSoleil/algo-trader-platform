@@ -127,6 +127,74 @@ class TestReasoningChecks:
         result = check_blueprint(_blueprint(symbol_plans=[_plan(exit_conditions=[])]))
         assert any(i.rule == "no_exit_conditions" for i in result.issues)
 
+    def test_reasoning_warns_when_claimed_structure_support_lacks_emitted_evidence(self):
+        result = check_blueprint(
+            _blueprint(symbol_plans=[_plan(
+                strategy_type="iron_condor",
+                direction="neutral",
+                reasoning=(
+                    "Trend, volatility, chain, and spread all support this iron condor setup "
+                    "as the strongest neutral structure."
+                ),
+                entry_conditions=[{"field": "iv_rank", "operator": ">=", "value": 25}],
+                legs=[
+                    _leg(strike=140, option_type="put", side="buy"),
+                    _leg(strike=145, option_type="put", side="sell"),
+                    _leg(strike=155, option_type="call", side="sell"),
+                    _leg(strike=160, option_type="call", side="buy"),
+                ],
+            )]),
+            agent_outputs=_agent_outputs(
+                trend=[{"symbol": "AAPL", "strategies": [{"strategy_type": "iron_condor"}]}],
+                volatility=[{"symbol": "AAPL", "strategies": [{"strategy_type": "iron_condor"}]}],
+                chain=[{"symbol": "AAPL", "suggested_strategies": ["call_vertical_spread"]}],
+                spread=[{"symbol": "AAPL", "best_spread_type": "iron_condor"}],
+            ),
+        )
+
+        mismatch = next(i for i in result.issues if i.rule == "reasoning_support_mismatch")
+        assert mismatch.severity == "warning"
+        assert "Chain" in mismatch.description
+
+    def test_near_dated_short_vol_without_adjustment_rules_gets_specific_warning(self):
+        near_expiry = (datetime.date.today() + datetime.timedelta(days=9)).isoformat()
+        result = check_blueprint(
+            _blueprint(symbol_plans=[_plan(
+                strategy_type="iron_condor",
+                direction="neutral",
+                reasoning="Neutral range-bound thesis with supportive vol and spread evidence.",
+                entry_conditions=[{"field": "iv_rank", "operator": ">=", "value": 25}],
+                legs=[
+                    _leg(expiry=near_expiry, strike=140, option_type="put", side="buy"),
+                    _leg(expiry=near_expiry, strike=145, option_type="put", side="sell"),
+                    _leg(expiry=near_expiry, strike=155, option_type="call", side="sell"),
+                    _leg(expiry=near_expiry, strike=160, option_type="call", side="buy"),
+                ],
+            )]),
+        )
+
+        warning = next(i for i in result.issues if i.rule == "adjustment_rules_missing_short_vol_near_expiry")
+        assert warning.severity == "warning"
+        assert "DTE=9" in warning.description
+
+    def test_non_one_shot_explicit_no_adjustment_intent_skips_warning(self):
+        result = check_blueprint(
+            _blueprint(symbol_plans=[_plan(
+                strategy_type="iron_condor",
+                direction="neutral",
+                reasoning="This iron condor is a deliberate hold-to-expiry, no-adjustment structure for a calm range-bound window.",
+                entry_conditions=[{"field": "iv_rank", "operator": ">=", "value": 25}],
+                legs=[
+                    _leg(strike=140, option_type="put", side="buy"),
+                    _leg(strike=145, option_type="put", side="sell"),
+                    _leg(strike=155, option_type="call", side="sell"),
+                    _leg(strike=160, option_type="call", side="buy"),
+                ],
+            )]),
+        )
+
+        assert not any(i.rule.startswith("adjustment_rules_missing") for i in result.issues)
+
 
 # ---------------------------------------------------------------------------
 # Context-aware checks (signal data)
@@ -270,6 +338,40 @@ class TestContextAwareChecks:
         )
         warns = [i for i in result.issues if i.rule == "bid_ask_illiquid"]
         assert len(warns) == 1
+
+    def test_bid_ask_illiquid_warning_skipped_when_selected_candidate_is_tight(self):
+        signals = {
+            "AAPL": {
+                "stock_indicators": {},
+                "option_indicators": {"bid_ask_spread_ratio": 0.17},
+                "option_spreads": {
+                    "execution_candidates": {
+                        "iron_condor": {
+                            "candidate_available": True,
+                            "worst_leg_bid_ask_spread_ratio": 0.08,
+                            "effective_rr": 0.5,
+                        }
+                    }
+                },
+            }
+        }
+        result = check_blueprint(
+            _blueprint(symbol_plans=[_plan(
+                strategy_type="iron_condor",
+                direction="neutral",
+                reasoning="Deliberate hold-to-expiry, no-adjustment iron condor for a calm range-bound window.",
+                entry_conditions=[{"field": "iv_rank", "operator": ">=", "value": 25}],
+                legs=[
+                    _leg(strike=140, option_type="put", side="buy"),
+                    _leg(strike=145, option_type="put", side="sell"),
+                    _leg(strike=155, option_type="call", side="sell"),
+                    _leg(strike=160, option_type="call", side="buy"),
+                ],
+            )]),
+            signal_features=signals,
+        )
+
+        assert not any(i.rule == "bid_ask_illiquid" for i in result.issues)
 
     def test_volatility_backwardation_short_dte_blocks_short_vol_structures(self):
         signals = {

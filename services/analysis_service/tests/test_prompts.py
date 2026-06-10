@@ -892,6 +892,15 @@ def test_critic_prompt_defines_gp1_precedence_null_defaults_and_lc2_relaxation()
     assert "adjustment_rules may be empty only for one-shot expiry structures" in critic_prompt
 
 
+def test_synthesizer_and_critic_prompts_require_stronger_adjustment_guidance_for_near_dated_short_vol():
+    from services.analysis_service.app.llm.agents.critic_agent import _CRITIC_SYSTEM_PROMPT as critic_prompt
+    from services.analysis_service.app.llm.agents.synthesizer_agent import _SYNTHESIZER_SYSTEM_PROMPT
+
+    assert "Non one-shot multi-leg structures must include at least 1 concrete `adjustment_rules` item" in _SYNTHESIZER_SYSTEM_PROMPT
+    assert "Near-dated short-vol structures (`iron_condor`, `iron_butterfly`) with DTE <14 should default to at least 1 concrete adjustment rule" in _SYNTHESIZER_SYSTEM_PROMPT
+    assert "For near-dated short-vol structures (iron_condor / iron_butterfly with DTE <14), absence of a concrete adjustment rule should be treated as a repair target" in critic_prompt
+
+
 def test_synthesizer_and_critic_prompts_explicitly_consume_cross_asset_event_risk_market_shock_and_finer_gex():
     from services.analysis_service.app.llm.agents.critic_agent import _CRITIC_SYSTEM_PROMPT as critic_prompt
     from services.analysis_service.app.llm.agents.synthesizer_agent import _SYNTHESIZER_SYSTEM_PROMPT

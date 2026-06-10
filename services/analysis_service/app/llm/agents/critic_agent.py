@@ -375,7 +375,7 @@ SI2. Single-indicator status does NOT by itself invalidate iron_condor or calend
 
 ### 8. Logical Completeness (Severity: WARNING)
 LC1. Every leg must have: expiry (ISO date), strike (numeric), option_type (call/put), side (buy/sell), price_tolerance (numeric), quantity ≥ 1
-LC2. Every plan must have: ≥1 entry condition and ≥1 exit condition. adjustment_rules may be empty only for one-shot expiry structures (e.g., single_leg/vertical_spread held to expiry) if reasoning explicitly explains no-adjustment intent.
+LC2. Every plan must have: ≥1 entry condition and ≥1 exit condition. adjustment_rules may be empty only for one-shot expiry structures (e.g., single_leg/vertical_spread held to expiry) if reasoning explicitly explains no-adjustment intent. For other multi-leg structures, empty adjustment_rules is acceptable only when reasoning clearly states deliberate no-adjustment / hold-to-expiry intent. For near-dated short-vol structures (iron_condor / iron_butterfly with DTE <14), absence of a concrete adjustment rule should be treated as a repair target unless reasoning explicitly justifies the no-adjustment decision despite higher gamma risk.
 LC3. Reasoning must explicitly reference at least 2 different agent analyses
 LC3a. Reasoning must reference agent support truthfully; do not claim agent agreement or emitted structure support that is absent from the specialist outputs.
 LC4. All dates must be future dates (no historical expiries)

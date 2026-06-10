@@ -941,6 +941,8 @@ RISK MANAGEMENT, ENTRY TIMING & DTE (Priority 7)
 - All strategies MUST be fully defined risk. No naked positions.
 - Top-level: max_total_positions ≤ MAX_TOTAL_POSITIONS_STANDARD (10) for standard accounts, ≤ MAX_TOTAL_POSITIONS_AGGRESSIVE (15) for aggressive accounts.
 - Omit any plan that cannot be expressed with concrete exits and clearly bounded structure-level risk.
+- Non one-shot multi-leg structures must include at least 1 concrete `adjustment_rules` item unless reasoning explicitly states deliberate no-adjustment / hold-to-expiry intent.
+- Near-dated short-vol structures (`iron_condor`, `iron_butterfly`) with DTE <14 should default to at least 1 concrete adjustment rule; omit only when reasoning explicitly acknowledges the deliberate no-adjustment decision despite higher gamma risk.
 
 ## Price Tolerance (Directly mapped to Chain liquidity tiers)
 - L1: 0.005-0.01

@@ -1,7 +1,7 @@
 """Blueprint rule checker — deterministic validation against agent prompt hard constraints.
 
 Validates LLM-generated blueprints against hard constraints embedded in the
-specialist agent prompts (the single source of truth).  Can complement the
+specialist agent prompts (the single source of truth). Can complement the
 CriticAgent or run standalone for backtesting.
 
 Usage::
@@ -13,6 +13,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import date as _date_type
+import re
 from typing import Any
 
 from shared.config import get_settings
@@ -40,6 +41,7 @@ _EXECUTION_CANDIDATE_STRATEGY_KEYS = {
 _SIMPLE_STRUCTURE_AGENT_NAMES = ("trend", "volatility", "flow", "chain", "spread")
 _ONE_SHOT_EXPIRY_STRATEGIES = frozenset({"single_leg", "vertical_spread"})
 _TRADE_GATE_AGENT_NAMES = ("trend", "volatility", "flow", "chain", "spread", "cross_asset")
+_REASONING_STRUCTURE_SUPPORT_AGENT_NAMES = ("trend", "volatility", "chain", "spread")
 _EMITTED_STRATEGY_TYPE_ALIASES = {
     "single_leg": "single_leg",
     "single_leg_call": "single_leg",
@@ -65,6 +67,28 @@ _EMITTED_STRATEGY_TYPE_ALIASES = {
     "short_strangle": "strangle",
     "long_strangle": "strangle",
     "box_arb": "box_arb",
+}
+_REASONING_AGENT_NAME_PATTERNS = {
+    "trend": r"\btrend\b",
+    "volatility": r"\b(?:volatility|vol)\b",
+    "chain": r"\bchain\b",
+    "spread": r"\bspread\b",
+}
+_REASONING_SUPPORT_VERB_PATTERN = (
+    r"(?:support(?:s|ed|ing)?|confirm(?:s|ed|ing)?|agree(?:s|d|ing)?|align(?:s|ed|ing)?"
+    r"|back(?:s|ed|ing)?|favor(?:s|ed|ing)?|favour(?:s|ed|ing)?)"
+)
+_REASONING_STRATEGY_ALIASES = {
+    "single_leg": ("single leg", "single_leg"),
+    "vertical_spread": ("vertical spread", "vertical_spread", "vertical", "credit spread"),
+    "iron_condor": ("iron condor", "iron_condor", "condor"),
+    "iron_butterfly": ("iron butterfly", "iron_butterfly"),
+    "butterfly": ("butterfly",),
+    "calendar_spread": ("calendar spread", "calendar_spread", "calendar"),
+    "diagonal_spread": ("diagonal spread", "diagonal_spread", "diagonal", "reverse calendar", "reverse_calendar"),
+    "straddle": ("straddle",),
+    "strangle": ("strangle",),
+    "box_arb": ("box arb", "box_arb", "arbitrage"),
 }
 
 
@@ -168,6 +192,140 @@ def _emitted_strategy_types(agent_outputs: dict[str, Any], symbol: str) -> list[
                 _append_emitted_strategy_family(emitted, strategy.get("strategy_type"))
 
     return emitted
+
+
+def _agent_emits_strategy_family(
+    agent_outputs: dict[str, Any],
+    agent_name: str,
+    symbol: str,
+    strategy_family: str,
+) -> bool:
+    symbol_data = _agent_sym(agent_outputs, agent_name, symbol)
+    if symbol_data is None:
+        return False
+
+    if agent_name == "spread":
+        return _canonical_strategy_family(symbol_data.get("best_spread_type")) == strategy_family
+
+    if agent_name == "chain":
+        return any(
+            _canonical_strategy_family(strategy_type) == strategy_family
+            for strategy_type in symbol_data.get("suggested_strategies", []) or []
+        )
+
+    strategies = symbol_data.get("strategies")
+    if not isinstance(strategies, list):
+        return False
+
+    return any(
+        _canonical_strategy_family(strategy.get("strategy_type")) == strategy_family
+        for strategy in strategies
+        if isinstance(strategy, dict)
+    )
+
+
+def _reasoning_strategy_aliases(strategy_family: str) -> tuple[str, ...]:
+    aliases = _REASONING_STRATEGY_ALIASES.get(strategy_family)
+    if aliases:
+        return aliases
+
+    normalized = strategy_family.replace("_", " ")
+    return (normalized, strategy_family)
+
+
+def _reasoning_claims_agent_support_for_strategy(
+    reasoning: str,
+    agent_name: str,
+    strategy_aliases: tuple[str, ...],
+) -> bool:
+    agent_pattern = _REASONING_AGENT_NAME_PATTERNS.get(agent_name)
+    if agent_pattern is None:
+        return False
+
+    for strategy_alias in strategy_aliases:
+        strategy_pattern = re.escape(strategy_alias)
+        if re.search(
+            rf"{agent_pattern}.{{0,64}}\b(?:all\s+)?{_REASONING_SUPPORT_VERB_PATTERN}\b.{{0,120}}\b{strategy_pattern}\b",
+            reasoning,
+        ):
+            return True
+        if re.search(
+            rf"\b{strategy_pattern}\b.{{0,80}}\b{_REASONING_SUPPORT_VERB_PATTERN}\b.{{0,24}}\bby\b.{{0,48}}{agent_pattern}",
+            reasoning,
+        ):
+            return True
+
+    return False
+
+
+def _check_reasoning_support_consistency(
+    plan: dict[str, Any],
+    agent_outputs: dict[str, Any],
+    result: CheckResult,
+) -> None:
+    if not agent_outputs:
+        return
+
+    sym = plan.get("underlying", "UNKNOWN")
+    reasoning = str(plan.get("reasoning") or "").lower()
+    strategy_family = _canonical_strategy_family(plan.get("strategy_type"))
+    if not reasoning or strategy_family is None:
+        return
+
+    strategy_aliases = _reasoning_strategy_aliases(strategy_family)
+    mismatched_agents: list[str] = []
+    for agent_name in _REASONING_STRUCTURE_SUPPORT_AGENT_NAMES:
+        if not _reasoning_claims_agent_support_for_strategy(reasoning, agent_name, strategy_aliases):
+            continue
+        if _agent_emits_strategy_family(agent_outputs, agent_name, sym, strategy_family):
+            continue
+        mismatched_agents.append(agent_name)
+
+    if not mismatched_agents:
+        return
+
+    display_names = {
+        "trend": "Trend",
+        "volatility": "Volatility",
+        "chain": "Chain",
+        "spread": "Spread",
+    }
+    claimed = ", ".join(display_names[name] for name in mismatched_agents)
+    result.issues.append(RuleIssue(
+        severity="warning",
+        category="strategy_mismatch",
+        symbol=sym,
+        rule="reasoning_support_mismatch",
+        description=(
+            f"Reasoning claims {claimed} support {strategy_family}, but emitted evidence for those agents does not include the chosen strategy family"
+        ),
+    ))
+
+
+def _reasoning_has_no_adjustment_intent(reasoning: str) -> bool:
+    return any(
+        phrase in reasoning
+        for phrase in ("hold to expiry", "hold-to-expiry", "one-shot", "no adjustment", "no-adjustment")
+    )
+
+
+def _plan_min_leg_dte(plan: dict[str, Any]) -> int | None:
+    today = _date_type.today()
+    min_dte: int | None = None
+    for leg in plan.get("legs", []) or []:
+        if not isinstance(leg, dict):
+            continue
+        expiry_str = leg.get("expiry")
+        if not isinstance(expiry_str, str) or not expiry_str:
+            continue
+        try:
+            expiry = _date_type.fromisoformat(expiry_str)
+        except ValueError:
+            continue
+        dte = (expiry - today).days
+        if min_dte is None or dte < min_dte:
+            min_dte = dte
+    return min_dte
 
 
 def _signal_spot_price(signal: dict[str, Any]) -> float | None:
@@ -287,7 +445,7 @@ def check_blueprint(
     for plan in blueprint.get("symbol_plans", []):
         _check_plan_risk(plan, result)
         _check_strategy_legs(plan, result)
-        _check_plan_reasoning(plan, result)
+        _check_plan_reasoning(plan, agent_outputs, result)
         _check_strike_ordering(plan, result)
         _check_greeks_direction(plan, result)
         _check_dte_bounds(plan, result)
@@ -421,10 +579,11 @@ def _check_strategy_legs(plan: dict, result: CheckResult) -> None:
 # ---------------------------------------------------------------------------
 
 
-def _check_plan_reasoning(plan: dict, result: CheckResult) -> None:
+def _check_plan_reasoning(plan: dict, agent_outputs: dict[str, Any], result: CheckResult) -> None:
     """Verify reasoning field is substantive."""
     sym = plan.get("underlying", "UNKNOWN")
     reasoning = plan.get("reasoning", "")
+    reasoning_lower = reasoning.lower()
     if len(reasoning) < 20:
         result.issues.append(RuleIssue(
             severity="warning",
@@ -454,14 +613,15 @@ def _check_plan_reasoning(plan: dict, result: CheckResult) -> None:
             description="Plan has no exit conditions — should define at least one",
         ))
 
+    _check_reasoning_support_consistency(plan, agent_outputs, result)
+
     adjustment_rules = plan.get("adjustment_rules", [])
     if adjustment_rules:
         return
 
     strategy = str(plan.get("strategy_type", "")).lower()
     if strategy in _ONE_SHOT_EXPIRY_STRATEGIES:
-        reasoning_lower = reasoning.lower()
-        if "hold to expiry" in reasoning_lower or "one-shot" in reasoning_lower or "no adjustment" in reasoning_lower:
+        if _reasoning_has_no_adjustment_intent(reasoning_lower):
             return
         result.issues.append(RuleIssue(
             severity="warning",
@@ -474,12 +634,28 @@ def _check_plan_reasoning(plan: dict, result: CheckResult) -> None:
         ))
         return
 
+    if _reasoning_has_no_adjustment_intent(reasoning_lower):
+        return
+
+    min_leg_dte = _plan_min_leg_dte(plan)
+    if strategy in _VOLATILITY_SHORT_VOL_STRATEGY_TYPES and min_leg_dte is not None and min_leg_dte <= 14:
+        result.issues.append(RuleIssue(
+            severity="warning",
+            category="logic_error",
+            symbol=sym,
+            rule="adjustment_rules_missing_short_vol_near_expiry",
+            description=(
+                f"Near-dated short-vol structure omitted adjustment_rules at DTE={min_leg_dte}; add a concrete adjustment rule or explicitly state no-adjustment intent in reasoning"
+            ),
+        ))
+        return
+
     result.issues.append(RuleIssue(
         severity="warning",
         category="logic_error",
         symbol=sym,
         rule="adjustment_rules_missing",
-        description="Plan has no adjustment_rules for a non one-shot structure",
+        description="Plan has no adjustment_rules for a non one-shot structure and reasoning does not explain explicit no-adjustment intent",
     ))
 
 
@@ -634,6 +810,8 @@ def _check_liquidity(plan: dict, signal: dict, result: CheckResult) -> None:
             ),
         ))
     elif bid_ask_ratio > 0.15:
+        if _selected_execution_candidate_has_tight_liquidity(plan, signal):
+            return
         result.issues.append(RuleIssue(
             severity="warning",
             category="liquidity",
@@ -935,6 +1113,30 @@ def _signal_execution_candidates(signal: dict[str, Any]) -> dict[str, dict[str, 
                 if isinstance(data, dict)
             }
     return {}
+
+
+def _selected_execution_candidate_has_tight_liquidity(
+    plan: dict[str, Any],
+    signal: dict[str, Any],
+) -> bool:
+    strategy = str(plan.get("strategy_type") or "").strip().lower()
+    candidate_keys = _EXECUTION_CANDIDATE_STRATEGY_KEYS.get(strategy)
+    if not candidate_keys:
+        return False
+
+    execution_candidates = _signal_execution_candidates(signal)
+    if not execution_candidates:
+        return False
+
+    for candidate_key in candidate_keys:
+        candidate = execution_candidates.get(candidate_key)
+        if not isinstance(candidate, dict) or candidate.get("candidate_available") is not True:
+            continue
+        worst_leg_ratio = _safe_float(candidate.get("worst_leg_bid_ask_spread_ratio"))
+        if worst_leg_ratio is not None and worst_leg_ratio < 0.10:
+            return True
+
+    return False
 
 
 def _signal_earnings_days(signal: dict[str, Any]) -> int | None:
