@@ -614,6 +614,70 @@ async def test_generate_single_pass_clears_flow_high_false_breakout_cap_for_neut
 
 
 @pytest.mark.asyncio
+async def test_generate_single_pass_normalizes_flow_signal_strength_to_canonical_bucket(monkeypatch):
+    settings = SimpleNamespace(
+        analysis_service=SimpleNamespace(
+            llm=SimpleNamespace(
+                agent_models_override=SimpleNamespace(synthesizer=None, critic=None),
+                max_critic_revisions=0,
+            ),
+        ),
+    )
+
+    monkeypatch.setattr(
+        "services.analysis_service.app.llm.agents.orchestrator.get_settings",
+        lambda: settings,
+    )
+
+    orchestrator = AgentOrchestrator(provider=_Provider())
+    captured: dict[str, object] = {}
+
+    async def _fake_run_specialists(self, *args, **kwargs):
+        return {
+            "flow": {
+                "symbols": [
+                    {
+                        "symbol": "TSLA",
+                        "flow_signal": "neutral",
+                        "signal_strength": "none",
+                        "confirming_indicators_count": 0,
+                        "trade_allowed": True,
+                    }
+                ]
+            }
+        }
+
+    def _fake_compute_consensus(self, agent_outputs, trade_sym_set):
+        return {}
+
+    def _fake_classify_market_condition(self, agent_outputs):
+        return "neutral"
+
+    async def _fake_synthesize(**kwargs):
+        captured["agent_outputs"] = kwargs["agent_outputs"]
+        return _make_blueprint([], max_total_positions=1, analysis_chunk_id="chunk-0")
+
+    monkeypatch.setattr(AgentOrchestrator, "_run_specialists", _fake_run_specialists)
+    monkeypatch.setattr(AgentOrchestrator, "_compute_consensus", _fake_compute_consensus)
+    monkeypatch.setattr(AgentOrchestrator, "_classify_market_condition", _fake_classify_market_condition)
+    monkeypatch.setattr(orchestrator._synthesizer, "synthesize", _fake_synthesize)
+
+    await orchestrator._generate_single_pass(
+        signal_features=[_make_sf("TSLA")],
+        provider=_Provider(),
+        signal_date=None,
+        is_chunk=False,
+        analysis_chunk_id="chunk-0",
+        usage_tracker=None,
+        trade_symbols=["TSLA"],
+        market_snapshot=None,
+    )
+
+    flow_entry = captured["agent_outputs"]["flow"]["symbols"][0]
+    assert flow_entry["signal_strength"] == "single_indicator"
+
+
+@pytest.mark.asyncio
 async def test_generate_single_pass_normalizes_spread_liquidity_from_selected_candidate(monkeypatch):
     settings = SimpleNamespace(
         analysis_service=SimpleNamespace(

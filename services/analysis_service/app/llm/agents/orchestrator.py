@@ -2238,6 +2238,19 @@ class AgentOrchestrator:
         if blocked_reasons:
             normalized["blocked_reasons"] = blocked_reasons
 
+        signal_strength = str(normalized.get("signal_strength") or "").strip().lower()
+        if signal_strength not in {"single_indicator", "dual_indicator", "triple_indicator"}:
+            confirming_indicators_count = normalized.get("confirming_indicators_count")
+            if isinstance(confirming_indicators_count, int):
+                if confirming_indicators_count >= 3:
+                    normalized["signal_strength"] = "triple_indicator"
+                elif confirming_indicators_count == 2:
+                    normalized["signal_strength"] = "dual_indicator"
+                else:
+                    normalized["signal_strength"] = "single_indicator"
+            else:
+                normalized["signal_strength"] = "single_indicator"
+
         false_breakout_risk = str(normalized.get("false_breakout_risk") or "").strip().lower()
         flow_signal = str(normalized.get("flow_signal") or "").strip().lower()
         if false_breakout_risk == "high" and flow_signal in {"neutral", "conflicting", ""}:
