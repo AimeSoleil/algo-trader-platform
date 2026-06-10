@@ -313,7 +313,10 @@ CV1. Earnings Proximity:
   - 2-3d: Only single_leg/vertical_spread allowed. No premium selling or gamma-sensitive structures = error
   - calendar_spread specifically requires positive term_structure_slope and earnings_proximity_days > 5 = error
 CV2. Liquidity Consistency:
-  - Chain.liquidity_tier="L4" → ONLY single_leg or vertical_spread allowed. Any complex structure = error
+  - Chain.liquidity_tier in ["L3","L4"] must be audited jointly with Market Signal Data execution_candidates, not tier alone.
+  - Chain.liquidity_tier="L4" defaults to single_leg or vertical_spread only.
+  - An iron_condor or calendar_spread under L3/L4 is valid only when its matching execution_candidate is candidate_available=true, worst_leg_bid_ask_spread_ratio <= 0.12, and the structure-specific economics threshold passes.
+  - Butterfly remains invalid under L3/L4 when it relies on pricing_error alone or any explicit butterfly economics field is non-positive.
   - Price tolerance matching (Priority: Chain liquidity tier first):
     - L1: 0.005-0.01
     - L2: 0.01-0.015
@@ -335,7 +338,7 @@ CV5. DTE Validation:
   - Calendar spreads: front leg DTE 14-21, back leg DTE 45-60
 CV6. Execution Candidate Priority:
   - Market Signal Data option_spreads.execution_candidates are valid upstream structure-priority inputs and must be checked when auditing spread selection.
-  - Candidate strength thresholds must align with the spread contract: vertical effective_rr/raw_rr ≥0.7; iron_condor effective_rr/raw_rr in 0.3-0.8; calendar effective_theta_capture_per_day > 0 with term_structure_slope > 0; reverse_calendar effective_theta_capture_per_day > 0 with term_structure_slope < -0.03; butterfly pricing_error > 0.08; box_arb net_edge_after_cost > 0.003.
+  - Candidate strength thresholds must align with the spread contract: vertical effective_rr/raw_rr ≥0.7; iron_condor effective_rr/raw_rr in 0.3-0.8; calendar effective_theta_capture_per_day > 0 with term_structure_slope > 0; reverse_calendar effective_theta_capture_per_day > 0 with term_structure_slope < -0.03; butterfly pricing_error > 0.08 plus no explicit negative butterfly economics (effective_rr, net_edge_after_cost, net_profit_after_cost when present); box_arb net_edge_after_cost > 0.003.
   - If the blueprint chooses a spread structure whose matching execution candidate is weak, invalid, or missing while another allowed execution candidate for the same symbol is materially stronger and not blocked by earnings, simple_structures_only, or liquidity gates, raise severity=error with category="logic_error" and describe it as a structure_priority_conflict.
   - A calendar_spread or diagonal_spread is invalid when execution_candidates.calendar has non-positive effective_theta_capture_per_day or term_structure_slope <= 0 and a stronger allowed spread execution candidate exists.
   - A vertical_spread is invalid when execution_candidates.vertical is below the 0.70 floor and a stronger allowed calendar, butterfly, iron_condor, or arbitrage candidate exists for the same symbol.

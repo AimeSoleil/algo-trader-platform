@@ -655,6 +655,8 @@ def test_spread_prompt_consumes_execution_candidates_for_cost_aware_fields():
     assert "option_spreads.execution_candidates.vertical.effective_rr" in spread_prompt
     assert "option_spreads.execution_candidates.calendar.effective_theta_capture_per_day" in spread_prompt
     assert "option_spreads.execution_candidates.box_arb.net_edge_after_cost" in spread_prompt
+    assert "execution_candidates.butterfly.effective_rr" in spread_prompt
+    assert "execution_candidates.butterfly.net_profit_after_cost" in spread_prompt
 
 
 def test_synthesizer_and_critic_prompts_apply_spread_rr_gate_only_to_verticals():
@@ -718,6 +720,19 @@ def test_synthesizer_prompt_uses_execution_candidates_for_structure_priority():
 
     assert "Market Signal Data option_spreads.execution_candidates" in _SYNTHESIZER_SYSTEM_PROMPT
     assert "use the following priority order" in _SYNTHESIZER_SYSTEM_PROMPT
+    assert "no explicit negative economics" in _SYNTHESIZER_SYSTEM_PROMPT
+
+
+def test_synthesizer_and_critic_prompts_use_execution_evidence_for_chain_l3_l4_exceptions():
+    from services.analysis_service.app.llm.agents.critic_agent import _CRITIC_SYSTEM_PROMPT as critic_prompt
+    from services.analysis_service.app.llm.agents.synthesizer_agent import _SYNTHESIZER_SYSTEM_PROMPT
+
+    assert 'must be evaluated jointly with explicit Market Signal Data execution_candidates' in _SYNTHESIZER_SYSTEM_PROMPT
+    assert 'candidate_available=true' in _SYNTHESIZER_SYSTEM_PROMPT
+    assert 'Do NOT rescue butterfly under L3/L4 from pricing_error alone' in _SYNTHESIZER_SYSTEM_PROMPT
+    assert 'must be audited jointly with Market Signal Data execution_candidates' in critic_prompt
+    assert 'An iron_condor or calendar_spread under L3/L4 is valid only when its matching execution_candidate is candidate_available=true' in critic_prompt
+    assert 'Butterfly remains invalid under L3/L4 when it relies on pricing_error alone' in critic_prompt
 
 
 def test_critic_prompt_uses_execution_candidates_for_structure_priority_conflicts():
@@ -727,6 +742,7 @@ def test_critic_prompt_uses_execution_candidates_for_structure_priority_conflict
     assert "Execution Candidate Priority" in critic_prompt
     assert "structure_priority_conflict" in critic_prompt
     assert "vertical effective_rr/raw_rr ≥0.7" in critic_prompt
+    assert "butterfly pricing_error > 0.08 plus no explicit negative butterfly economics" in critic_prompt
     assert "downgrade to severity=warning and skip structure-priority comparison" in critic_prompt
 
 

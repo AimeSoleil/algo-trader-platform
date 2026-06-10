@@ -78,6 +78,7 @@ Arbitrage Priority: Box > Butterfly Mispricing > Skew-Supported Vertical > Calen
 - Use ONLY explicitly provided fields: price.daily_return, option_spreads.vertical_spread_risk_reward, option_spreads.calendar_spread_theta_capture, option_spreads.butterfly_pricing_error, option_spreads.box_spread_arbitrage, option_spreads.execution_candidates, option_vol_surface.iv_rank, option_vol_surface.iv_skew, option_vol_surface.term_structure_slope, bid_ask_spread_ratio, cross_asset.vix_level, cross_asset.earnings_proximity_days
 - Do NOT fabricate missing legs or recalculate transaction costs beyond the provided execution_candidates fields.
 - effective_rr should come from option_spreads.execution_candidates.<strategy>.effective_rr when available for the selected strategy. If no explicit candidate effective_rr exists for that strategy, leave effective_rr null rather than inventing it.
+- For butterfly economics, treat option_spreads.execution_candidates.butterfly.effective_rr, option_spreads.execution_candidates.butterfly.net_edge_after_cost, and option_spreads.execution_candidates.butterfly.net_profit_after_cost as explicit after-cost sanity checks when they are present.
 - Do NOT reject non-vertical spreads solely because effective_rr is null.
 - Do NOT invent back-month liquidity, hidden slippage curves, GEX, PCR, dealer positioning, or extra event buffers.
 """ + "\n\n" + _TRADE_GATE_TAXONOMY_PROMPT + """
@@ -105,7 +106,7 @@ V1. Vertical: best_spread_type="vertical" only when risk_reward_ratio = option_s
 IC1. Iron Condor: best_spread_type="iron_condor" only when option_spreads.execution_candidates.iron_condor.raw_rr or effective_rr is in the 0.3-0.8 standard band; <0.2 or >1.5 = avoid.
 C1. Calendar: best_spread_type="calendar" only when option_spreads.execution_candidates.calendar.effective_theta_capture_per_day >0 AND term_structure_slope>0 AND iv_rank in 25-65 AND earnings_proximity_days>5.
 RC1. Reverse Calendar: best_spread_type="reverse_calendar" only when option_spreads.execution_candidates.reverse_calendar.candidate_available=true AND term_structure_slope<-0.03 AND earnings_proximity_days>5 AND liquidity_status!="illiquid".
-B1. Butterfly: best_spread_type="butterfly" only when option_spreads.execution_candidates.butterfly.pricing_error>0.08 and liquidity_status!="illiquid". Use butterfly effective_rr only when it is explicitly provided upstream.
+B1. Butterfly: best_spread_type="butterfly" only when option_spreads.execution_candidates.butterfly.pricing_error>0.08, liquidity_status!="illiquid", and no explicit butterfly economics field is negative. If execution_candidates.butterfly.effective_rr, net_edge_after_cost, or net_profit_after_cost is present, every provided field must be >0. Pricing_error alone may flag mispricing_detected, but it is NOT enough to elevate butterfly over vertical/iron_condor when explicit economics are non-positive.
 BA1. Box Arb: best_spread_type="box_arb" only when option_spreads.execution_candidates.box_arb.net_edge_after_cost>0.003 (0.3%) AND liquidity_status="adequate".
 S1. iv_skew>0.04 can support a skew-driven vertical credit spread thesis, but it is only a supporting confirmation, not a standalone spread selection rule.
 
@@ -113,7 +114,7 @@ S1. iv_skew>0.04 can support a skew-driven vertical credit spread thesis, but it
 Count up to 4 explicit confirmations for the selected best_spread_type:
 - 1: IV Rank is in the selected strategy's valid zone
 - 1: term_structure_slope aligns with the selected strategy (calendar contango, reverse calendar backwardation)
-- 1: spread-specific edge exists and clears threshold (vertical effective_rr / raw_rr, iron_condor raw_rr, butterfly pricing_error, box net_edge_after_cost, or iv_skew for skew-driven verticals)
+- 1: spread-specific edge exists and clears threshold (vertical effective_rr / raw_rr, iron_condor raw_rr, butterfly pricing_error plus non-negative explicit economics when provided, box net_edge_after_cost, or iv_skew for skew-driven verticals)
 - 1: no hard earnings restriction applies to the selected strategy
 Do NOT award a term_structure confirmation to vertical, iron_condor, butterfly, or box_arb simply because the slope is non-zero.
 Single confirming indicator only = confirming_indicators_count==1
@@ -148,5 +149,5 @@ Output pure JSON only. Populate blocked_reasons explicitly using the canonical h
 risk_reward_ratio must hold the raw upstream metric for the selected best_spread_type.
 effective_rr should reflect the selected execution_candidates.<strategy>.effective_rr when upstream provided one.
 optimal_dte must correspond to best_spread_type only.
-arb_priority: 0 when no arb. For box_arb use 10 when edge>0.007, 8 when 0.005-0.007, 7 when 0.003-0.005. For butterfly use 6 when pricing_error>0.12, 5 when 0.08-0.12.
+arb_priority: 0 when no arb. For box_arb use 10 when edge>0.007, 8 when 0.005-0.007, 7 when 0.003-0.005. For butterfly use 6 when pricing_error>0.12 and explicit economics are supportive, 4 when 0.08-0.12 and explicit economics are supportive, otherwise keep butterfly arb_priority at 0.
 """

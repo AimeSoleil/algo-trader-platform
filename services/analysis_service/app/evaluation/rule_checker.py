@@ -1026,14 +1026,32 @@ def _execution_candidate_breakdown(
         elif candidate_key == "butterfly":
             metric_name = "pricing_error"
             metric_value = _safe_float(candidate.get("pricing_error"))
+            butterfly_effective_rr = _safe_float(candidate.get("effective_rr"))
+            butterfly_net_edge = _safe_float(candidate.get("net_edge_after_cost"))
+            butterfly_net_profit = _safe_float(candidate.get("net_profit_after_cost"))
+            explicit_economics = [
+                value for value in (butterfly_effective_rr, butterfly_net_edge, butterfly_net_profit)
+                if value is not None
+            ]
             if metric_value is None:
                 reason = "butterfly_pricing_missing"
+            elif any(value <= 0.0 for value in explicit_economics):
+                score = 0.1
+                reason = "butterfly_economics_negative"
             elif metric_value > 0.12:
-                score = 1.0
-                reason = "butterfly_pricing_strong"
+                if explicit_economics:
+                    score = 1.0
+                    reason = "butterfly_pricing_strong"
+                else:
+                    score = 0.75
+                    reason = "butterfly_pricing_strong_economics_unconfirmed"
             elif metric_value >= 0.08:
-                score = 0.8
-                reason = "butterfly_pricing_supported"
+                if explicit_economics:
+                    score = 0.7
+                    reason = "butterfly_pricing_supported"
+                else:
+                    score = 0.45
+                    reason = "butterfly_pricing_supported_economics_unconfirmed"
             else:
                 score = 0.2
                 reason = "butterfly_pricing_below_threshold"

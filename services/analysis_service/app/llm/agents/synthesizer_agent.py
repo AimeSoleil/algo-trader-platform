@@ -790,7 +790,7 @@ Inputs (strictly use only these fields, no inference):
     Chain: pcr_signal, liquidity_tier[L1-L5], hard_block, gamma_pin_active, pin_strength, gamma_pin_strike, event_risk_present, trade_allowed, confidence_cap, simple_structures_only, blocked_reasons, confirming_indicators_count, confidence
     Spread: best_spread_type, risk_reward_ratio, effective_rr, theta_capture, liquidity_status, arb_opportunity, arb_priority, confirming_indicators_count, event_risk_present, trade_allowed, confidence_cap, simple_structures_only, blocked_reasons, position_size_modifier, confidence
     Cross-Asset: correlation_regime, vix_environment, vix_percentile_60d, gex_regime, event_risk_present, signal_type, effective_size_modifier, master_override, risk_off_signal, regime_transition, regime_days, market_shock_return_1d, market_shock_source, trade_allowed, confidence_cap, blocked_reasons, confidence
-    Market Signal Data option_spreads.execution_candidates: vertical(effective_rr, raw_rr, worst_leg_bid_ask_spread_ratio), iron_condor(effective_rr, raw_rr, worst_leg_bid_ask_spread_ratio), calendar/reverse_calendar(effective_theta_capture_per_day, estimated_roll_cost, worst_leg_bid_ask_spread_ratio), butterfly(pricing_error, worst_leg_bid_ask_spread_ratio), box_arb(net_edge_after_cost, net_profit_after_cost, worst_leg_bid_ask_spread_ratio)
+    Market Signal Data option_spreads.execution_candidates: vertical(candidate_available, effective_rr, raw_rr, worst_leg_bid_ask_spread_ratio), iron_condor(candidate_available, effective_rr, raw_rr, worst_leg_bid_ask_spread_ratio), calendar/reverse_calendar(candidate_available, effective_theta_capture_per_day, estimated_roll_cost, worst_leg_bid_ask_spread_ratio), butterfly(candidate_available, pricing_error, effective_rr, net_edge_after_cost, net_profit_after_cost, worst_leg_bid_ask_spread_ratio), box_arb(candidate_available, net_edge_after_cost, net_profit_after_cost, worst_leg_bid_ask_spread_ratio)
 Pre-computed reference: _consensus (directional agreement + confidence-weighted score) → advisory only, NEVER override hard gates.
 
 ## Rule Priority (Highest → Lowest)
@@ -835,7 +835,7 @@ SS7. iron_condor is also acceptable for clean range_bound setups with L1-L3 liqu
 SS8. calendar_spread is also acceptable for contango carry setups; calendar_spread specifically requires positive term_structure_slope and earnings_proximity_days > 5.
 SS9. When Market Signal Data provides option_spreads.execution_candidates for the symbol, use the following priority order (highest → lowest) as the structure-priority tie-breaker:
   1. box_arb (net_profit_after_cost > 0.3%)
-  2. butterfly (pricing_error > 0.08)
+    2. butterfly (pricing_error > 0.08 AND no explicit negative economics; if effective_rr, net_edge_after_cost, or net_profit_after_cost is present, each provided field must be > 0)
   3. iron_condor (effective_rr > 1.2)
   4. vertical_spread (effective_rr > 1.0)
   5. calendar_spread (effective_theta_capture_per_day > 0.04)
@@ -856,7 +856,7 @@ CONFLICT RESOLUTION (Priority 4)
 CR1. Flow.blocked_reasons contains "high_false_breakout_risk" → EXCLUDE directional plans.
 CR2. Cross-Asset.risk_off_signal=true → treat as defensive context: lower conviction and prefer simpler or more defensive structures, but do not serialize or auto-size positions from Cross-Asset.effective_size_modifier alone.
 CR3. If directional agents disagree and the competing directional confidence values are both <0.5 → EXCLUDE.
-CR4. Chain.liquidity_tier in ["L3","L4"] → ONLY allow single_leg or vertical_spread.
+CR4. Chain.liquidity_tier in ["L3","L4"] must be evaluated jointly with explicit Market Signal Data execution_candidates, not tier alone. Default to single_leg or vertical_spread. You may keep iron_condor or calendar_spread eligible only when the matching execution_candidate is explicitly candidate_available=true, worst_leg_bid_ask_spread_ratio <= 0.12, and that structure's own economics rule is satisfied. Do NOT rescue butterfly under L3/L4 from pricing_error alone; butterfly still needs supportive economics and must clear all other hard gates.
 
 ────────────────────────────────────────────────────────
 AGENT AGREEMENT & CONVICTION SCORING (Priority 5)

@@ -798,6 +798,46 @@ class TestSpreadExecutionCandidateConflicts:
         )
         assert any(i.rule == "spread_execution_candidate_data_missing" and i.severity == "warning" for i in result.issues)
 
+    def test_butterfly_negative_explicit_economics_does_not_outrank_stronger_vertical(self):
+        signals = {
+            "AAPL": {
+                "close_price": 150.0,
+                "option_indicators": {
+                    "term_structure_slope": 0.01,
+                    "spread_execution_inputs": {
+                        "butterfly": {
+                            "candidate_available": True,
+                            "pricing_error": 0.14,
+                            "effective_rr": -0.2,
+                            "net_edge_after_cost": -0.01,
+                            "net_profit_after_cost": -8.0,
+                            "worst_leg_bid_ask_spread_ratio": 0.03,
+                        },
+                        "vertical": {
+                            "candidate_available": True,
+                            "effective_rr": 1.05,
+                            "raw_rr": 1.1,
+                            "worst_leg_bid_ask_spread_ratio": 0.03,
+                        },
+                    },
+                },
+                "cross_asset_indicators": {"earnings_proximity_days": 10},
+            }
+        }
+        result = check_blueprint(
+            _blueprint(symbol_plans=[_plan(
+                strategy_type="butterfly",
+                direction="neutral",
+                legs=[
+                    _leg(strike=145, option_type="call", side="buy"),
+                    _leg(strike=150, option_type="call", side="sell"),
+                    _leg(strike=155, option_type="call", side="buy"),
+                ],
+            )]),
+            signal_features=signals,
+        )
+        assert any(i.rule == "spread_execution_candidate_conflict" and i.severity == "error" for i in result.issues)
+
 
 # ---------------------------------------------------------------------------
 # Duplicate symbols check
