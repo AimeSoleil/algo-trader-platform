@@ -746,6 +746,15 @@ def test_critic_prompt_uses_execution_candidates_for_structure_priority_conflict
     assert "downgrade to severity=warning and skip structure-priority comparison" in critic_prompt
 
 
+def test_spread_and_critic_prompts_allow_tight_high_credit_iron_condors():
+    from services.analysis_service.app.llm.agents.critic_agent import _CRITIC_SYSTEM_PROMPT as critic_prompt
+    from services.analysis_service.app.llm.agents.spread_agent import _SYSTEM_PROMPT as spread_prompt
+
+    assert "high-credit extension band from 1.0-2.0" in spread_prompt
+    assert "worst_leg_bid_ask_spread_ratio <=0.05" in spread_prompt
+    assert "high-credit extension band from 1.0-2.0 only when worst_leg_bid_ask_spread_ratio <= 0.05" in critic_prompt
+
+
 def test_synthesizer_and_critic_build_prompts_include_full_signal_context_execution_candidates():
     from services.analysis_service.app.llm.agents.critic_agent import CriticAgent
     from services.analysis_service.app.llm.agents.synthesizer_agent import SynthesizerAgent

@@ -975,6 +975,20 @@ def _execution_candidate_breakdown(
             else:
                 score = 0.55 + ((metric_value - 0.7) / 0.5) * 0.45
                 reason = "vertical_rr_acceptable"
+
+            spot = _signal_spot_price(signal)
+            strike_distance_ratio = _candidate_nearest_strike_distance_ratio(
+                candidate,
+                spot,
+                ("long_strike", "short_strike"),
+            )
+            if strike_distance_ratio is not None:
+                if strike_distance_ratio >= 0.35:
+                    score = min(score, 0.35)
+                    reason = "vertical_far_from_spot"
+                elif strike_distance_ratio >= 0.2:
+                    score = min(score, 0.7)
+                    reason = "vertical_moderately_far_from_spot"
         elif candidate_key == "iron_condor":
             metric_name = "effective_rr"
             metric_value = _safe_float(candidate.get("effective_rr"))
@@ -992,6 +1006,13 @@ def _execution_candidate_breakdown(
             elif 0.2 <= metric_value <= 1.0:
                 score = 0.55
                 reason = "iron_condor_rr_marginal"
+            elif 1.0 < metric_value <= 2.0:
+                if worst_leg_ratio is not None and worst_leg_ratio <= 0.05:
+                    score = 0.75
+                    reason = "iron_condor_high_credit_supported"
+                else:
+                    score = 0.45
+                    reason = "iron_condor_high_credit_unconfirmed"
             else:
                 score = 0.15
                 reason = "iron_condor_rr_outside_band"
@@ -1072,19 +1093,27 @@ def _safe_float(value: Any) -> float | None:
         return float(value) if value is not None else None
     except (TypeError, ValueError):
         return None
-        return
 
-    if slope_val <= 0.0:
-        result.issues.append(RuleIssue(
-            severity="error",
-            category="strategy_mismatch",
-            symbol=sym,
-            rule="calendar_requires_contango",
-            description=(
-                f"term_structure_slope={slope_val:.4f} — calendar_spread is allowed only in contango "
-                "under precision-first validation"
-            ),
-        ))
+
+def _candidate_nearest_strike_distance_ratio(
+    candidate: dict[str, Any],
+    spot: float | None,
+    strike_keys: tuple[str, ...],
+) -> float | None:
+    if spot is None or spot <= 0:
+        return None
+
+    distances: list[float] = []
+    for strike_key in strike_keys:
+        strike = _safe_float(candidate.get(strike_key))
+        if strike is None:
+            continue
+        distances.append(abs(strike - spot) / spot)
+
+    if not distances:
+        return None
+
+    return min(distances)
 
 
 # ---------------------------------------------------------------------------

@@ -838,6 +838,49 @@ class TestSpreadExecutionCandidateConflicts:
         )
         assert any(i.rule == "spread_execution_candidate_conflict" and i.severity == "error" for i in result.issues)
 
+    def test_no_conflict_when_far_otm_vertical_is_less_actionable_than_tight_high_credit_condor(self):
+        signals = {
+            "TSLA": {
+                "close_price": 396.68,
+                "option_indicators": {
+                    "term_structure_slope": 0.1191,
+                    "spread_execution_inputs": {
+                        "iron_condor": {
+                            "candidate_available": True,
+                            "effective_rr": 1.6596,
+                            "raw_rr": 9.0,
+                            "worst_leg_bid_ask_spread_ratio": 0.012848,
+                        },
+                        "vertical": {
+                            "candidate_available": True,
+                            "effective_rr": 10.236,
+                            "raw_rr": 19.5128,
+                            "long_strike": 580,
+                            "short_strike": 600,
+                            "worst_leg_bid_ask_spread_ratio": 0.033333,
+                        },
+                    },
+                },
+                "cross_asset_indicators": {"earnings_proximity_days": 43},
+            }
+        }
+        result = check_blueprint(
+            _blueprint(symbol_plans=[_plan(
+                underlying="TSLA",
+                strategy_type="iron_condor",
+                direction="neutral",
+                confidence=0.35,
+                legs=[
+                    _leg(strike=390, option_type="put", side="buy"),
+                    _leg(strike=392.5, option_type="put", side="sell"),
+                    _leg(strike=402.5, option_type="call", side="sell"),
+                    _leg(strike=405, option_type="call", side="buy"),
+                ],
+            )]),
+            signal_features=signals,
+        )
+        assert not any(i.rule == "spread_execution_candidate_conflict" for i in result.issues)
+
 
 # ---------------------------------------------------------------------------
 # Duplicate symbols check
