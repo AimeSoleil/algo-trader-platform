@@ -487,7 +487,8 @@ def test_flow_prompt_keeps_false_breakout_as_directional_caution_not_symbol_veto
 
     assert "H1. earnings_proximity_days≤1 (Imminent Event): event_risk_present=true, flow_signal=neutral, trade_allowed=false" in flow_prompt
     assert 'H6. CMF & Tick Delta opposite with both >|0.25|: flow_signal=conflicting, trade_allowed=true, confidence_cap=0.3, simple_structures_only=true, position_size_modifier=0.3 advisory-only, blocked_reasons=["conflicting_flow"]' in flow_prompt
-    assert 'BK1. Breakout-like move with 0 confirming indicators = high false breakout risk, flow_signal=neutral, false_breakout_risk="high", trade_allowed=true, confidence_cap=0.3, position_size_modifier=0.3 advisory-only, blocked_reasons=["high_false_breakout_risk"]' in flow_prompt
+    assert 'BK1. Breakout-like move with 0 confirming indicators = high false breakout risk, flow_signal=neutral, false_breakout_risk="high", trade_allowed=true.' in flow_prompt
+    assert 'do NOT let it suppress neutral short-vol / iron_condor style structures from Flow alone' in flow_prompt
     assert 'H7. Non-breakout contexts with 0 global confirming indicators: flow_signal=neutral, confidence_cap=0.3, trade_allowed=true, blocked_reasons=["insufficient_flow_confirmation"]' in flow_prompt
     assert "Strategy Constraint Writing Rules" not in flow_prompt
     assert "## Confirming Indicators Count (Deterministic)" in flow_prompt
@@ -688,6 +689,18 @@ def test_synthesizer_and_critic_prompts_use_reason_aware_trade_block_semantics()
     assert 'symbol must NOT appear only when at least 2 agents agree' in critic_prompt
 
 
+def test_flow_high_false_breakout_is_directional_only_in_prompts():
+    from services.analysis_service.app.llm.agents.critic_agent import _CRITIC_SYSTEM_PROMPT as critic_prompt
+    from services.analysis_service.app.llm.agents.flow_agent import _SYSTEM_PROMPT as flow_prompt
+    from services.analysis_service.app.llm.agents.synthesizer_agent import _SYNTHESIZER_SYSTEM_PROMPT
+
+    assert 'do NOT let it suppress neutral short-vol / iron_condor style structures from Flow alone' in flow_prompt
+    assert 'ignore Flow.confidence_cap for final-cap aggregation' in _SYNTHESIZER_SYSTEM_PROMPT
+    assert 'must not suppress neutral short-vol / iron_condor style structures by itself' in _SYNTHESIZER_SYSTEM_PROMPT
+    assert 'ignore Flow.confidence_cap when Flow.false_breakout_risk="high" and the audited plan is neutral' in critic_prompt
+    assert 'Neutral plans must NOT fail solely because Flow emitted a confidence_cap during a high_false_breakout_risk state' in critic_prompt
+
+
 def test_synthesizer_prompt_distinguishes_option_activity_from_executability_in_market_analysis():
     from services.analysis_service.app.llm.agents.synthesizer_agent import _SYNTHESIZER_SYSTEM_PROMPT
 
@@ -723,6 +736,7 @@ def test_synthesizer_prompt_uses_execution_candidates_for_structure_priority():
     assert "no explicit negative economics" in _SYNTHESIZER_SYSTEM_PROMPT
     assert "emitted_strategy_types" in _SYNTHESIZER_SYSTEM_PROMPT
     assert "keep the strongest emitted valid candidate instead of omitting the symbol" in _SYNTHESIZER_SYSTEM_PROMPT
+    assert "output the strongest emitted valid candidate instead of returning zero symbol_plans" in _SYNTHESIZER_SYSTEM_PROMPT
 
 
 def test_synthesizer_and_critic_prompts_use_execution_evidence_for_chain_l3_l4_exceptions():

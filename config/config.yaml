@@ -365,7 +365,7 @@ analysis_service:
     skill_dir: ""
     output_budget_ratio: 0.8               # 实际请求 completion token 预算 = provider max_tokens 的 80%
     output_truncation_threshold_ratio: 0.95  # 若输出达到请求预算的 95%，视为接近截断并触发保护
-    max_critic_revisions: 0               # 30+ symbols 容错档：关闭 revision 循环，减少失败面
+    max_critic_revisions: 1               # 30+ symbols 容错档：关闭 revision 循环，减少失败面
     orchestrator_chunk_size: 5            # max non-benchmark symbols per LLM chunk
     orchestrator_max_parallel: 2          # 30+ symbols 容错档：降低 chunk 并行，压低 provider 峰值
     specialist_parallel_limit: 2          # max parallel specialists (pipeline-level gate)

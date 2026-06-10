@@ -443,6 +443,187 @@ async def test_generate_single_pass_keeps_chain_l4_for_non_deep_liquidity_profil
 
 
 @pytest.mark.asyncio
+async def test_generate_single_pass_clears_flow_high_false_breakout_cap_for_neutral_context(monkeypatch):
+    settings = SimpleNamespace(
+        analysis_service=SimpleNamespace(
+            llm=SimpleNamespace(
+                agent_models_override=SimpleNamespace(synthesizer=None, critic=None),
+                max_critic_revisions=0,
+            ),
+        ),
+    )
+
+    monkeypatch.setattr(
+        "services.analysis_service.app.llm.agents.orchestrator.get_settings",
+        lambda: settings,
+    )
+
+    orchestrator = AgentOrchestrator(provider=_Provider())
+    captured: dict[str, object] = {}
+
+    async def _fake_run_specialists(self, *args, **kwargs):
+        return {
+            "flow": {
+                "symbols": [
+                    {
+                        "symbol": "TSLA",
+                        "flow_signal": "neutral",
+                        "false_breakout_risk": "high",
+                        "confidence_cap": 0.3,
+                        "blocked_reasons": ["high_false_breakout_risk"],
+                        "trade_allowed": True,
+                    }
+                ]
+            }
+        }
+
+    def _fake_compute_consensus(self, agent_outputs, trade_sym_set):
+        return {}
+
+    def _fake_classify_market_condition(self, agent_outputs):
+        return "neutral"
+
+    async def _fake_synthesize(**kwargs):
+        captured["agent_outputs"] = kwargs["agent_outputs"]
+        return _make_blueprint(
+            [],
+            max_total_positions=1,
+            analysis_chunk_id="chunk-0",
+        )
+
+    monkeypatch.setattr(AgentOrchestrator, "_run_specialists", _fake_run_specialists)
+    monkeypatch.setattr(AgentOrchestrator, "_compute_consensus", _fake_compute_consensus)
+    monkeypatch.setattr(AgentOrchestrator, "_classify_market_condition", _fake_classify_market_condition)
+    monkeypatch.setattr(orchestrator._synthesizer, "synthesize", _fake_synthesize)
+
+    await orchestrator._generate_single_pass(
+        signal_features=[_make_sf("TSLA")],
+        provider=_Provider(),
+        signal_date=None,
+        is_chunk=False,
+        analysis_chunk_id="chunk-0",
+        usage_tracker=None,
+        trade_symbols=["TSLA"],
+        market_snapshot=None,
+    )
+
+    flow_entry = captured["agent_outputs"]["flow"]["symbols"][0]
+    assert flow_entry["false_breakout_risk"] == "high"
+    assert flow_entry["confidence_cap"] is None
+
+
+@pytest.mark.asyncio
+async def test_generate_single_pass_retries_empty_synthesis_when_emitted_candidate_exists(monkeypatch):
+    settings = SimpleNamespace(
+        analysis_service=SimpleNamespace(
+            llm=SimpleNamespace(
+                agent_models_override=SimpleNamespace(synthesizer=None, critic=None),
+                max_critic_revisions=0,
+                precision_first=SimpleNamespace(
+                    enabled=True,
+                    allowed_strategy_types=["single_leg", "vertical_spread", "iron_condor", "calendar_spread"],
+                ),
+            ),
+        ),
+    )
+
+    monkeypatch.setattr(
+        "services.analysis_service.app.llm.agents.orchestrator.get_settings",
+        lambda: settings,
+    )
+
+    orchestrator = AgentOrchestrator(provider=_Provider())
+    calls: list[dict[str, object]] = []
+
+    async def _fake_run_specialists(self, *args, **kwargs):
+        return {
+            "trend": {
+                "symbols": [
+                    {
+                        "symbol": "TSLA",
+                        "strategies": [{"strategy_type": "Iron Condor"}],
+                        "trade_allowed": True,
+                        "simple_structures_only": True,
+                    }
+                ]
+            },
+            "spread": {
+                "symbols": [
+                    {
+                        "symbol": "TSLA",
+                        "best_spread_type": "iron_condor",
+                        "trade_allowed": True,
+                    }
+                ]
+            },
+        }
+
+    def _fake_compute_consensus(self, agent_outputs, trade_sym_set):
+        return {}
+
+    def _fake_classify_market_condition(self, agent_outputs):
+        return "neutral"
+
+    async def _fake_synthesize(**kwargs):
+        calls.append(kwargs)
+        if len(calls) == 1:
+            return _make_blueprint(
+                [],
+                max_total_positions=1,
+                analysis_chunk_id="chunk-0",
+            )
+        return _make_blueprint(
+            [("TSLA", 0.35)],
+            max_total_positions=1,
+            analysis_chunk_id="chunk-0",
+        )
+
+    monkeypatch.setattr(AgentOrchestrator, "_run_specialists", _fake_run_specialists)
+    monkeypatch.setattr(AgentOrchestrator, "_compute_consensus", _fake_compute_consensus)
+    monkeypatch.setattr(AgentOrchestrator, "_classify_market_condition", _fake_classify_market_condition)
+    monkeypatch.setattr(orchestrator._synthesizer, "synthesize", _fake_synthesize)
+
+    option_indicators = OptionIndicators(
+        spread_execution_inputs={
+            "iron_condor": SpreadExecutionCandidate(
+                strategy_type="iron_condor",
+                candidate_available=True,
+                expiry_dte=9,
+                worst_leg_bid_ask_spread_ratio=0.012848,
+                effective_rr=1.6596,
+            ),
+            "vertical": SpreadExecutionCandidate(
+                strategy_type="vertical",
+                candidate_available=True,
+                expiry_dte=101,
+                long_strike=580,
+                short_strike=600,
+                worst_leg_bid_ask_spread_ratio=0.033333,
+                effective_rr=10.236,
+            ),
+        },
+    )
+
+    blueprint = await orchestrator._generate_single_pass(
+        signal_features=[_make_sf("TSLA", option_indicators=option_indicators)],
+        provider=_Provider(),
+        signal_date=None,
+        is_chunk=False,
+        analysis_chunk_id="chunk-0",
+        usage_tracker=None,
+        trade_symbols=["TSLA"],
+        market_snapshot=None,
+    )
+
+    assert len(calls) == 2
+    assert calls[0].get("critic_feedback") is None
+    assert isinstance(calls[1]["critic_feedback"], str)
+    assert "returned zero symbol_plans" in calls[1]["critic_feedback"]
+    assert "strongest emitted valid candidate" in calls[1]["critic_feedback"]
+    assert [plan.underlying for plan in blueprint.symbol_plans] == ["TSLA"]
+
+
+@pytest.mark.asyncio
 async def test_chunked_merge_keeps_all_ranked_plans(monkeypatch):
     settings = SimpleNamespace(
         analysis_service=SimpleNamespace(

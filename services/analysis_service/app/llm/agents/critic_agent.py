@@ -295,6 +295,7 @@ GP6. Spread.arb_opportunity=true AND Chain.liquidity_tier in ["L1","L2"] → blu
 ### 4. Risk Compliance (Severity: ERROR)
 RC1. Every plan confidence: 0.0 ≤ confidence ≤ GLOBAL_MAX_CONFIDENCE.
 RC2. Every plan confidence ≤ MIN(all numeric confidence_cap values from Trend, Volatility, Flow, Chain, Spread, Cross-Asset, GLOBAL_MAX_CONFIDENCE).
+RC2a. Exception: ignore Flow.confidence_cap when Flow.false_breakout_risk="high" and the audited plan is neutral. That caution is directional-only and must not by itself cap neutral short-vol / iron_condor style plans.
 RC3. Trader decides max loss and position sizing manually. Do NOT reject a plan solely because stop_loss_amount, take_profit_amount, max_loss_per_trade, or max_position_size is missing.
 RC4. Exit Conditions:
   - Every plan must have ≥1 exit condition with mechanically evaluable thresholds.
@@ -303,6 +304,7 @@ RC4. Exit Conditions:
 AC1. Flow Consistency:
   - Flow.false_breakout_risk="high" → no directional plans allowed
   - Flow.false_breakout_risk="medium" → confidence ≤0.4
+  - Neutral plans must NOT fail solely because Flow emitted a confidence_cap during a high_false_breakout_risk state
 AC2. Cross-Asset Consistency:
   - Cross-Asset.confidence <0.4 → symbol_plan confidence ≤0.4
   - Cross-Asset.regime_transition=true AND (regime_days is null OR regime_days <3) → directional plan with confidence >0.5 = error

@@ -1473,6 +1473,48 @@ class TestStructuredAgentTradeGates:
         )
         assert any(i.rule == "flow_confidence_cap" and i.severity == "error" for i in result.issues)
 
+    def test_flow_high_false_breakout_cap_does_not_apply_to_neutral_condor(self):
+        ao = _agent_outputs(
+            flow=[{
+                "symbol": "AAPL",
+                "flow_signal": "neutral",
+                "false_breakout_risk": "high",
+                "confidence_cap": 0.3,
+                "blocked_reasons": ["high_false_breakout_risk"],
+            }],
+        )
+        result = check_blueprint(
+            _blueprint(symbol_plans=[_plan(
+                strategy_type="iron_condor",
+                direction="neutral",
+                confidence=0.35,
+                legs=[
+                    _leg(strike=140, option_type="put", side="buy"),
+                    _leg(strike=145, option_type="put", side="sell"),
+                    _leg(strike=155, option_type="call", side="sell"),
+                    _leg(strike=160, option_type="call", side="buy"),
+                ],
+            )]),
+            agent_outputs=ao,
+        )
+        assert not any(i.rule == "flow_confidence_cap" for i in result.issues)
+
+    def test_flow_high_false_breakout_cap_still_applies_to_directional_plan(self):
+        ao = _agent_outputs(
+            flow=[{
+                "symbol": "AAPL",
+                "flow_signal": "neutral",
+                "false_breakout_risk": "high",
+                "confidence_cap": 0.3,
+                "blocked_reasons": ["high_false_breakout_risk"],
+            }],
+        )
+        result = check_blueprint(
+            _blueprint(symbol_plans=[_plan(confidence=0.35, direction="bullish")]),
+            agent_outputs=ao,
+        )
+        assert any(i.rule == "flow_confidence_cap" and i.severity == "error" for i in result.issues)
+
     def test_chain_single_indicator_trade_allowed_false_is_soft_warning(self):
         ao = _agent_outputs(
             chain=[{

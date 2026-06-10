@@ -117,6 +117,19 @@ def _agent_sym(
     )
 
 
+def _flow_high_false_breakout_directional_only_cap(
+    plan: dict[str, Any],
+    sym_data: dict[str, Any],
+) -> bool:
+    direction = str(plan.get("direction") or "").strip().lower()
+    if direction != "neutral":
+        return False
+
+    false_breakout_risk = str(sym_data.get("false_breakout_risk") or "").strip().lower()
+    flow_signal = str(sym_data.get("flow_signal") or "").strip().lower()
+    return false_breakout_risk == "high" and flow_signal in {"neutral", "conflicting", ""}
+
+
 def _canonical_strategy_family(strategy_type: Any) -> str | None:
     if not isinstance(strategy_type, str):
         return None
@@ -1705,6 +1718,9 @@ def _check_agent_trade_gate(
     try:
         cap_value = float(confidence_cap) if confidence_cap is not None else None
     except (TypeError, ValueError):
+        cap_value = None
+
+    if agent_name == "flow" and cap_value is not None and _flow_high_false_breakout_directional_only_cap(plan, sym_data):
         cap_value = None
 
     if cap_value is not None and plan_conf > cap_value:

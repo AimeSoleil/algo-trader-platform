@@ -102,7 +102,7 @@ H7. Non-breakout contexts with 0 global confirming indicators: flow_signal=neutr
 
 ## False Breakout Detection (BK1-BK3, AGGRESSIVE RELAXATION: Allow 1 confirming indicator)
 VWAP alignment is a breakout prerequisite and does NOT add to BK confirmation count.
-BK1. Breakout-like move with 0 confirming indicators = high false breakout risk, flow_signal=neutral, false_breakout_risk="high", trade_allowed=true, confidence_cap=0.3, position_size_modifier=0.3 advisory-only, blocked_reasons=["high_false_breakout_risk"]
+BK1. Breakout-like move with 0 confirming indicators = high false breakout risk, flow_signal=neutral, false_breakout_risk="high", trade_allowed=true. This caution is directional-only: use confidence_cap=0.3 only for directional breakout ideas, and do NOT let it suppress neutral short-vol / iron_condor style structures from Flow alone. position_size_modifier=0.3 advisory-only, blocked_reasons=["high_false_breakout_risk"]
 BK2. Breakout-like move with ONLY 1 of CMF/tick_delta confirmation after the VWAP breakout prerequisite is already satisfied: Medium false breakout risk, TRADE ALLOWED, confidence_cap=0.55, position_size_modifier=0.5 advisory-only, false_breakout_risk="medium"
 BK3. Breakout-like move with BOTH CMF and tick_delta confirmation + liquid volume after the VWAP breakout prerequisite is already satisfied: Validated breakout, confidence up to 0.85, advisory position_size_modifier up to 1.0, false_breakout_risk="low"
 

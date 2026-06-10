@@ -887,6 +887,39 @@ class AgentOrchestrator:
             apply_output_cap=not is_chunk,
         )
 
+        if not blueprint.symbol_plans:
+            fallback_feedback = self._empty_synthesis_fallback_feedback(
+                compact_outputs,
+                signals_summary,
+                trade_symbols,
+            )
+            if fallback_feedback:
+                logger.info(
+                    "orchestrator.phase_started",
+                    phase="synthesizer_empty_fallback",
+                    is_chunk=is_chunk,
+                    symbols=len(trade_symbols or []),
+                )
+                fallback_t0 = perf_counter()
+                blueprint = await self._synthesizer.synthesize(
+                    agent_outputs=compact_outputs,
+                    signals_summary=signals_summary,
+                    critic_feedback=fallback_feedback,
+                    provider=provider,
+                    signal_date=signal_date,
+                    usage_tracker=usage_tracker,
+                    trade_symbols=trade_symbols,
+                    model=synth_model,
+                    apply_output_cap=not is_chunk,
+                )
+                logger.info(
+                    "orchestrator.phase_completed",
+                    phase="synthesizer_empty_fallback",
+                    plans=len(blueprint.symbol_plans),
+                    is_chunk=is_chunk,
+                    elapsed_s=round(perf_counter() - fallback_t0, 1),
+                )
+
         logger.info(
             "orchestrator.phase_completed",
             phase="synthesizer",
@@ -1540,6 +1573,16 @@ class AgentOrchestrator:
         "box_arb": "box_arb",
     }
 
+    _EMITTED_STRATEGY_CANDIDATE_KEYS = {
+        "vertical_spread": ("vertical",),
+        "iron_condor": ("iron_condor",),
+        "iron_butterfly": ("butterfly",),
+        "butterfly": ("butterfly",),
+        "calendar_spread": ("calendar",),
+        "diagonal_spread": ("calendar", "reverse_calendar"),
+        "box_arb": ("box_arb",),
+    }
+
     def _canonical_emitted_strategy_type(self, strategy_type: Any) -> str | None:
         if not isinstance(strategy_type, str):
             return None
@@ -1576,6 +1619,131 @@ class AgentOrchestrator:
                     self._append_emitted_strategy_type(emitted, strategy.get("strategy_type"))
 
         return emitted
+
+    def _compact_symbol_entry(
+        self,
+        compact_outputs: dict[str, Any],
+        agent_name: str,
+        symbol: str,
+    ) -> dict[str, Any] | None:
+        agent_output = compact_outputs.get(agent_name)
+        if not isinstance(agent_output, dict):
+            return None
+
+        symbols = agent_output.get("symbols")
+        if not isinstance(symbols, list):
+            return None
+
+        symbol_upper = str(symbol).strip().upper()
+        return next(
+            (
+                item for item in symbols
+                if isinstance(item, dict) and str(item.get("symbol") or "").strip().upper() == symbol_upper
+            ),
+            None,
+        )
+
+    def _empty_synthesis_fallback_feedback(
+        self,
+        compact_outputs: dict[str, Any],
+        signals_summary: list[dict[str, Any]],
+        trade_symbols: list[str] | None,
+    ) -> str | None:
+        signal_by_symbol = {
+            str(signal.get("symbol") or "").strip().upper(): signal
+            for signal in signals_summary
+            if isinstance(signal, dict) and str(signal.get("symbol") or "").strip()
+        }
+        if not signal_by_symbol:
+            return None
+
+        settings = get_settings()
+        precision_first = getattr(settings.analysis_service.llm, "precision_first", None)
+        precision_first_enabled = bool(getattr(precision_first, "enabled", False))
+        allowed_strategy_types = {
+            str(strategy_type).strip().lower()
+            for strategy_type in getattr(precision_first, "allowed_strategy_types", []) or []
+            if str(strategy_type).strip()
+        }
+
+        target_symbols = [
+            str(symbol).strip().upper()
+            for symbol in (trade_symbols or signal_by_symbol.keys())
+            if str(symbol).strip()
+        ]
+        if not target_symbols:
+            return None
+
+        lines = [
+            "Your previous synthesis returned zero symbol_plans.",
+            "You must not return an empty blueprint when at least one emitted valid candidate remains and no hard exclusion applies.",
+            "Prefer the strongest emitted valid candidate over omission whenever the stronger execution candidate was never emitted by any specialist.",
+        ]
+
+        usable_symbols = 0
+        for symbol in target_symbols:
+            emitted: list[str] = []
+            for agent_name in ("trend", "volatility", "chain", "spread"):
+                symbol_entry = self._compact_symbol_entry(compact_outputs, agent_name, symbol)
+                if not isinstance(symbol_entry, dict):
+                    continue
+                for strategy_type in symbol_entry.get("emitted_strategy_types", []) or []:
+                    canonical = self._canonical_emitted_strategy_type(strategy_type)
+                    if canonical is None:
+                        continue
+                    if precision_first_enabled and allowed_strategy_types and canonical not in allowed_strategy_types:
+                        continue
+                    if canonical not in emitted:
+                        emitted.append(canonical)
+
+            if not emitted:
+                continue
+
+            signal = signal_by_symbol.get(symbol)
+            if not isinstance(signal, dict):
+                continue
+            option_spreads = signal.get("option_spreads", {})
+            execution_candidates = option_spreads.get("execution_candidates", {}) if isinstance(option_spreads, dict) else {}
+            if not isinstance(execution_candidates, dict):
+                execution_candidates = {}
+
+            candidate_notes: list[str] = []
+            for strategy_type in emitted:
+                candidate_keys = self._EMITTED_STRATEGY_CANDIDATE_KEYS.get(strategy_type, ())
+                if not candidate_keys:
+                    continue
+                for candidate_key in candidate_keys:
+                    candidate = execution_candidates.get(candidate_key)
+                    if not isinstance(candidate, dict) or candidate.get("candidate_available") is not True:
+                        continue
+                    note_parts = [f"{strategy_type} via {candidate_key}"]
+                    effective_rr = candidate.get("effective_rr")
+                    if isinstance(effective_rr, (int, float)):
+                        note_parts.append(f"effective_rr={float(effective_rr):.2f}")
+                    theta_capture = candidate.get("effective_theta_capture_per_day")
+                    if isinstance(theta_capture, (int, float)):
+                        note_parts.append(f"theta/day={float(theta_capture):.3f}")
+                    worst_leg_ratio = candidate.get("worst_leg_bid_ask_spread_ratio")
+                    if isinstance(worst_leg_ratio, (int, float)):
+                        note_parts.append(f"worst_leg_spread={float(worst_leg_ratio):.4f}")
+                    expiry_dte = candidate.get("expiry_dte")
+                    if isinstance(expiry_dte, int):
+                        note_parts.append(f"expiry_dte={expiry_dte}")
+                    candidate_notes.append(", ".join(note_parts))
+                    break
+
+            usable_symbols += 1
+            lines.append(f"- {symbol}: emitted strategy families = {', '.join(emitted)}.")
+            if candidate_notes:
+                lines.append(f"  Available emitted candidate evidence: {'; '.join(candidate_notes)}.")
+
+        if usable_symbols == 0:
+            return None
+
+        lines.append(
+            "If at least one emitted candidate remains within the allowed structure scope, satisfies current hard gates, and can keep confidence >= 0.3, output that candidate instead of omitting the symbol."
+        )
+        return "\n".join(lines)
 
     def _compact_for_synthesis(
         self,
@@ -1934,16 +2102,40 @@ class AgentOrchestrator:
             if isinstance(item, dict) and str(item.get("symbol") or "").strip()
         }
 
+        normalized_outputs = dict(agent_outputs)
+        changed = False
+
+        flow_output = agent_outputs.get("flow")
+        if isinstance(flow_output, dict):
+            flow_symbols = flow_output.get("symbols")
+            if isinstance(flow_symbols, list):
+                normalized_flow_symbols: list[Any] = []
+                flow_changed = False
+                for symbol_analysis in flow_symbols:
+                    if not isinstance(symbol_analysis, dict):
+                        normalized_flow_symbols.append(symbol_analysis)
+                        continue
+
+                    normalized = self._normalize_flow_symbol_analysis(symbol_analysis)
+                    flow_changed = flow_changed or normalized != symbol_analysis
+                    normalized_flow_symbols.append(normalized)
+
+                if flow_changed:
+                    normalized_flow_output = dict(flow_output)
+                    normalized_flow_output["symbols"] = normalized_flow_symbols
+                    normalized_outputs["flow"] = normalized_flow_output
+                    changed = True
+
         chain_output = agent_outputs.get("chain")
         if not isinstance(chain_output, dict):
-            return agent_outputs
+            return normalized_outputs if changed else agent_outputs
 
         symbol_entries = chain_output.get("symbols")
         if not isinstance(symbol_entries, list):
-            return agent_outputs
+            return normalized_outputs if changed else agent_outputs
 
         normalized_symbols: list[Any] = []
-        changed = False
+        chain_changed = False
         for symbol_analysis in symbol_entries:
             if not isinstance(symbol_analysis, dict):
                 normalized_symbols.append(symbol_analysis)
@@ -1954,17 +2146,36 @@ class AgentOrchestrator:
                 symbol_analysis,
                 signal_by_symbol.get(symbol),
             )
-            changed = changed or normalized != symbol_analysis
+            chain_changed = chain_changed or normalized != symbol_analysis
             normalized_symbols.append(normalized)
 
-        if not changed:
-            return agent_outputs
+        if not chain_changed:
+            return normalized_outputs if changed else agent_outputs
 
         normalized_chain_output = dict(chain_output)
         normalized_chain_output["symbols"] = normalized_symbols
-        normalized_outputs = dict(agent_outputs)
         normalized_outputs["chain"] = normalized_chain_output
         return normalized_outputs
+
+    def _normalize_flow_symbol_analysis(
+        self,
+        symbol_analysis: dict[str, Any],
+    ) -> dict[str, Any]:
+        normalized = dict(symbol_analysis)
+        blocked_reasons = [
+            str(reason).strip().lower()
+            for reason in normalized.get("blocked_reasons", [])
+            if str(reason).strip()
+        ]
+        if blocked_reasons:
+            normalized["blocked_reasons"] = blocked_reasons
+
+        false_breakout_risk = str(normalized.get("false_breakout_risk") or "").strip().lower()
+        flow_signal = str(normalized.get("flow_signal") or "").strip().lower()
+        if false_breakout_risk == "high" and flow_signal in {"neutral", "conflicting", ""}:
+            normalized["confidence_cap"] = None
+
+        return normalized
 
     def _normalize_chain_symbol_analysis(
         self,

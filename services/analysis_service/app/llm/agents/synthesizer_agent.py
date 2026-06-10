@@ -842,6 +842,7 @@ SS9. When Market Signal Data provides option_spreads.execution_candidates for th
   5. calendar_spread (effective_theta_capture_per_day > 0.04)
 If Spread.best_spread_type conflicts with a higher-priority allowed execution candidate, prefer the higher-priority candidate as long as no hard gate is violated.
 SS10. Emitted-candidate retention: if a stronger allowed execution candidate exists but no specialist emitted a compatible strategy family for that stronger candidate, keep the strongest emitted valid candidate instead of omitting the symbol. Use emitted_strategy_types, Spread.best_spread_type, and Chain.suggested_strategies as emitted-structure evidence.
+SS11. Non-empty fallback: if any trade symbol still has at least one emitted valid candidate inside the allowed structure scope, no hard exclusion applies, and confidence can remain ≥0.3, output the strongest emitted valid candidate instead of returning zero symbol_plans.
 
 ────────────────────────────────────────────────────────
 GAMMA & PIN RISK SYNTHESIS (Priority 3)
@@ -874,6 +875,7 @@ AS6. Event risk consensus:
     - ≥2 agents flag event_risk AND (Cross-Asset.event_risk_present=true OR Cross-Asset.correlation_regime="event_driven") → if confidence would exceed 0.5, reduce it to 0.5 or lower.
     - If abs(Cross-Asset.market_shock_return_1d)>0.03 and Cross-Asset.market_shock_source is present, treat that as event-driven macro shock context and keep fresh directional entries at confidence≤0.5.
 AS7. Final confidence cap = MIN(all numeric confidence_cap values from Trend, Volatility, Flow, Chain, Spread, Cross-Asset, GLOBAL_MAX_CONFIDENCE). Ignore null confidence_cap values.
+AS7a. Exception: when Flow.false_breakout_risk="high" and the candidate structure is neutral, ignore Flow.confidence_cap for final-cap aggregation. That caution is directional-only and must not suppress neutral short-vol / iron_condor style structures by itself.
 
 ────────────────────────────────────────────────────────
 CONFIDENCE-WEIGHTED RESOLUTION (Priority 6)
@@ -885,6 +887,7 @@ CW4. Flow.false_breakout_risk adjustments:
     - low → no adjustment
     - medium → cap confidence ≤0.4
     - high → EXCLUDE directional plan
+    - high false_breakout_risk is a directional filter only; do NOT lower confidence or exclude neutral short-vol / iron_condor / calendar_spread setups solely because Flow emitted this caution
 CW5. Cross-Asset.confidence <0.4 → cap symbol-plan confidence ≤0.4.
 CW6. Single Indicator Limit: If ANY agent's signal_type="single_indicator" → simple_structures_only=true and confidence must respect single-indicator caps. Missing signal_type means do not apply this rule.
 
