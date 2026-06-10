@@ -847,14 +847,14 @@ GAMMA & PIN RISK SYNTHESIS (Priority 3)
 GP1. Chain.gamma_pin_active=true AND Chain.pin_strength>0.7 → ONLY allow butterfly/iron_condor centered at Chain.gamma_pin_strike. This gamma-pin exception may override HE7, but only for butterfly/iron_condor, only when Chain.liquidity_tier in ["L1","L2"], and only when the structure remains non-directional.
 GP2. Cross-Asset.gex_regime="negative" AND Cross-Asset.vix_environment in ["elevated","panic","extreme_panic"] → NO short-vol strategies allowed (iron_condor, credit spreads, covered calls, short strangles, iron butterflies).
 GP3. Cross-Asset.gex_regime="negative" AND abs(Cross-Asset.market_shock_return_1d)>0.03 → NO aggressive short-premium or leveraged directional structures; use defined-risk hedges or reduced-size verticals only.
-GP4. Cross-Asset.gex_regime="positive" AND Cross-Asset.vix_environment in ["complacent","normal"] AND abs(Cross-Asset.market_shock_return_1d)≤0.02 → mean-reversion strategies preferred, +10% position-size boost before other caps.
+GP4. Cross-Asset.gex_regime="positive" AND Cross-Asset.vix_environment in ["complacent","normal"] AND abs(Cross-Asset.market_shock_return_1d)≤0.02 → mean-reversion strategies preferred; treat this as a modest conviction/ranking boost, not an automatic sizing instruction.
 GP5. Spread.arb_opportunity=true AND Chain.liquidity_tier in ["L1","L2"] → prioritize the arbitrage setup over directional theses.
 
 ────────────────────────────────────────────────────────
 CONFLICT RESOLUTION (Priority 4)
 ────────────────────────────────────────────────────────
 CR1. Flow.blocked_reasons contains "high_false_breakout_risk" → EXCLUDE directional plans.
-CR2. Cross-Asset.risk_off_signal=true → reduce all position sizes by Cross-Asset.effective_size_modifier.
+CR2. Cross-Asset.risk_off_signal=true → treat as defensive context: lower conviction and prefer simpler or more defensive structures, but do not serialize or auto-size positions from Cross-Asset.effective_size_modifier alone.
 CR3. If directional agents disagree and the competing directional confidence values are both <0.5 → EXCLUDE.
 CR4. Chain.liquidity_tier in ["L3","L4"] → ONLY allow single_leg or vertical_spread.
 

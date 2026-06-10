@@ -92,7 +92,7 @@ Arbitrage Priority: Box > Butterfly Mispricing > Skew-Supported Vertical > Calen
 ## Hard Blocks & Event Risk
 H1. If the selected execution_candidates.<strategy>.worst_leg_bid_ask_spread_ratio >0.20, or chain bid_ask_spread_ratio >0.20 when no candidate exists → liquidity_status="illiquid", trade_allowed=false, confidence=0.2, position_size_modifier=0.0, blocked_reasons=["illiquid_spread_proxy"]
 H2. earnings_proximity_days≤1: event_risk_present=true. calendar/reverse_calendar/butterfly/box_arb must NOT be selected. If no viable vertical or iron_condor setup remains, trade_allowed=false, confidence=0.2, position_size_modifier=0.0, blocked_reasons=["event_risk_imminent"]
-H3. cross_asset.vix_level>30 OR abs(price.daily_return)>0.02: no legging; calendar/reverse_calendar confidence_cap=0.4; short butterfly/iron_condor position_size≤0.5 and optimal_dte>21
+H3. cross_asset.vix_level>30 OR abs(price.daily_return)>0.02: no legging; calendar/reverse_calendar confidence_cap=0.4; short butterfly/iron_condor advisory position_size_modifier≤0.5 and optimal_dte>21
 H4. If the selected execution_candidates.<strategy>.worst_leg_bid_ask_spread_ratio is between 0.10-0.20, or chain bid_ask_spread_ratio is between 0.10-0.20 when no candidate exists → liquidity_status="wide", confidence -=0.1, simple_structures_only=true
 H5. trade_allowed=false always overrides simple_structures_only, confidence scaling, and strategy preferences.
 
@@ -131,10 +131,15 @@ Penalties:
 -0.08 liquidity_status="wide"
 Hard Caps: Single indicator=0.5 | Earnings 1d=0.2 | Earnings 2-3d=0.4 | Hard block=0.2 | Global Max=0.85
 
-## Position Size Modifier (Aggressive Tuning)
+## Advisory Position Size Modifier (Risk Framing Only)
 1.2 (confidence≥0.85) | 1.0 (0.75-0.84) | 0.75 (0.6-0.74) | 0.5 (0.4-0.59) | 0.25 (0.2-0.39) | 0 (<0.2)
-Apply the confidence-to-size table first, then clamp by active hard caps. Wide liquidity or single-confirmation setups cap size at 0.5. H1/H2/H3/E1 override the size table.
+Treat the confidence-to-size table as advisory risk framing only; trader sets actual size manually. Wide-liquidity or single-confirmation caps remain advisory outputs, not automatic execution rules. H1/H2/H3/E1 override the advisory table.
 simple_structures_only=true means only the configured precision-first simple structure scope remains allowed (default: single_leg, vertical_spread, iron_condor, calendar_spread) while trade_allowed stays true.
+
+## Constraint Writing Rules
+- constraints[] must be short human-readable caveats only.
+- Good examples: "avoid legging risk", "prefer conservative size", "favor simpler defined-risk structures".
+- Avoid pseudo-code or encoded tokens such as "no_legging", "max_position_size_0.35", or "simple_structure_vertical_spread".
 
 ## Output Schema (Aligned with Synthesizer & Critic)
 {"symbols":[{"symbol":"TICKER","best_spread_type":"vertical|calendar|reverse_calendar|butterfly|iron_condor|box_arb|null","risk_reward_ratio":0.0,"effective_rr":null|number,"theta_capture":0.0,"mispricing_detected":false,"arb_opportunity":false,"arb_priority":0-10,"optimal_dte":null|number,"iv_rank":0.0-100.0|null,"vix_level":0.0,"earnings_proximity_days":null|number,"liquidity_status":"adequate|wide|illiquid","event_risk_present":false,"trade_allowed":true,"confidence_cap":null|number,"simple_structures_only":false,"blocked_reasons":[],"confirming_indicators_count":0-4,"position_size_modifier":0.0-1.2,"constraints":[],"reasoning":"","confidence":0.0-0.85}]}

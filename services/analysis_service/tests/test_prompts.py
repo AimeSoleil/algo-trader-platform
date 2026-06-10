@@ -486,9 +486,10 @@ def test_flow_prompt_keeps_false_breakout_as_directional_caution_not_symbol_veto
     from services.analysis_service.app.llm.agents.flow_agent import _SYSTEM_PROMPT as flow_prompt
 
     assert "H1. earnings_proximity_days≤1 (Imminent Event): event_risk_present=true, flow_signal=neutral, trade_allowed=false" in flow_prompt
-    assert 'H6. CMF & Tick Delta opposite with both >|0.25|: flow_signal=conflicting, trade_allowed=true, confidence_cap=0.3, simple_structures_only=true, position_size≤0.3, blocked_reasons=["conflicting_flow"]' in flow_prompt
-    assert 'BK1. Breakout-like move with 0 confirming indicators = high false breakout risk, flow_signal=neutral, false_breakout_risk="high", trade_allowed=true, confidence_cap=0.3, position_size≤0.3, blocked_reasons=["high_false_breakout_risk"]' in flow_prompt
+    assert 'H6. CMF & Tick Delta opposite with both >|0.25|: flow_signal=conflicting, trade_allowed=true, confidence_cap=0.3, simple_structures_only=true, position_size_modifier=0.3 advisory-only, blocked_reasons=["conflicting_flow"]' in flow_prompt
+    assert 'BK1. Breakout-like move with 0 confirming indicators = high false breakout risk, flow_signal=neutral, false_breakout_risk="high", trade_allowed=true, confidence_cap=0.3, position_size_modifier=0.3 advisory-only, blocked_reasons=["high_false_breakout_risk"]' in flow_prompt
     assert 'H7. Non-breakout contexts with 0 global confirming indicators: flow_signal=neutral, confidence_cap=0.3, trade_allowed=true, blocked_reasons=["insufficient_flow_confirmation"]' in flow_prompt
+    assert "Strategy Constraint Writing Rules" not in flow_prompt
     assert "## Confirming Indicators Count (Deterministic)" in flow_prompt
     assert "4-5d" not in flow_prompt
 
@@ -566,6 +567,41 @@ def test_spread_prompt_drops_master_override_and_aligns_schema_with_runtime_mode
     assert '"confirming_indicators_count":0-4' in spread_prompt
     assert '"position_size_modifier":0.0-1.2' in spread_prompt
     assert '"vix_level":0.0' in spread_prompt
+
+
+def test_specialist_sizing_prompts_treat_modifiers_as_advisory_only():
+    from services.analysis_service.app.llm.agents.flow_agent import _SYSTEM_PROMPT as flow_prompt
+    from services.analysis_service.app.llm.agents.spread_agent import _SYSTEM_PROMPT as spread_prompt
+    from services.analysis_service.app.llm.agents.volatility_agent import _SYSTEM_PROMPT as volatility_prompt
+
+    assert "Advisory Position Size Modifier (Risk Framing Only)" in flow_prompt
+    assert "trader sets actual size manually" in flow_prompt
+    assert "advisory size context at 0.35" in volatility_prompt
+    assert "Advisory Size Framing (Manual Trader)" in volatility_prompt
+    assert "do not assume automatic sizing" in volatility_prompt
+    assert "advisory position_size_modifier≤0.5" in spread_prompt
+    assert "Advisory Position Size Modifier (Risk Framing Only)" in spread_prompt
+    assert "not automatic execution rules" in spread_prompt
+
+
+def test_strategy_constraint_prompts_require_human_readable_risk_hints():
+    from services.analysis_service.app.llm.agents.spread_agent import _SYSTEM_PROMPT as spread_prompt
+    from services.analysis_service.app.llm.agents.trend_agent import _SYSTEM_PROMPT as trend_prompt
+    from services.analysis_service.app.llm.agents.volatility_agent import _SYSTEM_PROMPT as volatility_prompt
+
+    assert "Strategy Constraint Writing Rules" in trend_prompt
+    assert "pseudo-execution commands or encoded tokens" in trend_prompt
+    assert "position_size≤0.3" in trend_prompt
+    assert "use smaller-size risk framing" in trend_prompt
+    assert "position_size up to 1.0" not in trend_prompt
+    assert "simple_structure_vertical_spread" in trend_prompt
+    assert "Strategy Constraint Writing Rules" in volatility_prompt
+    assert "pseudo-execution commands or encoded tokens" in volatility_prompt
+    assert "max_position_size_0.35" in volatility_prompt
+    assert "advisory size context at 0.35" in volatility_prompt
+    assert "Constraint Writing Rules" in spread_prompt
+    assert "pseudo-code or encoded tokens" in spread_prompt
+    assert "simple_structure_vertical_spread" in spread_prompt
 
 
 def test_stock_signal_serializes_spread_execution_candidates():
@@ -740,6 +776,18 @@ def test_synthesizer_and_critic_prompts_align_with_manual_trader_risk_contract()
     assert "Do NOT reject a plan solely because stop_loss_amount, take_profit_amount, max_loss_per_trade, or max_position_size is missing" in critic_prompt
     assert "confidence > 0.5 → severity=error" in critic_prompt
     assert "MAX_POSITION_SIZE_CAP: 2.0" not in critic_prompt
+
+
+def test_cross_asset_prompt_treats_effective_size_modifier_as_advisory_context():
+    from services.analysis_service.app.llm.agents.cross_asset_agent import _SYSTEM_PROMPT as cross_asset_prompt
+    from services.analysis_service.app.llm.agents.synthesizer_agent import _SYNTHESIZER_SYSTEM_PROMPT
+
+    assert "advisory risk framing only" in cross_asset_prompt
+    assert "do not assume downstream automatic sizing or skip from this field alone" in cross_asset_prompt
+    assert "Effective Size Rules (Advisory Risk Framing)" in cross_asset_prompt
+    assert "final cross-asset risk-framing scalar" in cross_asset_prompt
+    assert "modest conviction/ranking boost, not an automatic sizing instruction" in _SYNTHESIZER_SYSTEM_PROMPT
+    assert "treat as defensive context: lower conviction and prefer simpler or more defensive structures" in _SYNTHESIZER_SYSTEM_PROMPT
 
 
 def test_critic_prompt_defines_gp1_precedence_null_defaults_and_lc2_relaxation():

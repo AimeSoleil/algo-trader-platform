@@ -63,13 +63,13 @@ Quality Gates: correlation_significance<0.5 = weak support | data_freshness<0.5 
 - Opt/Stock Vol Ratio: <0.5 = illiquid-options proxy, 0.5-1.5 = normal, 1.5-2.5 = elevated, >2.5 = extreme abnormal volume
 - >2.5 requires event / IV confirmation; do not use option ratio alone as catalyst proof or regime change justification
 - Do NOT infer regime flips, market shocks, or GEX from narrative. Use the explicit upstream helper fields only.
-- Do NOT emit trade_allowed. If this module wants a full skip, set effective_size_modifier=0.0, master_override=true, and populate blocked_reasons.
-- Do NOT emit position_size_modifier. effective_size_modifier is the only sizing-style downstream field.
+- Do NOT emit trade_allowed. Use blocked_reasons, event_risk_present, confidence, and effective_size_modifier as advisory risk framing only; do not assume downstream automatic sizing or skip from this field alone.
+- Do NOT emit position_size_modifier. effective_size_modifier is the only sizing-style downstream context field, and it is advisory in manual-trader mode.
 
 ## Rule Priority (Highest → Lowest)
 1. Hard Overrides > 2. Quality Gates > 3. Regime Persistence & Market Shock > 4. Correlation & VIX Classification > 5. Position Sizing
 
-## Hard Overrides (Sizing Governor Contract)
+## Hard Overrides (Risk Framing Contract)
 H1. earnings_proximity_days≤1: event_risk_present=true, correlation_regime="event_driven", confidence≤0.2, effective_size_modifier=0.0, hedging_needed=true, blocked_reasons=["event_risk_imminent"]
 H2. earnings_proximity_days=2-3: event_risk_present=true, correlation_regime="event_driven", confidence≤0.35, effective_size_modifier≤0.6, hedging_needed=true
 H3. correlation_significance<0.5 OR data_freshness<0.5: confidence≤0.4, effective_size_modifier≤0.7
@@ -100,7 +100,7 @@ H8. signal_type="single_indicator": do not move effective_size_modifier by more 
     - 1 if risk_off_signal=true OR rate_sensitive=true
    Total 0-1 = "single_indicator"; total ≥2 = "multi_indicator"
 
-## Effective Size Rules (Master Override)
+## Effective Size Rules (Advisory Risk Framing)
 SM1. Base effective_size_modifier by correlation_regime:
     - fear=0.6, decoupled=0.9, bullish_vol=1.1, normal=1.0, transitioning=0.5, event_driven=0.6
 SM2. VIX caps:
@@ -110,7 +110,7 @@ SM3. GEX overlays:
     - positive GEX + complacent/normal → effective_size_modifier may rise to 1.2
     - if gamma_peak_strike is within ±1% of spot, mean-reversion context may add +0.05 confidence only when gex_regime="positive"
 SM4. If risk_off_signal=true, cap effective_size_modifier at 0.8
-SM5. effective_size_modifier is the final master size; set master_override=true on every symbol
+SM5. effective_size_modifier is the final cross-asset risk-framing scalar; set master_override=true on every symbol so downstream reasoning knows this is the dominant cross-asset caution signal, not an automatic sizing instruction
 
 ## Output Schema (Aligned with Synthesizer & Critic)
 {"symbols":[{"symbol":"TICKER","correlation_regime":"fear|decoupled|bullish_vol|normal|event_driven|transitioning","dominant_benchmark":"SPY|QQQ|IWM|idiosyncratic","rate_sensitive":false,"risk_off_signal":false,"regime_transition":false,"regime_days":null,"vix_environment":"complacent|normal|elevated|panic|extreme_panic","vix_percentile_60d":0.0,"gex_regime":"positive|negative|neutral","earnings_proximity_days":null,"event_risk_present":false,"correlation_significance":0.0,"signal_type":"single_indicator|multi_indicator","hedging_needed":false,"effective_size_modifier":0.0-2.0,"master_override":true,"blocked_reasons":[],"reasoning":"","confidence":0.0-0.9}],"market_regime":"risk_on|risk_off|neutral|transitioning|event_driven|extreme_panic","vix_summary":"","cross_asset_summary":""}

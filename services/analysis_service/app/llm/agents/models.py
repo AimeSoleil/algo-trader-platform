@@ -86,8 +86,8 @@ class StrategyCandidate(BaseModel):
     direction: str  # "bullish", "bearish", "neutral"
     reasoning: str = ""
     confidence: float = Field(0.5, ge=0.0, le=1.0)
-    constraints: list[str] = Field(default_factory=list, description="Conditions or caveats")
-    mandatory_constraints: list[str] = Field(default_factory=list, description="Mandatory guardrails emitted by the volatility prompt")
+    constraints: list[str] = Field(default_factory=list, description="Human-readable risk hints or caveats only; avoid pseudo-execution commands or encoded machine tokens.")
+    mandatory_constraints: list[str] = Field(default_factory=list, description="Human-readable guardrails mirrored into constraints when needed; avoid pseudo-execution commands or encoded sizing/structure tokens.")
     entry_conditions: str = Field("", description="Specific conditions required to enter the position")
     exit_conditions: str = Field("", description="Exit triggers: stop-loss, take-profit, time-based")
 
@@ -239,7 +239,7 @@ class FlowSymbolAnalysis(SymbolAnalysis):
     signal_strength: str = "single_indicator"  # "single_indicator", "dual_indicator", "triple_indicator"
     volume_anomaly: bool = False
     vwap_bias: str = "neutral"  # "bullish", "bearish", "neutral"
-    position_size_modifier: float = Field(1.0, ge=0.0, le=1.5, description="1.0 = full, 0.5 = half, etc.")
+    position_size_modifier: float = Field(1.0, ge=0.0, le=1.5, description="Advisory conviction/risk-framing scalar for manual-trader mode; not an automatic sizing instruction.")
     false_breakout_risk: str = Field("low", description="low, medium, or high")
     event_risk_present: bool = False
     liquidity_status: str = Field("high", description="high or low")
@@ -321,8 +321,8 @@ class SpreadSymbolAnalysis(SymbolAnalysis):
     simple_structures_only: bool = False
     blocked_reasons: list[str] = Field(default_factory=list)
     confirming_indicators_count: int = Field(0, ge=0, le=4, description="Number of explicit spread confirmations supporting the selected structure")
-    position_size_modifier: float = Field(1.0, ge=0.0, le=1.2, description="1.2 = max aggressive size, 0.5 = half size")
-    constraints: list[str] = Field(default_factory=list)
+    position_size_modifier: float = Field(1.0, ge=0.0, le=1.2, description="Advisory conviction/risk-framing scalar for manual-trader mode; use for reasoning only, not automatic sizing.")
+    constraints: list[str] = Field(default_factory=list, description="Human-readable caveats only; not automatic execution instructions or pseudo-code tokens.")
 
     @field_validator("optimal_dte", mode="before")
     @classmethod
@@ -356,8 +356,8 @@ class CrossAssetSymbolAnalysis(SymbolAnalysis):
     correlation_significance: float = Field(0.0, ge=0.0)
     signal_type: str = "multi_indicator"  # "single_indicator", "multi_indicator"
     hedging_needed: bool = False
-    effective_size_modifier: float = Field(1.0, ge=0.0, le=2.0, description="Combined position size modifier after all adjustments. If <0.3, recommend skip.")
-    master_override: bool = Field(True, description="True = this modifier overrides all other strategy module sizing")
+    effective_size_modifier: float = Field(1.0, ge=0.0, le=2.0, description="Advisory cross-asset risk-framing scalar for manual-trader mode; use for reasoning and ranking, not automatic skip/sizing by itself.")
+    master_override: bool = Field(True, description="True = this is the dominant cross-asset risk-framing field for downstream reasoning, not an automatic sizing override.")
     blocked_reasons: list[str] = Field(default_factory=list)
 
     @field_validator("regime_days", "earnings_proximity_days", mode="before")

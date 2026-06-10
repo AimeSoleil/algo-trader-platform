@@ -140,15 +140,20 @@ Penalty Floor: Minimum confidence=0.15; total penalties max=-0.25
 Trending Up: Bull Call Spread, Covered Call, Long Call | Delta 0.35/0.15 | Expiry 25-50d | TP 60% | Stop ADX Z<0.8σ
 Trending Down: Bear Put Spread, Protective Put, Long Put | Delta -0.35/-0.15 | Expiry 25-50d | TP 60% | Stop ADX Z<0.8σ
 Range-Bound: Iron Condor, Iron Butterfly, Short Strangle | 1.2σ wings | Expiry 18-35d | TP 30% | Stop on breakout
-Squeeze: Straddle/Strangle only when iv_rank is known | Pre-breakout max 50% size (iv_rank<30) | Post-breakout max 75% size (iv_rank<45) | Expiry 5-18d (relaxed)
+Squeeze: Straddle/Strangle only when iv_rank is known | Pre-breakout keep size conservative (iv_rank<30) | Post-breakout may justify less conservative size framing (iv_rank<45) | Expiry 5-18d (relaxed)
 Reversal Confirmed: Bull/Bear Vertical Spread | Delta 0.25/-0.25 | Expiry 14-28d | TP 40% | Stop 1×ATR
 Neutral: No strategies
 
 ## Trend Gate Rules (Aggressive Tuning)
-- reversal_confirmed → trade_allowed=true, simple_structures_only=true, position_size≤0.5
-- false_positive_risk="high" → trade_allowed=true, position_size≤0.3, simple_structures_only=true
-- signal_type="single_indicator" → position_size≤0.5 AND simple_structures_only=true regardless of confidence
-- signal_type="multi_indicator" → position_size up to 1.0
+- reversal_confirmed → trade_allowed=true, simple_structures_only=true, use conservative size framing
+- false_positive_risk="high" → trade_allowed=true, use smaller-size risk framing, simple_structures_only=true
+- signal_type="single_indicator" → keep size conservative in reasoning and simple_structures_only=true regardless of confidence
+- signal_type="multi_indicator" → normal conviction framing allowed
+
+## Strategy Constraint Writing Rules
+- For strategies[].constraints or strategies[].mandatory_constraints, emit short human-readable risk hints only.
+- Good examples: "prefer conservative size", "defined risk only", "watch for breakout invalidation", "use simpler structures".
+- Avoid pseudo-execution commands or encoded tokens such as "position_size≤0.3", "max_position_size_0.35", or "simple_structure_vertical_spread".
 
 ## Output Schema (Aligned with Synthesizer & Critic)
 {"symbols":[{"symbol":"TICKER","regime":"trending_up|trending_down|range_bound|squeeze|reversal_confirmed|neutral","trend_direction":"bullish|bearish|neutral","trend_strength":0.0-1.0,"adx_zone":"trending|range_bound|transition|extreme","adx_z_score":0.0,"vix_level":0.0,"iv_rank":0.0-100.0|null,"earnings_proximity_days":null|number,"divergence_detected":false,"divergence_type":"rsi_macd_bullish|rsi_macd_bearish|null","false_positive_risk":"low|medium|high","signal_type":"single_indicator|multi_indicator","trade_allowed":true|false,"confidence_cap":null|number,"simple_structures_only":true|false,"blocked_reasons":[],"strategies":[{"strategy_type":"","direction":"","entry_conditions":"","exit_conditions":"","constraints":[],"confidence":0.0-0.85}],"reasoning":"","confidence":0.0-0.85}],"market_trend_summary":"Bullish/Bearish/Neutral | X% trending up, Y% trending down, Z% range-bound"}

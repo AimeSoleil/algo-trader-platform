@@ -95,7 +95,7 @@ H2. earnings_proximity_days=2-3: event_risk_present=true, no naked short vol; lo
 H3. option_vol_surface.term_structure_slope<0 AND option_vol_surface.front_expiry_dte<10: No short vol of any kind
 H4. VIX>35: All confidence -=0.15; simple_structures_only=true; only single_leg, vertical spreads and iron butterflies allowed; no squeeze, calendar or straddle strategies
 H5. VIX>45: All non-hedging trade_allowed=false, confidence=0.2, blocked_reasons=["vix_extreme"]
-H6. single_indicator signal_type: confidence_cap=0.55, position_size≤0.35, simple_structures_only=true, trade_allowed=true
+H6. single_indicator signal_type: confidence_cap=0.55, advisory size context at 0.35, simple_structures_only=true, trade_allowed=true
 H7. liquidity.bid_ask_spread_ratio>0.15: liquidity_status="low", confidence -=0.15, simple_structures_only=true
 H8. option_vs_stock_volume_ratio>2.5 alone: trade_allowed=true, confidence_cap=0.35, simple_structures_only=true, blocked_reasons=["extreme_option_activity_unconfirmed"]
 
@@ -116,7 +116,7 @@ R2. High Conviction Buy: option_vol_surface.iv_rank<30 + abs(iv_rank-iv_percenti
 R3. Normal Vol (30-70): Relative-value trades allowed only when option_vol_surface.vol_surface_fit_error > 0.02. Use `surface_mispricing=true` and `mispricing_magnitude=option_vol_surface.vol_surface_fit_error`.
 R4. stock_vol.hv_iv_spread>0.03: Long gamma if option_vol_surface.iv_rank<55; stock_vol.hv_iv_spread<-0.03: Short vol if option_vol_surface.iv_rank>45 + no imminent event risk
 R5. option_vol_surface.iv_skew>0.04: Put Credit Spreads if option_vol_surface.iv_rank>55 and option_vol_surface.front_expiry_dte 18-35d
-R6. High IV + Backwardation: Iron Butterfly/Iron Condor allowed only when option_vol_surface.iv_rank>75 AND option_vol_surface.front_expiry_dte>21 AND stock_vol.garch_vol_forecast<option_vol_surface.current_iv | Max 25% position size
+R6. High IV + Backwardation: Iron Butterfly/Iron Condor allowed only when option_vol_surface.iv_rank>75 AND option_vol_surface.front_expiry_dte>21 AND stock_vol.garch_vol_forecast<option_vol_surface.current_iv | conservative size framing only
     Note: All strategies in backwardation must be fully defined risk. No naked short positions allowed.
 
 ## Confidence Scaling (0.0-0.9)
@@ -124,11 +124,15 @@ Boosts: +0.18 abs(iv_rank-iv_percentile)<10; +0.12 abs(stock_vol.garch_vol_forec
 Penalties: -0.18 abs(iv_rank-iv_percentile)>20; -0.12 conflicting GARCH/IV regime; -0.1 liquidity_status="low"; -0.08 signal_type="single_indicator"
 Hard Caps: Single indicator=0.55 | Event risk sell=0.3 | Event risk long=0.4 | Backwardation short vol=0.4 | Global Max=0.9
 
-## Position Size Modifier (Aggressive Tuning)
+## Advisory Size Framing (Manual Trader)
 1.2 (confidence≥0.85) | 1.0 (0.75-0.84) | 0.75 (0.6-0.74) | 0.5 (0.45-0.59) | 0.35 (0.3-0.44) | 0 (<0.3)
-Final position_size_modifier = min(confidence table, all active special caps).
-Note: All single-indicator signals automatically cap position size at 0.35 regardless of confidence.
-Note: Low Vol Squeeze: option_vol_surface.iv_rank<25 → max 50% position size; 25-30 → max 35% position size.
+Treat these buckets as advisory conviction/risk framing only; do not assume automatic sizing.
+Single-indicator setups and low-vol squeeze notes define advisory upper-bound context, not execution rules.
+
+## Strategy Constraint Writing Rules
+- For strategies[].constraints or strategies[].mandatory_constraints, emit short human-readable guardrails only.
+- Good examples: "defined risk only", "prefer conservative size", "use simpler structures", "avoid near-term event exposure".
+- Avoid pseudo-execution commands or encoded tokens such as "max_position_size_0.35", "simple_structure_vertical_spread", or "defined_risk_only".
 
 ## Compound Regime Priority (Highest → Lowest)
 backwardation_event_risk > high_vol_event_risk > high_vol_backwardation > low_vol_backwardation >
