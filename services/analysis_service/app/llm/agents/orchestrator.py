@@ -2132,6 +2132,31 @@ class AgentOrchestrator:
                     normalized_outputs["flow"] = normalized_flow_output
                     changed = True
 
+        spread_output = agent_outputs.get("spread")
+        if isinstance(spread_output, dict):
+            spread_symbols = spread_output.get("symbols")
+            if isinstance(spread_symbols, list):
+                normalized_spread_symbols: list[Any] = []
+                spread_changed = False
+                for symbol_analysis in spread_symbols:
+                    if not isinstance(symbol_analysis, dict):
+                        normalized_spread_symbols.append(symbol_analysis)
+                        continue
+
+                    symbol = str(symbol_analysis.get("symbol") or "").strip().upper()
+                    normalized = self._normalize_spread_symbol_analysis(
+                        symbol_analysis,
+                        signal_by_symbol.get(symbol),
+                    )
+                    spread_changed = spread_changed or normalized != symbol_analysis
+                    normalized_spread_symbols.append(normalized)
+
+                if spread_changed:
+                    normalized_spread_output = dict(spread_output)
+                    normalized_spread_output["symbols"] = normalized_spread_symbols
+                    normalized_outputs["spread"] = normalized_spread_output
+                    changed = True
+
         chain_output = agent_outputs.get("chain")
         if not isinstance(chain_output, dict):
             return normalized_outputs if changed else agent_outputs
@@ -2162,6 +2187,43 @@ class AgentOrchestrator:
         normalized_chain_output["symbols"] = normalized_symbols
         normalized_outputs["chain"] = normalized_chain_output
         return normalized_outputs
+
+    def _normalize_spread_symbol_analysis(
+        self,
+        symbol_analysis: dict[str, Any],
+        signal: dict[str, Any] | None,
+    ) -> dict[str, Any]:
+        normalized = dict(symbol_analysis)
+        blocked_reasons = [
+            str(reason).strip().lower()
+            for reason in normalized.get("blocked_reasons", [])
+            if str(reason).strip()
+        ]
+        if blocked_reasons:
+            normalized["blocked_reasons"] = blocked_reasons
+
+        if not isinstance(signal, dict):
+            return normalized
+
+        best_spread_type = normalized.get("best_spread_type")
+        candidate = self._selected_execution_candidate(signal, best_spread_type)
+        if not isinstance(candidate, dict) or candidate.get("candidate_available") is not True:
+            return normalized
+
+        worst_leg_ratio = candidate.get("worst_leg_bid_ask_spread_ratio")
+        try:
+            worst_leg_ratio_value = float(worst_leg_ratio)
+        except (TypeError, ValueError):
+            return normalized
+
+        if worst_leg_ratio_value > 0.20:
+            normalized["liquidity_status"] = "illiquid"
+        elif worst_leg_ratio_value >= 0.10:
+            normalized["liquidity_status"] = "wide"
+        else:
+            normalized["liquidity_status"] = "adequate"
+
+        return normalized
 
     def _normalize_flow_symbol_analysis(
         self,
@@ -2207,6 +2269,8 @@ class AgentOrchestrator:
         if not isinstance(signal, dict):
             return normalized
 
+        normalized = self._normalize_chain_gamma_pin_fields(normalized, signal)
+
         if normalized.get("hard_block"):
             return normalized
 
@@ -2236,6 +2300,63 @@ class AgentOrchestrator:
             ):
                 normalized["trade_allowed"] = True
 
+        return normalized
+
+    def _normalize_chain_gamma_pin_fields(
+        self,
+        symbol_analysis: dict[str, Any],
+        signal: dict[str, Any],
+    ) -> dict[str, Any]:
+        normalized = dict(symbol_analysis)
+
+        try:
+            front_expiry_dte = int(normalized.get("front_expiry_dte"))
+        except (TypeError, ValueError):
+            option_vol_surface = signal.get("option_vol_surface", {})
+            if isinstance(option_vol_surface, dict):
+                try:
+                    front_expiry_dte = int(option_vol_surface.get("front_expiry_dte"))
+                except (TypeError, ValueError):
+                    front_expiry_dte = None
+            else:
+                front_expiry_dte = None
+
+        try:
+            pin_strength = float(normalized.get("pin_strength"))
+        except (TypeError, ValueError):
+            pin_strength = None
+
+        option_greeks = signal.get("option_greeks", {})
+        if isinstance(option_greeks, dict):
+            try:
+                gamma_peak_strike = float(option_greeks.get("gamma_peak_strike"))
+            except (TypeError, ValueError):
+                gamma_peak_strike = None
+        else:
+            gamma_peak_strike = None
+
+        price = signal.get("price", {})
+        if isinstance(price, dict):
+            try:
+                spot = float(price.get("close_price"))
+            except (TypeError, ValueError):
+                spot = None
+        else:
+            spot = None
+
+        gamma_pin_active = (
+            front_expiry_dte is not None
+            and front_expiry_dte <= 5
+            and pin_strength is not None
+            and pin_strength > 0.45
+            and gamma_peak_strike is not None
+            and spot is not None
+            and spot > 0
+            and abs(gamma_peak_strike - spot) / spot <= 0.012
+        )
+
+        normalized["gamma_pin_active"] = gamma_pin_active
+        normalized["gamma_pin_strike"] = gamma_peak_strike if gamma_pin_active else None
         return normalized
 
     def _reconcile_chain_liquidity_tier(
@@ -2296,6 +2417,28 @@ class AgentOrchestrator:
             if worst_ratio_value <= ratio_cap:
                 supportive.append(candidate)
         return supportive
+
+    def _selected_execution_candidate(
+        self,
+        signal: dict[str, Any],
+        strategy_type: Any,
+    ) -> dict[str, Any] | None:
+        canonical = self._canonical_emitted_strategy_type(strategy_type)
+        if canonical is None:
+            return None
+
+        option_spreads = signal.get("option_spreads", {})
+        if not isinstance(option_spreads, dict):
+            return None
+        execution_candidates = option_spreads.get("execution_candidates", {})
+        if not isinstance(execution_candidates, dict):
+            return None
+
+        for candidate_key in self._EMITTED_STRATEGY_CANDIDATE_KEYS.get(canonical, ()):
+            candidate = execution_candidates.get(candidate_key)
+            if isinstance(candidate, dict):
+                return candidate
+        return None
 
     async def _run_specialists(
         self,

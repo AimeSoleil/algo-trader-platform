@@ -775,6 +775,14 @@ def test_synthesizer_and_critic_prompts_use_execution_evidence_for_chain_l3_l4_e
     assert 'Butterfly remains invalid under L3/L4 when it relies on pricing_error alone' in critic_prompt
 
 
+def test_critic_prompt_single_indicator_no_longer_blanket_bans_iron_condor_or_calendar():
+    from services.analysis_service.app.llm.agents.critic_agent import _CRITIC_SYSTEM_PROMPT as critic_prompt
+
+    assert 'Single-indicator signal with any multi-leg structure (iron_condor, butterfly, calendar etc.) = error.' not in critic_prompt
+    assert 'Single-indicator status does NOT by itself invalidate iron_condor or calendar_spread' in critic_prompt
+    assert "outside SE6's configured simple structure scope" in critic_prompt
+
+
 def test_critic_prompt_uses_execution_candidates_for_structure_priority_conflicts():
     from services.analysis_service.app.llm.agents.critic_agent import _CRITIC_SYSTEM_PROMPT as critic_prompt
 

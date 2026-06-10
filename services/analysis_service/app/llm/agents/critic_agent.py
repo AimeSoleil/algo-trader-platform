@@ -366,7 +366,7 @@ CV6. Execution Candidate Priority:
 
 ### 7. Single Indicator Compliance (Severity: ERROR)
 SI1. If ANY agent's signal_type="single_indicator" → simple_structures_only=true.
-SI2. Single-indicator signal with any multi-leg structure (iron_condor, butterfly, calendar etc.) = error.
+SI2. Single-indicator status does NOT by itself invalidate iron_condor or calendar_spread. Treat it as a simple_structures_only + confidence-cap constraint, not a blanket multi-leg ban. Raise an error only when the blueprint uses a structure outside SE6's configured simple structure scope, or when another more specific directional / event / gamma rule rejects that structure.
 
 ### 8. Logical Completeness (Severity: WARNING)
 LC1. Every leg must have: expiry (ISO date), strike (numeric), option_type (call/put), side (buy/sell), price_tolerance (numeric), quantity ≥ 1
