@@ -229,6 +229,7 @@ def _refine_empty_market_analysis(
     simple_structure_symbols: list[str] = []
     executability_symbols: list[str] = []
     structure_priority_symbols: list[str] = []
+    contradiction_symbols: list[str] = []
 
     for symbol in trade_symbols:
         flow_data = _agent_symbol_analysis(agent_outputs, "flow", symbol) or {}
@@ -272,6 +273,13 @@ def _refine_empty_market_analysis(
         ):
             executability_symbols.append(symbol)
 
+        if chain_data.get("trade_allowed") is False and (
+            "illiquid_spread_proxy" in chain_blocked_reasons
+            or "insufficient_leg_liquidity" in chain_blocked_reasons
+            or "hard_block_spread" in chain_blocked_reasons
+        ):
+            contradiction_symbols.append(symbol)
+
     if isinstance(deterministic_validation, dict):
         for issue in deterministic_validation.get("pruned_symbol_errors", []) or []:
             if not isinstance(issue, dict):
@@ -288,6 +296,7 @@ def _refine_empty_market_analysis(
         or simple_structure_symbols
         or executability_symbols
         or structure_priority_symbols
+        or contradiction_symbols
     ):
         return market_analysis
 
@@ -313,6 +322,11 @@ def _refine_empty_market_analysis(
                 f"Chain/Spread executability did not confirm a qualifying structure for {_preview_symbols(executability_symbols)} after liquidity, spread, and DTE checks"
             )
         parts.append("; ".join(sentence_parts) + ".")
+
+    if contradiction_symbols:
+        parts.append(
+            f"A specialist hard-veto contradicted explicit execution evidence for {_preview_symbols(contradiction_symbols)}, so the empty result should be treated as a model inconsistency rather than an ordinary no-trade outcome."
+        )
 
     if structure_priority_symbols:
         parts.append(

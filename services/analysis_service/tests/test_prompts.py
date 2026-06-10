@@ -783,6 +783,14 @@ def test_critic_prompt_single_indicator_no_longer_blanket_bans_iron_condor_or_ca
     assert "outside SE6's configured simple structure scope" in critic_prompt
 
 
+def test_critic_prompt_requires_revision_for_contradictory_empty_blueprints():
+    from services.analysis_service.app.llm.agents.critic_agent import _CRITIC_SYSTEM_PROMPT as critic_prompt
+
+    assert 'Empty blueprint contradiction' in critic_prompt
+    assert 'verdict must be `revise`, not `pass`' in critic_prompt
+    assert 'explicitly emit a valid allowed structure that survives hard gates' in critic_prompt
+
+
 def test_critic_prompt_uses_execution_candidates_for_structure_priority_conflicts():
     from services.analysis_service.app.llm.agents.critic_agent import _CRITIC_SYSTEM_PROMPT as critic_prompt
 

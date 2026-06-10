@@ -341,6 +341,107 @@ async def test_generate_single_pass_normalizes_chain_executability_against_expli
 
 
 @pytest.mark.asyncio
+async def test_generate_single_pass_downgrades_chain_illiquid_spread_proxy_when_candidates_are_supportive(monkeypatch):
+    settings = SimpleNamespace(
+        analysis_service=SimpleNamespace(
+            llm=SimpleNamespace(
+                agent_models_override=SimpleNamespace(synthesizer=None, critic=None),
+                max_critic_revisions=0,
+            ),
+        ),
+    )
+
+    monkeypatch.setattr(
+        "services.analysis_service.app.llm.agents.orchestrator.get_settings",
+        lambda: settings,
+    )
+
+    orchestrator = AgentOrchestrator(provider=_Provider())
+    captured: dict[str, object] = {}
+
+    async def _fake_run_specialists(self, *args, **kwargs):
+        return {
+            "chain": {
+                "symbols": [
+                    {
+                        "symbol": "TSLA",
+                        "trade_allowed": False,
+                        "hard_block": False,
+                        "liquidity_ok": True,
+                        "liquidity_tier": "L3",
+                        "blocked_reasons": ["illiquid_spread_proxy"],
+                        "simple_structures_only": True,
+                        "confidence": 0.15,
+                    }
+                ]
+            }
+        }
+
+    def _fake_compute_consensus(self, agent_outputs, trade_sym_set):
+        return {}
+
+    def _fake_classify_market_condition(self, agent_outputs):
+        return "neutral"
+
+    async def _fake_synthesize(**kwargs):
+        captured["agent_outputs"] = kwargs["agent_outputs"]
+        return _make_blueprint(
+            [],
+            max_total_positions=1,
+            analysis_chunk_id="chunk-0",
+        )
+
+    monkeypatch.setattr(AgentOrchestrator, "_run_specialists", _fake_run_specialists)
+    monkeypatch.setattr(AgentOrchestrator, "_compute_consensus", _fake_compute_consensus)
+    monkeypatch.setattr(AgentOrchestrator, "_classify_market_condition", _fake_classify_market_condition)
+    monkeypatch.setattr(orchestrator._synthesizer, "synthesize", _fake_synthesize)
+
+    option_indicators = OptionIndicators(
+        leg_liquidity_floor_profile=OptionLegLiquidityFloorProfile(
+            profile_name="deep_liquidity",
+            min_leg_volume=40,
+            min_exit_strike_open_interest=200,
+            max_worst_leg_bid_ask_spread_ratio=0.12,
+            source="signal_service.filters.options.leg_liquidity_floor.dynamic_selector:data_rich",
+            tradeable_contract_count=476,
+            execution_candidate_count=5,
+        ),
+        spread_execution_inputs={
+            "iron_condor": SpreadExecutionCandidate(
+                strategy_type="iron_condor",
+                candidate_available=True,
+                worst_leg_bid_ask_spread_ratio=0.012848,
+                effective_rr=1.6596,
+            ),
+            "calendar": SpreadExecutionCandidate(
+                strategy_type="calendar",
+                candidate_available=True,
+                worst_leg_bid_ask_spread_ratio=0.025157,
+                effective_theta_capture_per_day=0.341456,
+            ),
+        },
+        front_expiry_dte=1,
+        bid_ask_spread_ratio=0.1896,
+    )
+
+    await orchestrator._generate_single_pass(
+        signal_features=[_make_sf("TSLA", option_indicators=option_indicators)],
+        provider=_Provider(),
+        signal_date=None,
+        is_chunk=False,
+        analysis_chunk_id="chunk-0",
+        usage_tracker=None,
+        trade_symbols=["TSLA"],
+        market_snapshot=None,
+    )
+
+    chain_entry = captured["agent_outputs"]["chain"]["symbols"][0]
+    assert chain_entry["trade_allowed"] is True
+    assert chain_entry["blocked_reasons"] == []
+    assert chain_entry["liquidity_ok"] is True
+
+
+@pytest.mark.asyncio
 async def test_generate_single_pass_keeps_chain_l4_for_non_deep_liquidity_profiles(monkeypatch):
     settings = SimpleNamespace(
         analysis_service=SimpleNamespace(

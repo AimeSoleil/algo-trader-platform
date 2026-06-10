@@ -272,6 +272,8 @@ HE1a. If trade_allowed=false reflects analytical caution only (for example count
 HE2. Chain.hard_block=true OR Chain.liquidity_tier="L5" → symbol must NOT appear.
 HE3. Any agent.blocked_reasons contains "event_risk_imminent" → symbol must NOT appear. No exceptions.
 HE4. Do NOT fail a symbol solely because blocked_reasons contains "extreme_option_activity_unconfirmed"; require separate execution or event-risk evidence before exclusion.
+HE4a. Empty blueprint contradiction: if `symbol_plans` is empty but a specialist hard veto is contradicted by explicit Market Signal Data execution_candidates or by symbol-level emitted valid structure evidence, verdict must be `revise`, not `pass`.
+HE4b. Empty blueprint contradiction also applies when one or more specialists explicitly emit a valid allowed structure that survives hard gates and structure-scope rules. In that case, returning zero symbol_plans without a stronger contradictory hard rule is a logic error requiring revision.
 HE5. Only vertical_spread may be rejected on Spread R:R, and only when Spread.effective_rr is explicitly available and <0.7 or Spread.risk_reward_ratio <0.7. Iron condor, butterfly, calendar, and arbitrage setups must NOT be rejected solely because Spread.effective_rr is null.
 HE7. Any symbol_plan confidence < MIN_ACCEPTABLE_CONFIDENCE → symbol must NOT appear.
 

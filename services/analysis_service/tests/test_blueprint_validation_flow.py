@@ -598,3 +598,135 @@ def test_apply_and_log_deterministic_validation_refines_empty_market_analysis(mo
     assert "Configured simple-structure gates remained active for MSFT" in validated.market_analysis
     assert "Chain/Spread executability did not confirm a qualifying structure for MSFT after liquidity, spread, and DTE checks." in validated.market_analysis
     assert "Deterministic validation then pruned the remaining candidates because a stronger allowed execution candidate outranked the emitted structure for MSFT." in validated.market_analysis
+
+
+def test_refine_empty_market_analysis_calls_out_contradictory_hard_vetoes():
+    text = _refine_empty_market_analysis(
+        market_analysis="TSLA shows neutral consensus and no qualifying structures.",
+        market_regime="neutral",
+        signal_map={"TSLA": {"symbol": "TSLA"}},
+        agent_outputs={
+            "flow": {
+                "symbols": [
+                    {
+                        "symbol": "TSLA",
+                        "false_breakout_risk": "high",
+                        "blocked_reasons": ["high_false_breakout_risk"],
+                    }
+                ]
+            },
+            "chain": {
+                "symbols": [
+                    {
+                        "symbol": "TSLA",
+                        "trade_allowed": False,
+                        "liquidity_ok": True,
+                        "liquidity_tier": "L3",
+                        "blocked_reasons": ["illiquid_spread_proxy"],
+                    }
+                ]
+            },
+            "spread": {
+                "symbols": [
+                    {
+                        "symbol": "TSLA",
+                        "liquidity_status": "adequate",
+                    }
+                ]
+            },
+            "cross_asset": {
+                "vix_summary": "VIX at 18.92, normal environment.",
+                "symbols": [
+                    {
+                        "symbol": "TSLA",
+                        "vix_level": 18.92,
+                        "vix_environment": "normal",
+                    }
+                ],
+            },
+        },
+        deterministic_validation={"pruned_symbol_errors": []},
+    )
+
+    assert "A specialist hard-veto contradicted explicit execution evidence for TSLA" in text
+    assert "model inconsistency rather than an ordinary no-trade outcome" in text
+
+
+def test_apply_and_log_deterministic_validation_refines_contradictory_empty_market_analysis(monkeypatch):
+    class _FakeSignal:
+        def __init__(self, symbol: str):
+            self.symbol = symbol
+
+        def model_dump(self, mode: str = "json") -> dict[str, object]:
+            return {"symbol": self.symbol}
+
+    def _fake_apply(blueprint, signal_map, agent_outputs):
+        return blueprint.model_copy(update={"symbol_plans": []}), {
+            "passed": False,
+            "error_count": 0,
+            "warning_count": 0,
+            "issues": [],
+            "initial_error_count": 0,
+            "initial_warning_count": 0,
+            "precision_first_enabled": True,
+            "allowed_strategy_types": ["single_leg", "vertical_spread", "iron_condor", "calendar_spread"],
+            "emitted_strategy_scope_pruned_symbols": [],
+            "emitted_strategy_scope_pruned_plan_count": 0,
+            "pruned_symbols": [],
+            "pruned_plan_count": 0,
+            "pruned_symbol_errors": [],
+            "trade_gate_summary": {},
+            "pre_selection_trade_gate_summary": {},
+            "empty_after_pruning": True,
+        }
+
+    monkeypatch.setattr(blueprint_task, "_apply_deterministic_validation", _fake_apply)
+
+    blueprint = _make_blueprint(["MSFT"]).model_copy(update={
+        "market_analysis": "Old empty message.",
+        "reasoning_context": {
+            "agent_outputs": {
+                "flow": {
+                    "symbols": [
+                        {
+                            "symbol": "MSFT",
+                            "false_breakout_risk": "high",
+                            "blocked_reasons": ["high_false_breakout_risk"],
+                        }
+                    ]
+                },
+                "chain": {
+                    "symbols": [
+                        {
+                            "symbol": "MSFT",
+                            "trade_allowed": False,
+                            "liquidity_ok": True,
+                            "liquidity_tier": "L3",
+                            "blocked_reasons": ["illiquid_spread_proxy"],
+                        }
+                    ]
+                },
+                "spread": {
+                    "symbols": [
+                        {
+                            "symbol": "MSFT",
+                            "liquidity_status": "adequate",
+                        }
+                    ]
+                },
+                "cross_asset": {
+                    "vix_summary": "VIX at 18.92, normal environment.",
+                    "symbols": [{"symbol": "MSFT", "vix_level": 18.92, "vix_environment": "normal"}],
+                },
+            }
+        },
+    })
+
+    validated = _apply_and_log_deterministic_validation(
+        blueprint,
+        [_FakeSignal("MSFT")],
+        td=date(2026, 4, 30),
+    )
+
+    assert "A specialist hard-veto contradicted explicit execution evidence for MSFT" in validated.market_analysis
+    assert "model inconsistency rather than an ordinary no-trade outcome" in validated.market_analysis

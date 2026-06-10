@@ -2292,6 +2292,14 @@ class AgentOrchestrator:
         if liquidity_tier in {"L1", "L2", "L3", "L4"}:
             normalized["liquidity_ok"] = True
 
+        if "illiquid_spread_proxy" in blocked_reasons:
+            blocked_reasons = [reason for reason in blocked_reasons if reason != "illiquid_spread_proxy"]
+            normalized["blocked_reasons"] = blocked_reasons
+            if normalized.get("trade_allowed") is False and (
+                not blocked_reasons or all(classify_reason_token(reason) == "soft" for reason in blocked_reasons)
+            ):
+                normalized["trade_allowed"] = True
+
         if "insufficient_leg_liquidity" in blocked_reasons:
             blocked_reasons = [reason for reason in blocked_reasons if reason != "insufficient_leg_liquidity"]
             normalized["blocked_reasons"] = blocked_reasons
