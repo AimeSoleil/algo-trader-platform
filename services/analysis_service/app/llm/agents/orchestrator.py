@@ -1933,6 +1933,13 @@ class AgentOrchestrator:
         if not supportive_candidates:
             return normalized
 
+        liquidity_tier = self._reconcile_chain_liquidity_tier(
+            liquidity_tier,
+            signal,
+            supportive_candidates,
+        )
+        normalized["liquidity_tier"] = liquidity_tier
+
         if liquidity_tier in {"L1", "L2", "L3", "L4"}:
             normalized["liquidity_ok"] = True
 
@@ -1945,6 +1952,30 @@ class AgentOrchestrator:
                 normalized["trade_allowed"] = True
 
         return normalized
+
+    def _reconcile_chain_liquidity_tier(
+        self,
+        liquidity_tier: str,
+        signal: dict[str, Any],
+        supportive_candidates: list[dict[str, Any]],
+    ) -> str:
+        """Correct clearly over-conservative Chain liquidity tiers using explicit upstream evidence."""
+        if liquidity_tier != "L4" or len(supportive_candidates) < 2:
+            return liquidity_tier
+
+        option_chain = signal.get("option_chain", {})
+        if not isinstance(option_chain, dict):
+            return liquidity_tier
+
+        liquidity_profile = option_chain.get("liquidity_profile", {})
+        if not isinstance(liquidity_profile, dict):
+            return liquidity_tier
+
+        profile_name = str(liquidity_profile.get("profile_name") or "").strip().lower()
+        if profile_name == "deep_liquidity":
+            return "L3"
+
+        return liquidity_tier
 
     def _supportive_execution_candidates(self, signal: dict[str, Any]) -> list[dict[str, Any]]:
         option_chain = signal.get("option_chain", {})

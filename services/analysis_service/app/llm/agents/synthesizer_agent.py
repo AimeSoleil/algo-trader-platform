@@ -603,7 +603,7 @@ class SynthesizerAgent:
                 data["trading_date"] = next_trading_day(from_date=signal_date).isoformat()
                 data["generated_at"] = now_utc().isoformat()
                 data["model_provider"] = provider.name
-                data["model_version"] = settings.analysis_service.llm.openai.model
+                data["model_version"] = result.model or model or "unknown"
 
                 blueprint = LLMTradingBlueprint.model_validate(data)
                 status = "ok"

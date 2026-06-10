@@ -283,6 +283,109 @@ async def test_generate_single_pass_normalizes_chain_executability_against_expli
     chain_entry = captured["agent_outputs"]["chain"]["symbols"][0]
     assert chain_entry["trade_allowed"] is True
     assert chain_entry["liquidity_ok"] is True
+    assert chain_entry["liquidity_tier"] == "L3"
+    assert chain_entry["blocked_reasons"] == ["single_indicator_only"]
+
+
+@pytest.mark.asyncio
+async def test_generate_single_pass_keeps_chain_l4_for_non_deep_liquidity_profiles(monkeypatch):
+    settings = SimpleNamespace(
+        analysis_service=SimpleNamespace(
+            llm=SimpleNamespace(
+                agent_models_override=SimpleNamespace(synthesizer=None, critic=None),
+                max_critic_revisions=0,
+            ),
+        ),
+    )
+
+    monkeypatch.setattr(
+        "services.analysis_service.app.llm.agents.orchestrator.get_settings",
+        lambda: settings,
+    )
+
+    orchestrator = AgentOrchestrator(provider=_Provider())
+    captured: dict[str, object] = {}
+
+    async def _fake_run_specialists(self, *args, **kwargs):
+        return {
+            "chain": {
+                "symbols": [
+                    {
+                        "symbol": "TSLA",
+                        "trade_allowed": False,
+                        "hard_block": False,
+                        "liquidity_ok": False,
+                        "liquidity_tier": "L4",
+                        "blocked_reasons": ["single_indicator_only", "insufficient_leg_liquidity"],
+                        "simple_structures_only": True,
+                        "confidence_cap": 0.35,
+                    }
+                ]
+            }
+        }
+
+    def _fake_compute_consensus(self, agent_outputs, trade_sym_set):
+        return {}
+
+    def _fake_classify_market_condition(self, agent_outputs):
+        return "neutral"
+
+    async def _fake_synthesize(**kwargs):
+        captured["agent_outputs"] = kwargs["agent_outputs"]
+        return _make_blueprint(
+            [],
+            max_total_positions=1,
+            analysis_chunk_id="chunk-0",
+        )
+
+    monkeypatch.setattr(AgentOrchestrator, "_run_specialists", _fake_run_specialists)
+    monkeypatch.setattr(AgentOrchestrator, "_compute_consensus", _fake_compute_consensus)
+    monkeypatch.setattr(AgentOrchestrator, "_classify_market_condition", _fake_classify_market_condition)
+    monkeypatch.setattr(orchestrator._synthesizer, "synthesize", _fake_synthesize)
+
+    option_indicators = OptionIndicators(
+        leg_liquidity_floor_profile=OptionLegLiquidityFloorProfile(
+            profile_name="tradable_liquidity",
+            min_leg_volume=25,
+            min_exit_strike_open_interest=100,
+            max_worst_leg_bid_ask_spread_ratio=0.20,
+            source="signal_service.filters.options.leg_liquidity_floor.dynamic_selector:baseline",
+            tradeable_contract_count=120,
+            execution_candidate_count=2,
+        ),
+        spread_execution_inputs={
+            "vertical": SpreadExecutionCandidate(
+                strategy_type="vertical",
+                candidate_available=True,
+                worst_leg_bid_ask_spread_ratio=0.03,
+                effective_rr=1.2,
+            ),
+            "iron_condor": SpreadExecutionCandidate(
+                strategy_type="iron_condor",
+                candidate_available=True,
+                worst_leg_bid_ask_spread_ratio=0.04,
+                effective_rr=0.7,
+            ),
+        },
+        front_expiry_dte=1,
+        bid_ask_spread_ratio=0.18,
+    )
+
+    await orchestrator._generate_single_pass(
+        signal_features=[_make_sf("TSLA", option_indicators=option_indicators)],
+        provider=_Provider(),
+        signal_date=None,
+        is_chunk=False,
+        analysis_chunk_id="chunk-0",
+        usage_tracker=None,
+        trade_symbols=["TSLA"],
+        market_snapshot=None,
+    )
+
+    chain_entry = captured["agent_outputs"]["chain"]["symbols"][0]
+    assert chain_entry["trade_allowed"] is True
+    assert chain_entry["liquidity_ok"] is True
+    assert chain_entry["liquidity_tier"] == "L4"
     assert chain_entry["blocked_reasons"] == ["single_indicator_only"]
 
 
