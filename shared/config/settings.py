@@ -526,6 +526,7 @@ class LLMSettings(BaseSettings):
     orchestrator_chunk_size: int = 7
     orchestrator_max_parallel: int = 3
     max_output_plans: int = Field(default=10, ge=1)
+    min_acceptable_confidence: float = Field(default=0.35, ge=0.0, le=1.0)
 
     # ── Specialist flow parallel gate (pipeline-level) ──
     specialist_parallel_limit: int = 1
