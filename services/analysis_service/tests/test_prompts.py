@@ -847,6 +847,15 @@ def test_synthesizer_and_critic_build_prompts_include_full_signal_context_execut
     assert expected in critic_prompt
 
 
+def test_critic_prompt_requires_reasoning_support_claims_to_match_emitted_evidence():
+    from services.analysis_service.app.llm.agents.critic_agent import _CRITIC_SYSTEM_PROMPT as critic_prompt
+
+    assert "Reasoning Consistency:" in critic_prompt
+    assert "must not claim Trend / Volatility / Chain / Spread support for a structure unless that structure appears in the corresponding emitted specialist evidence" in critic_prompt
+    assert 'raise severity=error with category="logic_error"' in critic_prompt
+    assert "Reasoning must reference agent support truthfully" in critic_prompt
+
+
 def test_synthesizer_and_critic_prompts_align_with_manual_trader_risk_contract():
     from services.analysis_service.app.llm.agents.critic_agent import _CRITIC_SYSTEM_PROMPT as critic_prompt
     from services.analysis_service.app.llm.agents.synthesizer_agent import _SYNTHESIZER_SYSTEM_PROMPT

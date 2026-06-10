@@ -671,6 +671,7 @@ class TestSpreadExecutionCandidateConflicts:
             "AAPL": {
                 "close_price": 150.0,
                 "option_indicators": {
+                    "iv_rank": 50.0,
                     "term_structure_slope": 0.05,
                     "spread_execution_inputs": {
                         "vertical": {
@@ -706,6 +707,7 @@ class TestSpreadExecutionCandidateConflicts:
             "AAPL": {
                 "close_price": 150.0,
                 "option_indicators": {
+                    "iv_rank": 50.0,
                     "term_structure_slope": 0.05,
                     "spread_execution_inputs": {
                         "vertical": {
@@ -741,6 +743,7 @@ class TestSpreadExecutionCandidateConflicts:
             "AAPL": {
                 "close_price": 150.0,
                 "option_indicators": {
+                    "iv_rank": 50.0,
                     "term_structure_slope": 0.05,
                     "spread_execution_inputs": {
                         "vertical": {
@@ -843,6 +846,7 @@ class TestSpreadExecutionCandidateConflicts:
             "TSLA": {
                 "close_price": 396.68,
                 "option_indicators": {
+                    "iv_rank": 50.0,
                     "term_structure_slope": 0.1191,
                     "spread_execution_inputs": {
                         "iron_condor": {
@@ -886,6 +890,7 @@ class TestSpreadExecutionCandidateConflicts:
             "TSLA": {
                 "close_price": 396.68,
                 "option_indicators": {
+                    "iv_rank": 50.0,
                     "term_structure_slope": 0.1191,
                     "spread_execution_inputs": {
                         "iron_condor": {
@@ -949,6 +954,7 @@ class TestSpreadExecutionCandidateConflicts:
             "TSLA": {
                 "close_price": 396.68,
                 "option_indicators": {
+                    "iv_rank": 50.0,
                     "term_structure_slope": 0.1191,
                     "spread_execution_inputs": {
                         "iron_condor": {
@@ -995,6 +1001,60 @@ class TestSpreadExecutionCandidateConflicts:
             agent_outputs=agent_outputs,
         )
         assert any(i.rule == "spread_execution_candidate_conflict" and i.severity == "error" for i in result.issues)
+
+    def test_no_calendar_fallback_warning_when_calendar_violates_iv_rank_contract(self):
+        signals = {
+            "TSLA": {
+                "close_price": 396.68,
+                "option_indicators": {
+                    "iv_rank": 94.72,
+                    "term_structure_slope": 0.1191,
+                    "spread_execution_inputs": {
+                        "iron_condor": {
+                            "candidate_available": True,
+                            "effective_rr": 1.6596,
+                            "raw_rr": 9.0,
+                            "worst_leg_bid_ask_spread_ratio": 0.012848,
+                        },
+                        "calendar": {
+                            "candidate_available": True,
+                            "effective_theta_capture_per_day": 0.341456,
+                            "worst_leg_bid_ask_spread_ratio": 0.025157,
+                        },
+                    },
+                },
+                "cross_asset_indicators": {"earnings_proximity_days": 43},
+            }
+        }
+        agent_outputs = _agent_outputs(
+            trend=[{
+                "symbol": "TSLA",
+                "strategies": [{"strategy_type": "Iron Condor"}],
+                "simple_structures_only": True,
+            }],
+            spread=[{
+                "symbol": "TSLA",
+                "best_spread_type": "iron_condor",
+            }],
+        )
+        result = check_blueprint(
+            _blueprint(symbol_plans=[_plan(
+                underlying="TSLA",
+                strategy_type="iron_condor",
+                direction="neutral",
+                confidence=0.35,
+                legs=[
+                    _leg(strike=390, option_type="put", side="buy"),
+                    _leg(strike=392.5, option_type="put", side="sell"),
+                    _leg(strike=402.5, option_type="call", side="sell"),
+                    _leg(strike=405, option_type="call", side="buy"),
+                ],
+            )]),
+            signal_features=signals,
+            agent_outputs=agent_outputs,
+        )
+        assert not any(i.rule == "spread_execution_candidate_unemitted_fallback" for i in result.issues)
+        assert not any(i.rule == "spread_execution_candidate_conflict" for i in result.issues)
 
 
 # ---------------------------------------------------------------------------

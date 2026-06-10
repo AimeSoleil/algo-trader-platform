@@ -972,6 +972,19 @@ def _signal_front_expiry_dte(signal: dict[str, Any]) -> int | None:
         return None
 
 
+def _signal_iv_rank(signal: dict[str, Any]) -> float | None:
+    for key in ("option_indicators", "option_vol_surface"):
+        option_data = signal.get(key, {})
+        if not isinstance(option_data, dict):
+            continue
+        iv_rank = option_data.get("iv_rank")
+        try:
+            return float(iv_rank) if iv_rank is not None else None
+        except (TypeError, ValueError):
+            continue
+    return None
+
+
 def _has_simple_structures_only_gate(
     agent_outputs: dict[str, Any],
     symbol: str,
@@ -1017,9 +1030,11 @@ def _is_execution_candidate_allowed(
 ) -> bool:
     earnings_days = _signal_earnings_days(signal)
     slope = _signal_term_structure_slope(signal)
+    iv_rank = _signal_iv_rank(signal)
 
     if _has_simple_structures_only_gate(agent_outputs, symbol):
-        return strategy_type in _configured_simple_strategy_types()
+        if strategy_type not in _configured_simple_strategy_types():
+            return False
 
     if isinstance(earnings_days, int):
         if earnings_days <= 1:
@@ -1030,10 +1045,20 @@ def _is_execution_candidate_allowed(
             return False
 
     if strategy_type == "calendar_spread":
-        return isinstance(slope, float) and slope > 0.0
+        return (
+            isinstance(slope, float)
+            and slope > 0.0
+            and isinstance(iv_rank, float)
+            and 25.0 <= iv_rank <= 65.0
+        )
 
     if strategy_type == "diagonal_spread":
-        return isinstance(slope, float) and (slope > 0.0 or slope < -0.03)
+        return (
+            isinstance(slope, float)
+            and (slope > 0.0 or slope < -0.03)
+            and isinstance(iv_rank, float)
+            and 25.0 <= iv_rank <= 65.0
+        )
 
     return True
 
@@ -1044,6 +1069,7 @@ def _execution_candidate_breakdown(
     signal: dict[str, Any],
 ) -> dict[str, Any]:
     slope = _signal_term_structure_slope(signal)
+    iv_rank = _signal_iv_rank(signal)
     candidate_available = bool(candidate.get("candidate_available", False))
     worst_leg_ratio = _safe_float(candidate.get("worst_leg_bid_ask_spread_ratio"))
     liquidity_penalty = 0.0
@@ -1126,6 +1152,9 @@ def _execution_candidate_breakdown(
             elif not isinstance(slope, float) or slope <= 0.0:
                 score = 0.1
                 reason = "calendar_term_structure_misaligned"
+            elif not isinstance(iv_rank, float) or not (25.0 <= iv_rank <= 65.0):
+                score = 0.1
+                reason = "calendar_iv_rank_outside_band"
             elif metric_value <= 0.0:
                 score = 0.1
                 reason = "calendar_theta_not_positive"

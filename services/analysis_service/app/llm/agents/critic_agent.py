@@ -327,6 +327,9 @@ AC1. Flow Consistency:
 AC2. Cross-Asset Consistency:
   - Cross-Asset.confidence <0.4 → symbol_plan confidence ≤0.4
   - Cross-Asset.regime_transition=true AND (regime_days is null OR regime_days <3) → directional plan with confidence >0.5 = error
+AC3. Reasoning Consistency:
+  - Final plan reasoning must not claim Trend / Volatility / Chain / Spread support for a structure unless that structure appears in the corresponding emitted specialist evidence (`strategies[].strategy_type`, `suggested_strategies`, or `best_spread_type`).
+  - If reasoning claims multi-agent agreement for a structure that was not actually emitted by those agents, raise severity=error with category="logic_error".
 
 ### 6. Cross-Validation (Severity: WARNING/ERROR)
 CV1. Earnings Proximity:
@@ -374,6 +377,7 @@ SI2. Single-indicator status does NOT by itself invalidate iron_condor or calend
 LC1. Every leg must have: expiry (ISO date), strike (numeric), option_type (call/put), side (buy/sell), price_tolerance (numeric), quantity ≥ 1
 LC2. Every plan must have: ≥1 entry condition and ≥1 exit condition. adjustment_rules may be empty only for one-shot expiry structures (e.g., single_leg/vertical_spread held to expiry) if reasoning explicitly explains no-adjustment intent.
 LC3. Reasoning must explicitly reference at least 2 different agent analyses
+LC3a. Reasoning must reference agent support truthfully; do not claim agent agreement or emitted structure support that is absent from the specialist outputs.
 LC4. All dates must be future dates (no historical expiries)
 LC5. No duplicate entry/exit conditions
 

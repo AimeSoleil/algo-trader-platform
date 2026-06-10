@@ -276,6 +276,24 @@ def _repair_strategy_type_from_legs(normalized_plan: dict[str, Any]) -> tuple[di
     }
 
 
+def _normalize_condition_value(
+    operator: Any,
+    value: Any,
+) -> float | list[float] | None:
+    normalized_value = _normalize_numeric_value(value)
+    if normalized_value is None:
+        return None
+
+    if operator == ConditionOperator.BETWEEN:
+        if not isinstance(normalized_value, list) or len(normalized_value) != 2:
+            return None
+        return normalized_value
+
+    if isinstance(normalized_value, list):
+        return None
+    return normalized_value
+
+
 def _normalize_trigger_conditions(items: Any) -> tuple[list[dict[str, Any]], int, list[Any]]:
     if not isinstance(items, list):
         return [], 0, []
@@ -297,7 +315,7 @@ def _normalize_trigger_conditions(items: Any) -> tuple[list[dict[str, Any]], int
             dropped += 1
             _append_dropped_sample(dropped_samples, item)
             continue
-        normalized_value = _normalize_numeric_value(normalized.get("value"))
+        normalized_value = _normalize_condition_value(normalized.get("operator"), normalized.get("value"))
         if normalized_value is None:
             dropped += 1
             _append_dropped_sample(dropped_samples, item)
@@ -334,7 +352,10 @@ def _normalize_adjustment_rules(items: Any) -> tuple[list[dict[str, Any]], int, 
             dropped += 1
             _append_dropped_sample(dropped_samples, item)
             continue
-        normalized_value = _normalize_numeric_value(normalized_trigger.get("value"))
+        normalized_value = _normalize_condition_value(
+            normalized_trigger.get("operator"),
+            normalized_trigger.get("value"),
+        )
         if normalized_value is None:
             dropped += 1
             _append_dropped_sample(dropped_samples, item)

@@ -82,6 +82,195 @@ def test_normalize_blueprint_payload_records_dropped_condition_samples():
     ]
 
 
+def test_normalize_blueprint_payload_drops_scalar_between_conditions():
+    payload = {
+        "symbol_plans": [
+            {
+                "underlying": "TSLA",
+                "strategy_type": "iron_condor",
+                "direction": "neutral",
+                "legs": [
+                    {
+                        "expiry": "2026-06-18",
+                        "strike": 390,
+                        "option_type": "put",
+                        "side": "buy",
+                        "quantity": 1,
+                    },
+                    {
+                        "expiry": "2026-06-18",
+                        "strike": 392.5,
+                        "option_type": "put",
+                        "side": "sell",
+                        "quantity": 1,
+                    },
+                    {
+                        "expiry": "2026-06-18",
+                        "strike": 402.5,
+                        "option_type": "call",
+                        "side": "sell",
+                        "quantity": 1,
+                    },
+                    {
+                        "expiry": "2026-06-18",
+                        "strike": 405,
+                        "option_type": "call",
+                        "side": "buy",
+                        "quantity": 1,
+                    },
+                ],
+                "entry_conditions": [
+                    {
+                        "field": "time",
+                        "operator": "between",
+                        "value": 10,
+                        "description": "bad scalar between",
+                    },
+                    {
+                        "field": "underlying_price",
+                        "operator": "between",
+                        "value": [390, 405],
+                        "description": "valid range",
+                    },
+                ],
+                "exit_conditions": [
+                    {
+                        "field": "pnl_percent",
+                        "operator": ">=",
+                        "value": 0.5,
+                        "description": "valid exit",
+                    },
+                ],
+                "adjustment_rules": [],
+            },
+        ],
+    }
+
+    normalized, stats = _normalize_blueprint_payload(payload, signal_date=None)
+
+    assert normalized["symbol_plans"][0]["entry_conditions"] == [
+        {
+            "field": "underlying_price",
+            "operator": "between",
+            "value": [390.0, 405.0],
+            "description": "valid range",
+        }
+    ]
+    assert stats["entry_conditions_dropped"] == 1
+    assert stats["entry_conditions_dropped_samples"] == [
+        {
+            "field": "time",
+            "operator": "between",
+            "value": 10,
+            "description": "bad scalar between",
+        }
+    ]
+
+
+def test_normalize_blueprint_payload_drops_scalar_between_adjustment_triggers():
+    payload = {
+        "symbol_plans": [
+            {
+                "underlying": "TSLA",
+                "strategy_type": "iron_condor",
+                "direction": "neutral",
+                "legs": [
+                    {
+                        "expiry": "2026-06-18",
+                        "strike": 390,
+                        "option_type": "put",
+                        "side": "buy",
+                        "quantity": 1,
+                    },
+                    {
+                        "expiry": "2026-06-18",
+                        "strike": 392.5,
+                        "option_type": "put",
+                        "side": "sell",
+                        "quantity": 1,
+                    },
+                    {
+                        "expiry": "2026-06-18",
+                        "strike": 402.5,
+                        "option_type": "call",
+                        "side": "sell",
+                        "quantity": 1,
+                    },
+                    {
+                        "expiry": "2026-06-18",
+                        "strike": 405,
+                        "option_type": "call",
+                        "side": "buy",
+                        "quantity": 1,
+                    },
+                ],
+                "entry_conditions": [
+                    {
+                        "field": "underlying_price",
+                        "operator": "between",
+                        "value": [390, 405],
+                        "description": "valid range",
+                    },
+                ],
+                "exit_conditions": [
+                    {
+                        "field": "pnl_percent",
+                        "operator": ">=",
+                        "value": 0.5,
+                        "description": "valid exit",
+                    },
+                ],
+                "adjustment_rules": [
+                    {
+                        "trigger": {
+                            "field": "underlying_price",
+                            "operator": "between",
+                            "value": 401.5,
+                            "description": "bad scalar between",
+                        },
+                        "action": "close_leg",
+                    },
+                    {
+                        "trigger": {
+                            "field": "underlying_price",
+                            "operator": "between",
+                            "value": [399, 401],
+                            "description": "valid range trigger",
+                        },
+                        "action": "close_leg",
+                    },
+                ],
+            },
+        ],
+    }
+
+    normalized, stats = _normalize_blueprint_payload(payload, signal_date=None)
+
+    assert normalized["symbol_plans"][0]["adjustment_rules"] == [
+        {
+            "trigger": {
+                "field": "underlying_price",
+                "operator": "between",
+                "value": [399.0, 401.0],
+                "description": "valid range trigger",
+            },
+            "action": "close_leg",
+        }
+    ]
+    assert stats["adjustment_rules_dropped"] == 1
+    assert stats["adjustment_rules_dropped_samples"] == [
+        {
+            "trigger": {
+                "field": "underlying_price",
+                "operator": "between",
+                "value": 401.5,
+                "description": "bad scalar between",
+            },
+            "action": "close_leg",
+        }
+    ]
+
+
 def test_normalize_blueprint_payload_normalizes_leg_side_aliases():
     payload = {
         "trading_date": "2026-04-29",
