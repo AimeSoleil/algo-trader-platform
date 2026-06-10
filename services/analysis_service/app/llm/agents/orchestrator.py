@@ -1659,6 +1659,12 @@ class AgentOrchestrator:
 
         settings = get_settings()
         precision_first = getattr(settings.analysis_service.llm, "precision_first", None)
+        min_acceptable_confidence = getattr(settings.analysis_service.llm, "min_acceptable_confidence", 0.35)
+        try:
+            min_acceptable_confidence_value = max(0.0, min(1.0, float(min_acceptable_confidence)))
+        except (TypeError, ValueError):
+            min_acceptable_confidence_value = 0.35
+        min_acceptable_confidence_text = f"{min_acceptable_confidence_value:.2f}".rstrip("0").rstrip(".")
         precision_first_enabled = bool(getattr(precision_first, "enabled", False))
         allowed_strategy_types = {
             str(strategy_type).strip().lower()
@@ -1676,8 +1682,8 @@ class AgentOrchestrator:
 
         lines = [
             "Your previous synthesis returned zero symbol_plans.",
-            "You must not return an empty blueprint when at least one emitted valid candidate remains and no hard exclusion applies.",
-            "Prefer the strongest emitted valid candidate over omission whenever the stronger execution candidate was never emitted by any specialist.",
+            "Do not omit an already-emitted candidate solely because a stronger execution candidate was never emitted by any specialist.",
+            f"Only preserve an emitted candidate when it already survives all hard gates, remains inside the allowed structure scope, and can keep confidence >= {min_acceptable_confidence_text}.",
         ]
 
         usable_symbols = 0
@@ -1741,7 +1747,7 @@ class AgentOrchestrator:
             return None
 
         lines.append(
-            "If at least one emitted candidate remains within the allowed structure scope, satisfies current hard gates, and can keep confidence >= 0.3, output that candidate instead of omitting the symbol."
+            "If no emitted candidate clears those hard constraints, returning an empty blueprint remains allowed."
         )
         return "\n".join(lines)
 

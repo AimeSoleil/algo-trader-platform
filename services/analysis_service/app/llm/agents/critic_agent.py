@@ -23,6 +23,22 @@ from services.analysis_service.app.llm.agents.models import CriticVerdict
 
 logger = get_logger("critic_agent")
 
+_DEFAULT_MIN_ACCEPTABLE_CONFIDENCE = 0.35
+
+
+def _format_prompt_float(value: float) -> str:
+  return f"{float(value):.2f}".rstrip("0").rstrip(".")
+
+
+def _resolve_min_acceptable_confidence(settings: Any | None = None) -> float:
+  llm_settings = getattr(getattr(settings, "analysis_service", None), "llm", None)
+  raw_value = getattr(llm_settings, "min_acceptable_confidence", _DEFAULT_MIN_ACCEPTABLE_CONFIDENCE)
+  try:
+    resolved = float(raw_value)
+  except (TypeError, ValueError):
+    return _DEFAULT_MIN_ACCEPTABLE_CONFIDENCE
+  return max(0.0, min(1.0, resolved))
+
 
 def _is_http_500_error(exc: Exception) -> bool:
     status_code = getattr(exc, "status_code", None)
@@ -72,6 +88,7 @@ class CriticAgent:
         settings = get_settings()
 
         prompt = self._build_prompt(blueprint_json, agent_outputs, signals_summary)
+        min_acceptable_confidence = _resolve_min_acceptable_confidence(settings)
 
         max_retries = settings.analysis_service.llm.max_retries
         backoff_base = settings.analysis_service.llm.backoff_base_seconds
@@ -85,7 +102,7 @@ class CriticAgent:
             status = "error"
             try:
                 result = await provider.generate(
-                    instructions=_CRITIC_SYSTEM_PROMPT,
+                instructions=_build_critic_system_prompt(min_acceptable_confidence),
                     user_prompt=prompt,
                     temperature=0.0,  # deterministic for review
                     max_tokens=16384,
@@ -206,7 +223,7 @@ class CriticAgent:
 
         return "\n\n".join(parts)
 
-_CRITIC_SYSTEM_PROMPT = """\
+_CRITIC_SYSTEM_PROMPT_TEMPLATE = """\
 Role: Independent Trading Blueprint Auditor | Mandate: Audit synthesizer output for compliance with all 6 specialist agent rules. YOU AUDIT ONLY, NEVER GENERATE.
 
 Inputs (strictly use only these fields):
@@ -383,3 +400,15 @@ OUTPUT SCHEMA (100% Machine-Readable)
 
 Output ONLY valid JSON. No markdown, no extra text, no explanations outside the summary and description fields.
 """
+
+
+def _build_critic_system_prompt(min_acceptable_confidence: float | None = None) -> str:
+  resolved = _DEFAULT_MIN_ACCEPTABLE_CONFIDENCE if min_acceptable_confidence is None else float(min_acceptable_confidence)
+  formatted = _format_prompt_float(resolved)
+  return _CRITIC_SYSTEM_PROMPT_TEMPLATE.replace(
+    "MIN_ACCEPTABLE_CONFIDENCE: 0.3",
+    f"MIN_ACCEPTABLE_CONFIDENCE: {formatted}",
+  )
+
+
+_CRITIC_SYSTEM_PROMPT = _build_critic_system_prompt(_DEFAULT_MIN_ACCEPTABLE_CONFIDENCE)

@@ -27,6 +27,7 @@ logger = get_logger("synthesizer_agent")
 
 _NUMBER_RE = re.compile(r"[+-]?\d+(?:\.\d+)?")
 _DTE_RE = re.compile(r"(?P<start>\d+)(?:\s*-\s*(?P<end>\d+))?\s*dte", re.I)
+_DEFAULT_MIN_ACCEPTABLE_CONFIDENCE = 0.35
 _SIDE_ALIASES = {
     "buy": "buy",
     "sell": "sell",
@@ -125,6 +126,27 @@ def _normalize_leg_side(value: Any) -> Any:
         return value
     key = re.sub(r"[\s-]+", "_", value.strip().lower())
     return _SIDE_ALIASES.get(key, value)
+
+
+def _format_prompt_float(value: float) -> str:
+    return f"{float(value):.2f}".rstrip("0").rstrip(".")
+
+
+def _resolve_min_acceptable_confidence(settings: Any | None = None) -> float:
+    llm_settings = getattr(getattr(settings, "analysis_service", None), "llm", None)
+    raw_value = getattr(llm_settings, "min_acceptable_confidence", _DEFAULT_MIN_ACCEPTABLE_CONFIDENCE)
+    try:
+        resolved = float(raw_value)
+    except (TypeError, ValueError):
+        return _DEFAULT_MIN_ACCEPTABLE_CONFIDENCE
+    return max(0.0, min(1.0, resolved))
+
+
+def _low_conviction_text(min_acceptable_confidence: float) -> str:
+    formatted = _format_prompt_float(min_acceptable_confidence)
+    if min_acceptable_confidence < 0.4:
+        return f"{formatted}-0.4"
+    return f"{formatted}+"
 
 
 def _is_valid_enum_value(enum_cls: type, value: Any) -> bool:
@@ -535,6 +557,7 @@ class SynthesizerAgent:
             provider = _default_provider()
 
         settings = get_settings()
+        min_acceptable_confidence = _resolve_min_acceptable_confidence(settings)
 
         prompt = self._build_prompt(
             agent_outputs, signals_summary,
@@ -556,7 +579,7 @@ class SynthesizerAgent:
             status = "error"
             try:
                 result = await provider.generate(
-                    instructions=_SYNTHESIZER_SYSTEM_PROMPT,
+                    instructions=_build_synthesizer_system_prompt(min_acceptable_confidence),
                     user_prompt=prompt,
                     temperature=settings.analysis_service.llm.openai.temperature,
                     max_tokens=settings.analysis_service.llm.openai.max_tokens,
@@ -781,7 +804,7 @@ class SynthesizerAgent:
         return "\n\n".join(parts)
 
 
-_SYNTHESIZER_SYSTEM_PROMPT = """\
+_SYNTHESIZER_SYSTEM_PROMPT_TEMPLATE = """\
 Role: Senior Portfolio Synthesizer | Mandate: Combine 6 specialist agent outputs into executable next-day trading blueprint
 Inputs (strictly use only these fields, no inference):
     Trend: regime, trend_direction, trend_strength, false_positive_risk, signal_type, trade_allowed, confidence_cap, simple_structures_only, blocked_reasons, confidence
@@ -841,8 +864,8 @@ SS9. When Market Signal Data provides option_spreads.execution_candidates for th
   4. vertical_spread (effective_rr > 1.0)
   5. calendar_spread (effective_theta_capture_per_day > 0.04)
 If Spread.best_spread_type conflicts with a higher-priority allowed execution candidate, prefer the higher-priority candidate as long as no hard gate is violated.
-SS10. Emitted-candidate retention: if a stronger allowed execution candidate exists but no specialist emitted a compatible strategy family for that stronger candidate, keep the strongest emitted valid candidate instead of omitting the symbol. Use emitted_strategy_types, Spread.best_spread_type, and Chain.suggested_strategies as emitted-structure evidence.
-SS11. Non-empty fallback: if any trade symbol still has at least one emitted valid candidate inside the allowed structure scope, no hard exclusion applies, and confidence can remain ≥0.3, output the strongest emitted valid candidate instead of returning zero symbol_plans.
+SS10. Emitted-candidate retention: if a stronger allowed execution candidate exists but no specialist emitted a compatible strategy family for that stronger candidate, do not omit an already-emitted candidate solely because of that un-emitted stronger alternative. Use emitted_strategy_types, Spread.best_spread_type, and Chain.suggested_strategies as emitted-structure evidence.
+SS11. Non-empty fallback: only when an emitted candidate already survives all hard gates, remains inside the allowed structure scope, and can keep confidence ≥0.3 should you preserve it rather than returning zero symbol_plans. If no emitted candidate clears those hard constraints, an empty result is allowed.
 
 ────────────────────────────────────────────────────────
 GAMMA & PIN RISK SYNTHESIS (Priority 3)
@@ -991,3 +1014,25 @@ STRICT OUTPUT SCHEMA (100% Machine-Readable)
 
 Output ONLY valid JSON. No markdown, no extra text, no explanations outside the reasoning field.
 """
+
+
+def _build_synthesizer_system_prompt(min_acceptable_confidence: float | None = None) -> str:
+    resolved = _DEFAULT_MIN_ACCEPTABLE_CONFIDENCE if min_acceptable_confidence is None else float(min_acceptable_confidence)
+    formatted = _format_prompt_float(resolved)
+    prompt = _SYNTHESIZER_SYSTEM_PROMPT_TEMPLATE
+    prompt = prompt.replace(
+        "MIN_ACCEPTABLE_CONFIDENCE: 0.3",
+        f"MIN_ACCEPTABLE_CONFIDENCE: {formatted}",
+    )
+    prompt = prompt.replace(
+        "AS3. <2 aligned directional agents → low conviction (0.3-0.4); prefer neutral or skip.",
+        f"AS3. <2 aligned directional agents → low conviction ({_low_conviction_text(resolved)}); prefer neutral or skip.",
+    )
+    prompt = prompt.replace(
+        "confidence ≥0.3 should you preserve it",
+        f"confidence ≥{formatted} should you preserve it",
+    )
+    return prompt
+
+
+_SYNTHESIZER_SYSTEM_PROMPT = _build_synthesizer_system_prompt(_DEFAULT_MIN_ACCEPTABLE_CONFIDENCE)

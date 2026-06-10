@@ -519,6 +519,7 @@ async def test_generate_single_pass_retries_empty_synthesis_when_emitted_candida
             llm=SimpleNamespace(
                 agent_models_override=SimpleNamespace(synthesizer=None, critic=None),
                 max_critic_revisions=0,
+                min_acceptable_confidence=0.4,
                 precision_first=SimpleNamespace(
                     enabled=True,
                     allowed_strategy_types=["single_leg", "vertical_spread", "iron_condor", "calendar_spread"],
@@ -619,7 +620,9 @@ async def test_generate_single_pass_retries_empty_synthesis_when_emitted_candida
     assert calls[0].get("critic_feedback") is None
     assert isinstance(calls[1]["critic_feedback"], str)
     assert "returned zero symbol_plans" in calls[1]["critic_feedback"]
-    assert "strongest emitted valid candidate" in calls[1]["critic_feedback"]
+    assert "Only preserve an emitted candidate when it already survives all hard gates" in calls[1]["critic_feedback"]
+    assert "can keep confidence >= 0.4" in calls[1]["critic_feedback"]
+    assert "returning an empty blueprint remains allowed" in calls[1]["critic_feedback"]
     assert [plan.underlying for plan in blueprint.symbol_plans] == ["TSLA"]
 
 

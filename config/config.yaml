@@ -314,6 +314,7 @@ analysis_service:
   llm:
     provider: "deepseek"                # openai / closeai / deepseek
     max_output_plans: 10                 # max number of symbol_plans emitted in one blueprint
+    min_acceptable_confidence: 0.35      # minimum confidence floor for synthesizer/critic plan emission
     openai:
       api_key: ""                       # or env: ANALYSIS_SERVICE__LLM__OPENAI__API_KEY
       model: "claude-opus-4.6"
