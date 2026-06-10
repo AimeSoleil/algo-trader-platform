@@ -125,6 +125,59 @@ class _LLMProvider:
         raise AssertionError("generate should not be called when review is monkeypatched")
 
 
+def test_compact_for_synthesis_keeps_emitted_strategy_types_for_trade_symbols():
+    orchestrator = AgentOrchestrator(provider=_Provider())
+
+    compact = orchestrator._compact_for_synthesis(
+        {
+            "trend": {
+                "symbols": [
+                    {
+                        "symbol": "TSLA",
+                        "reasoning": "range bound",
+                        "strategies": [
+                            {"strategy_type": "Iron Condor"},
+                            {"strategy_type": "Short Strangle"},
+                        ],
+                        "trade_allowed": True,
+                    }
+                ]
+            },
+            "chain": {
+                "symbols": [
+                    {
+                        "symbol": "TSLA",
+                        "reasoning": "liquid",
+                        "suggested_strategies": ["call_vertical_spread", "bull_put_spread", "iron_condor"],
+                        "trade_allowed": True,
+                    }
+                ]
+            },
+            "spread": {
+                "symbols": [
+                    {
+                        "symbol": "TSLA",
+                        "reasoning": "best spread",
+                        "best_spread_type": "iron_condor",
+                        "trade_allowed": True,
+                    }
+                ]
+            },
+        },
+        {"TSLA"},
+    )
+
+    trend_entry = compact["trend"]["symbols"][0]
+    chain_entry = compact["chain"]["symbols"][0]
+    spread_entry = compact["spread"]["symbols"][0]
+
+    assert "reasoning" not in trend_entry
+    assert "strategies" not in trend_entry
+    assert trend_entry["emitted_strategy_types"] == ["iron_condor", "strangle"]
+    assert chain_entry["emitted_strategy_types"] == ["vertical_spread", "iron_condor"]
+    assert spread_entry["emitted_strategy_types"] == ["iron_condor"]
+
+
 @pytest.mark.asyncio
 async def test_generate_single_pass_disables_synthesizer_output_cap_for_chunk_batches(monkeypatch):
     settings = SimpleNamespace(

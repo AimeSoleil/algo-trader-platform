@@ -721,6 +721,8 @@ def test_synthesizer_prompt_uses_execution_candidates_for_structure_priority():
     assert "Market Signal Data option_spreads.execution_candidates" in _SYNTHESIZER_SYSTEM_PROMPT
     assert "use the following priority order" in _SYNTHESIZER_SYSTEM_PROMPT
     assert "no explicit negative economics" in _SYNTHESIZER_SYSTEM_PROMPT
+    assert "emitted_strategy_types" in _SYNTHESIZER_SYSTEM_PROMPT
+    assert "keep the strongest emitted valid candidate instead of omitting the symbol" in _SYNTHESIZER_SYSTEM_PROMPT
 
 
 def test_synthesizer_and_critic_prompts_use_execution_evidence_for_chain_l3_l4_exceptions():
@@ -744,6 +746,7 @@ def test_critic_prompt_uses_execution_candidates_for_structure_priority_conflict
     assert "vertical effective_rr/raw_rr ≥0.7" in critic_prompt
     assert "butterfly pricing_error > 0.08 plus no explicit negative butterfly economics" in critic_prompt
     assert "downgrade to severity=warning and skip structure-priority comparison" in critic_prompt
+    assert "downgrade to warning and preserve the emitted selected structure as a fallback" in critic_prompt
 
 
 def test_spread_and_critic_prompts_allow_tight_high_credit_iron_condors():

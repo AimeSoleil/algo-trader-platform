@@ -790,6 +790,7 @@ Inputs (strictly use only these fields, no inference):
     Chain: pcr_signal, liquidity_tier[L1-L5], hard_block, gamma_pin_active, pin_strength, gamma_pin_strike, event_risk_present, trade_allowed, confidence_cap, simple_structures_only, blocked_reasons, confirming_indicators_count, confidence
     Spread: best_spread_type, risk_reward_ratio, effective_rr, theta_capture, liquidity_status, arb_opportunity, arb_priority, confirming_indicators_count, event_risk_present, trade_allowed, confidence_cap, simple_structures_only, blocked_reasons, position_size_modifier, confidence
     Cross-Asset: correlation_regime, vix_environment, vix_percentile_60d, gex_regime, event_risk_present, signal_type, effective_size_modifier, master_override, risk_off_signal, regime_transition, regime_days, market_shock_return_1d, market_shock_source, trade_allowed, confidence_cap, blocked_reasons, confidence
+    Specialist emitted strategy hints: each trade-symbol analysis may include emitted_strategy_types, a canonical list of strategy families that the specialist explicitly emitted.
     Market Signal Data option_spreads.execution_candidates: vertical(candidate_available, effective_rr, raw_rr, worst_leg_bid_ask_spread_ratio), iron_condor(candidate_available, effective_rr, raw_rr, worst_leg_bid_ask_spread_ratio), calendar/reverse_calendar(candidate_available, effective_theta_capture_per_day, estimated_roll_cost, worst_leg_bid_ask_spread_ratio), butterfly(candidate_available, pricing_error, effective_rr, net_edge_after_cost, net_profit_after_cost, worst_leg_bid_ask_spread_ratio), box_arb(candidate_available, net_edge_after_cost, net_profit_after_cost, worst_leg_bid_ask_spread_ratio)
 Pre-computed reference: _consensus (directional agreement + confidence-weighted score) → advisory only, NEVER override hard gates.
 
@@ -840,6 +841,7 @@ SS9. When Market Signal Data provides option_spreads.execution_candidates for th
   4. vertical_spread (effective_rr > 1.0)
   5. calendar_spread (effective_theta_capture_per_day > 0.04)
 If Spread.best_spread_type conflicts with a higher-priority allowed execution candidate, prefer the higher-priority candidate as long as no hard gate is violated.
+SS10. Emitted-candidate retention: if a stronger allowed execution candidate exists but no specialist emitted a compatible strategy family for that stronger candidate, keep the strongest emitted valid candidate instead of omitting the symbol. Use emitted_strategy_types, Spread.best_spread_type, and Chain.suggested_strategies as emitted-structure evidence.
 
 ────────────────────────────────────────────────────────
 GAMMA & PIN RISK SYNTHESIS (Priority 3)

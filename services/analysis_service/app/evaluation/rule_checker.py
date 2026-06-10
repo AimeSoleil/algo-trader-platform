@@ -40,6 +40,32 @@ _EXECUTION_CANDIDATE_STRATEGY_KEYS = {
 _SIMPLE_STRUCTURE_AGENT_NAMES = ("trend", "volatility", "flow", "chain", "spread")
 _ONE_SHOT_EXPIRY_STRATEGIES = frozenset({"single_leg", "vertical_spread"})
 _TRADE_GATE_AGENT_NAMES = ("trend", "volatility", "flow", "chain", "spread", "cross_asset")
+_EMITTED_STRATEGY_TYPE_ALIASES = {
+    "single_leg": "single_leg",
+    "single_leg_call": "single_leg",
+    "single_leg_put": "single_leg",
+    "vertical": "vertical_spread",
+    "vertical_spread": "vertical_spread",
+    "call_vertical_spread": "vertical_spread",
+    "put_vertical_spread": "vertical_spread",
+    "bull_put_spread": "vertical_spread",
+    "bear_call_spread": "vertical_spread",
+    "credit_spread": "vertical_spread",
+    "calendar": "calendar_spread",
+    "calendar_spread": "calendar_spread",
+    "reverse_calendar": "diagonal_spread",
+    "diagonal_spread": "diagonal_spread",
+    "iron_condor": "iron_condor",
+    "iron_butterfly": "iron_butterfly",
+    "butterfly": "butterfly",
+    "straddle": "straddle",
+    "short_straddle": "straddle",
+    "long_straddle": "straddle",
+    "strangle": "strangle",
+    "short_strangle": "strangle",
+    "long_strangle": "strangle",
+    "box_arb": "box_arb",
+}
 
 
 @dataclass
@@ -89,6 +115,46 @@ def _agent_sym(
         (s for s in symbols_list if isinstance(s, dict) and s.get("symbol", "").upper() == sym_upper),
         None,
     )
+
+
+def _canonical_strategy_family(strategy_type: Any) -> str | None:
+    if not isinstance(strategy_type, str):
+        return None
+
+    normalized = str(strategy_type).strip().lower().replace("-", "_").replace(" ", "_")
+    while "__" in normalized:
+        normalized = normalized.replace("__", "_")
+    return _EMITTED_STRATEGY_TYPE_ALIASES.get(normalized)
+
+
+def _append_emitted_strategy_family(emitted: list[str], strategy_type: Any) -> None:
+    canonical = _canonical_strategy_family(strategy_type)
+    if canonical is None or canonical in emitted:
+        return
+    emitted.append(canonical)
+
+
+def _emitted_strategy_types(agent_outputs: dict[str, Any], symbol: str) -> list[str]:
+    emitted: list[str] = []
+
+    spread_data = _agent_sym(agent_outputs, "spread", symbol)
+    if spread_data is not None:
+        _append_emitted_strategy_family(emitted, spread_data.get("best_spread_type"))
+
+    chain_data = _agent_sym(agent_outputs, "chain", symbol)
+    if chain_data is not None:
+        for strategy_type in chain_data.get("suggested_strategies", []) or []:
+            _append_emitted_strategy_family(emitted, strategy_type)
+
+    for agent_name in ("trend", "volatility"):
+        symbol_data = _agent_sym(agent_outputs, agent_name, symbol)
+        if symbol_data is None:
+            continue
+        for strategy in symbol_data.get("strategies", []) or []:
+            if isinstance(strategy, dict):
+                _append_emitted_strategy_family(emitted, strategy.get("strategy_type"))
+
+    return emitted
 
 
 def _signal_spot_price(signal: dict[str, Any]) -> float | None:
@@ -797,7 +863,30 @@ def _check_spread_execution_candidate_conflicts(
     if not stronger_alternatives:
         return
 
-    strongest = max(stronger_alternatives, key=lambda item: item["score"])
+    emitted_strategy_types = _emitted_strategy_types(agent_outputs, sym)
+    stronger_emitted_alternatives = [
+        alternative for alternative in stronger_alternatives
+        if alternative["strategy"] in emitted_strategy_types
+    ]
+    if strategy in emitted_strategy_types and not stronger_emitted_alternatives:
+        strongest_unemitted = max(stronger_alternatives, key=lambda item: item["score"])
+        result.issues.append(RuleIssue(
+            severity="warning",
+            category="logic_error",
+            symbol=sym,
+            rule="spread_execution_candidate_unemitted_fallback",
+            description=(
+                f"Selected {strategy} remains the strongest emitted valid structure. A stronger allowed "
+                f"execution candidate exists for {strongest_unemitted['strategy']} via "
+                f"{strongest_unemitted['candidate_key']} with score={strongest_unemitted['score']:.2f} "
+                f"({strongest_unemitted['reason']}), but no specialist emitted that strategy family; "
+                "preserving the emitted structure as a fallback"
+            ),
+        ))
+        return
+
+    strongest_pool = stronger_emitted_alternatives or stronger_alternatives
+    strongest = max(strongest_pool, key=lambda item: item["score"])
     result.issues.append(RuleIssue(
         severity="error",
         category="logic_error",

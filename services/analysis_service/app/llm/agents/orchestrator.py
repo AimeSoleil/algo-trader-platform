@@ -1513,6 +1513,70 @@ class AgentOrchestrator:
         "hedging_needed",
     })
 
+    _EMITTED_STRATEGY_TYPE_ALIASES = {
+        "single_leg": "single_leg",
+        "single_leg_call": "single_leg",
+        "single_leg_put": "single_leg",
+        "vertical": "vertical_spread",
+        "vertical_spread": "vertical_spread",
+        "call_vertical_spread": "vertical_spread",
+        "put_vertical_spread": "vertical_spread",
+        "bull_put_spread": "vertical_spread",
+        "bear_call_spread": "vertical_spread",
+        "credit_spread": "vertical_spread",
+        "calendar": "calendar_spread",
+        "calendar_spread": "calendar_spread",
+        "reverse_calendar": "diagonal_spread",
+        "diagonal_spread": "diagonal_spread",
+        "iron_condor": "iron_condor",
+        "iron_butterfly": "iron_butterfly",
+        "butterfly": "butterfly",
+        "straddle": "straddle",
+        "short_straddle": "straddle",
+        "long_straddle": "straddle",
+        "strangle": "strangle",
+        "short_strangle": "strangle",
+        "long_strangle": "strangle",
+        "box_arb": "box_arb",
+    }
+
+    def _canonical_emitted_strategy_type(self, strategy_type: Any) -> str | None:
+        if not isinstance(strategy_type, str):
+            return None
+
+        normalized = str(strategy_type).strip().lower().replace("-", "_").replace(" ", "_")
+        while "__" in normalized:
+            normalized = normalized.replace("__", "_")
+        return self._EMITTED_STRATEGY_TYPE_ALIASES.get(normalized)
+
+    def _append_emitted_strategy_type(self, emitted: list[str], strategy_type: Any) -> None:
+        canonical = self._canonical_emitted_strategy_type(strategy_type)
+        if canonical is None or canonical in emitted:
+            return
+        emitted.append(canonical)
+
+    def _emitted_strategy_types_for_synthesis(
+        self,
+        agent_name: str,
+        symbol_analysis: dict[str, Any],
+    ) -> list[str]:
+        emitted: list[str] = []
+
+        if agent_name == "spread":
+            self._append_emitted_strategy_type(emitted, symbol_analysis.get("best_spread_type"))
+
+        if agent_name == "chain":
+            for strategy_type in symbol_analysis.get("suggested_strategies", []) or []:
+                self._append_emitted_strategy_type(emitted, strategy_type)
+
+        strategies = symbol_analysis.get("strategies")
+        if isinstance(strategies, list):
+            for strategy in strategies:
+                if isinstance(strategy, dict):
+                    self._append_emitted_strategy_type(emitted, strategy.get("strategy_type"))
+
+        return emitted
+
     def _compact_for_synthesis(
         self,
         agent_outputs: dict[str, Any],
@@ -1550,11 +1614,15 @@ class AgentOrchestrator:
                             continue
 
                         sym = sym_data.get("symbol", "").upper()
+                        emitted_strategy_types = self._emitted_strategy_types_for_synthesis(agent_name, sym_data)
                         # Strip reasoning + strategies (high token cost, low synthesis value)
                         entry = {
                             k: v for k, v in sym_data.items()
                             if k not in ("reasoning", "strategies")
                         }
+
+                        if sym in trade_syms and emitted_strategy_types:
+                            entry["emitted_strategy_types"] = emitted_strategy_types
 
                         if sym not in trade_syms:
                             # Benchmark-only: keep only essential signals
