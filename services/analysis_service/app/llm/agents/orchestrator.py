@@ -1659,7 +1659,11 @@ class AgentOrchestrator:
 
         settings = get_settings()
         precision_first = getattr(settings.analysis_service.llm, "precision_first", None)
-        min_acceptable_confidence = getattr(settings.analysis_service.llm, "min_acceptable_confidence", 0.35)
+        min_acceptable_confidence = getattr(
+            settings.analysis_service.llm,
+            "min_emission_confidence",
+            getattr(settings.analysis_service.llm, "min_acceptable_confidence", 0.35),
+        )
         try:
             min_acceptable_confidence_value = max(0.0, min(1.0, float(min_acceptable_confidence)))
         except (TypeError, ValueError):

@@ -27,7 +27,7 @@ logger = get_logger("synthesizer_agent")
 
 _NUMBER_RE = re.compile(r"[+-]?\d+(?:\.\d+)?")
 _DTE_RE = re.compile(r"(?P<start>\d+)(?:\s*-\s*(?P<end>\d+))?\s*dte", re.I)
-_DEFAULT_MIN_ACCEPTABLE_CONFIDENCE = 0.35
+_DEFAULT_MIN_EMISSION_CONFIDENCE = 0.35
 _SIDE_ALIASES = {
     "buy": "buy",
     "sell": "sell",
@@ -132,19 +132,23 @@ def _format_prompt_float(value: float) -> str:
     return f"{float(value):.2f}".rstrip("0").rstrip(".")
 
 
-def _resolve_min_acceptable_confidence(settings: Any | None = None) -> float:
+def _resolve_min_emission_confidence(settings: Any | None = None) -> float:
     llm_settings = getattr(getattr(settings, "analysis_service", None), "llm", None)
-    raw_value = getattr(llm_settings, "min_acceptable_confidence", _DEFAULT_MIN_ACCEPTABLE_CONFIDENCE)
+    raw_value = getattr(
+        llm_settings,
+        "min_emission_confidence",
+        getattr(llm_settings, "min_acceptable_confidence", _DEFAULT_MIN_EMISSION_CONFIDENCE),
+    )
     try:
         resolved = float(raw_value)
     except (TypeError, ValueError):
-        return _DEFAULT_MIN_ACCEPTABLE_CONFIDENCE
+        return _DEFAULT_MIN_EMISSION_CONFIDENCE
     return max(0.0, min(1.0, resolved))
 
 
-def _low_conviction_text(min_acceptable_confidence: float) -> str:
-    formatted = _format_prompt_float(min_acceptable_confidence)
-    if min_acceptable_confidence < 0.4:
+def _low_conviction_text(min_emission_confidence: float) -> str:
+    formatted = _format_prompt_float(min_emission_confidence)
+    if min_emission_confidence < 0.4:
         return f"{formatted}-0.4"
     return f"{formatted}+"
 
@@ -578,7 +582,7 @@ class SynthesizerAgent:
             provider = _default_provider()
 
         settings = get_settings()
-        min_acceptable_confidence = _resolve_min_acceptable_confidence(settings)
+        min_emission_confidence = _resolve_min_emission_confidence(settings)
 
         prompt = self._build_prompt(
             agent_outputs, signals_summary,
@@ -600,7 +604,7 @@ class SynthesizerAgent:
             status = "error"
             try:
                 result = await provider.generate(
-                    instructions=_build_synthesizer_system_prompt(min_acceptable_confidence),
+                    instructions=_build_synthesizer_system_prompt(min_emission_confidence),
                     user_prompt=prompt,
                     temperature=settings.analysis_service.llm.openai.temperature,
                     max_tokens=settings.analysis_service.llm.openai.max_tokens,
@@ -849,7 +853,7 @@ Pre-computed reference: _consensus (directional agreement + confidence-weighted 
 
 ## Global Constants (Aligned with All Agents)
 GLOBAL_MAX_CONFIDENCE: 0.9
-MIN_ACCEPTABLE_CONFIDENCE: 0.3
+MIN_EMISSION_CONFIDENCE: 0.3
 MIN_ACCEPTABLE_POSITION_SIZE: 0.3
 MAX_TOTAL_POSITIONS_STANDARD: 10
 MAX_TOTAL_POSITIONS_AGGRESSIVE: 15
@@ -864,7 +868,7 @@ HE2. Any agent.blocked_reasons contains "event_risk_imminent" → EXCLUDE symbol
 HE3. Do NOT exclude solely because blocked_reasons contains "extreme_option_activity_unconfirmed"; treat it as a participation anomaly and require separate execution or event-risk confirmation before exclusion.
 HE4. Reject vertical_spread only when Spread.effective_rr is explicitly available and <0.7, or when Spread.risk_reward_ratio <0.7. Do NOT exclude iron_condor, butterfly, calendar_spread, or arbitrage setups solely because Spread.effective_rr is null.
 HE5. Cross-Asset.master_override and effective_size_modifier are advisory-only sizing context in manual-trader mode; do NOT EXCLUDE solely because effective_size_modifier is below a size floor.
-HE6. Cannot justify final confidence ≥ MIN_ACCEPTABLE_CONFIDENCE → EXCLUDE.
+HE6. Cannot justify final confidence ≥ MIN_EMISSION_CONFIDENCE → EXCLUDE.
 HE7. If ANY agent sets simple_structures_only=true → ONLY allow the configured precision-first simple structure scope (default: single_leg, vertical_spread, iron_condor, calendar_spread). No structures outside that scope, UNLESS GP1 is triggered and its gamma-pin exception conditions are fully satisfied.
 
 ────────────────────────────────────────────────────────
@@ -1039,13 +1043,13 @@ Output ONLY valid JSON. No markdown, no extra text, no explanations outside the 
 """
 
 
-def _build_synthesizer_system_prompt(min_acceptable_confidence: float | None = None) -> str:
-    resolved = _DEFAULT_MIN_ACCEPTABLE_CONFIDENCE if min_acceptable_confidence is None else float(min_acceptable_confidence)
+def _build_synthesizer_system_prompt(min_emission_confidence: float | None = None) -> str:
+    resolved = _DEFAULT_MIN_EMISSION_CONFIDENCE if min_emission_confidence is None else float(min_emission_confidence)
     formatted = _format_prompt_float(resolved)
     prompt = _SYNTHESIZER_SYSTEM_PROMPT_TEMPLATE
     prompt = prompt.replace(
-        "MIN_ACCEPTABLE_CONFIDENCE: 0.3",
-        f"MIN_ACCEPTABLE_CONFIDENCE: {formatted}",
+        "MIN_EMISSION_CONFIDENCE: 0.3",
+        f"MIN_EMISSION_CONFIDENCE: {formatted}",
     )
     prompt = prompt.replace(
         "AS3. <2 aligned directional agents → low conviction (0.3-0.4); prefer neutral or skip.",
@@ -1058,4 +1062,4 @@ def _build_synthesizer_system_prompt(min_acceptable_confidence: float | None = N
     return prompt
 
 
-_SYNTHESIZER_SYSTEM_PROMPT = _build_synthesizer_system_prompt(_DEFAULT_MIN_ACCEPTABLE_CONFIDENCE)
+_SYNTHESIZER_SYSTEM_PROMPT = _build_synthesizer_system_prompt(_DEFAULT_MIN_EMISSION_CONFIDENCE)

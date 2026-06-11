@@ -740,27 +740,27 @@ def test_synthesizer_prompt_uses_execution_candidates_for_structure_priority():
     assert "If no emitted candidate clears those hard constraints, an empty result is allowed" in _SYNTHESIZER_SYSTEM_PROMPT
 
 
-def test_synthesizer_and_critic_prompts_default_to_035_min_confidence():
+def test_synthesizer_and_critic_prompts_default_to_035_min_emission_confidence():
     from services.analysis_service.app.llm.agents.critic_agent import _CRITIC_SYSTEM_PROMPT as critic_prompt
     from services.analysis_service.app.llm.agents.synthesizer_agent import _SYNTHESIZER_SYSTEM_PROMPT
 
-    assert "MIN_ACCEPTABLE_CONFIDENCE: 0.35" in _SYNTHESIZER_SYSTEM_PROMPT
+    assert "MIN_EMISSION_CONFIDENCE: 0.35" in _SYNTHESIZER_SYSTEM_PROMPT
     assert "low conviction (0.35-0.4)" in _SYNTHESIZER_SYSTEM_PROMPT
     assert "confidence ≥0.35 should you preserve it" in _SYNTHESIZER_SYSTEM_PROMPT
-    assert "MIN_ACCEPTABLE_CONFIDENCE: 0.35" in critic_prompt
+    assert "MIN_EMISSION_CONFIDENCE: 0.35" in critic_prompt
 
 
-def test_synthesizer_and_critic_prompt_builders_accept_configured_min_confidence():
+def test_synthesizer_and_critic_prompt_builders_accept_configured_min_emission_confidence():
     from services.analysis_service.app.llm.agents.critic_agent import _build_critic_system_prompt
     from services.analysis_service.app.llm.agents.synthesizer_agent import _build_synthesizer_system_prompt
 
     synth_prompt = _build_synthesizer_system_prompt(0.4)
     critic_prompt = _build_critic_system_prompt(0.4)
 
-    assert "MIN_ACCEPTABLE_CONFIDENCE: 0.4" in synth_prompt
+    assert "MIN_EMISSION_CONFIDENCE: 0.4" in synth_prompt
     assert "low conviction (0.4+)" in synth_prompt
     assert "confidence ≥0.4 should you preserve it" in synth_prompt
-    assert "MIN_ACCEPTABLE_CONFIDENCE: 0.4" in critic_prompt
+    assert "MIN_EMISSION_CONFIDENCE: 0.4" in critic_prompt
 
 
 def test_synthesizer_and_critic_prompts_use_execution_evidence_for_chain_l3_l4_exceptions():

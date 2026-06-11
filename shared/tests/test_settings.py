@@ -122,7 +122,25 @@ analysis_service:
     assert settings.analysis_service.llm.max_output_plans == 12
 
 
-def test_min_acceptable_confidence_loads_from_yaml(tmp_path: Path) -> None:
+def test_confidence_thresholds_load_from_yaml(tmp_path: Path) -> None:
+    yaml_path = tmp_path / "config.yaml"
+    yaml_path.write_text(
+        """
+analysis_service:
+  llm:
+    min_emission_confidence: 0.4
+    min_pass_confidence: 0.55
+""".strip(),
+        encoding="utf-8",
+    )
+
+    settings = Settings.from_yaml(yaml_path)
+
+    assert settings.analysis_service.llm.min_emission_confidence == 0.4
+    assert settings.analysis_service.llm.min_pass_confidence == 0.55
+
+
+def test_legacy_min_acceptable_confidence_maps_to_emission_floor(tmp_path: Path) -> None:
     yaml_path = tmp_path / "config.yaml"
     yaml_path.write_text(
         """
@@ -135,7 +153,24 @@ analysis_service:
 
     settings = Settings.from_yaml(yaml_path)
 
-    assert settings.analysis_service.llm.min_acceptable_confidence == 0.4
+    assert settings.analysis_service.llm.min_emission_confidence == 0.4
+    assert settings.analysis_service.llm.min_pass_confidence == 0.5
+
+
+def test_pass_confidence_cannot_be_below_emission_floor(tmp_path: Path) -> None:
+    yaml_path = tmp_path / "config.yaml"
+    yaml_path.write_text(
+        """
+analysis_service:
+  llm:
+    min_emission_confidence: 0.45
+    min_pass_confidence: 0.4
+""".strip(),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="min_pass_confidence"):
+        Settings.from_yaml(yaml_path)
 
 
 def test_watchlist_all_uses_data_signal_universe_plus_benchmarks(tmp_path: Path) -> None:

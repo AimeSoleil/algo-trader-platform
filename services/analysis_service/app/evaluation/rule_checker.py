@@ -42,6 +42,7 @@ _SIMPLE_STRUCTURE_AGENT_NAMES = ("trend", "volatility", "flow", "chain", "spread
 _ONE_SHOT_EXPIRY_STRATEGIES = frozenset({"single_leg", "vertical_spread"})
 _TRADE_GATE_AGENT_NAMES = ("trend", "volatility", "flow", "chain", "spread", "cross_asset")
 _REASONING_STRUCTURE_SUPPORT_AGENT_NAMES = ("trend", "volatility", "chain", "spread")
+_DEFAULT_MIN_PASS_CONFIDENCE = 0.5
 _EMITTED_STRATEGY_TYPE_ALIASES = {
     "single_leg": "single_leg",
     "single_leg_call": "single_leg",
@@ -152,6 +153,16 @@ def _flow_high_false_breakout_directional_only_cap(
     false_breakout_risk = str(sym_data.get("false_breakout_risk") or "").strip().lower()
     flow_signal = str(sym_data.get("flow_signal") or "").strip().lower()
     return false_breakout_risk == "high" and flow_signal in {"neutral", "conflicting", ""}
+
+
+def _resolve_min_pass_confidence(settings: Any | None = None) -> float:
+    llm_settings = getattr(getattr(settings, "analysis_service", None), "llm", None)
+    raw_value = getattr(llm_settings, "min_pass_confidence", _DEFAULT_MIN_PASS_CONFIDENCE)
+    try:
+        resolved = float(raw_value)
+    except (TypeError, ValueError):
+        return _DEFAULT_MIN_PASS_CONFIDENCE
+    return max(0.0, min(1.0, resolved))
 
 
 def _canonical_strategy_family(strategy_type: Any) -> str | None:
@@ -507,19 +518,36 @@ _DEFAULT_CONFIDENCE_BASELINE = 0.40
 def _check_plan_risk(plan: dict, result: CheckResult) -> None:
     """Validate per-plan confidence sanity only; sizing/loss are trader-managed."""
     conf = plan.get("confidence", 0)
+    try:
+        conf_value = float(conf)
+    except (TypeError, ValueError):
+        return
+
     sym = plan.get("underlying", "UNKNOWN")
     strategy = plan.get("strategy_type", "")
     baseline = _CONFIDENCE_BASELINES.get(strategy, _DEFAULT_CONFIDENCE_BASELINE)
     threshold = baseline * 0.6
-    if conf < threshold:
+    if conf_value < threshold:
         result.issues.append(RuleIssue(
             severity="warning",
             category="risk_breach",
             symbol=sym,
             rule="low_confidence",
             description=(
-                f"Plan confidence={conf:.2f} below {threshold:.2f} "
+                f"Plan confidence={conf_value:.2f} below {threshold:.2f} "
                 f"(60% of {strategy or 'default'} baseline {baseline:.2f}) — consider skipping"
+            ),
+        ))
+
+    pass_line = _resolve_min_pass_confidence(get_settings())
+    if conf_value < pass_line:
+        result.issues.append(RuleIssue(
+            severity="warning",
+            category="risk_breach",
+            symbol=sym,
+            rule="confidence_below_pass_line",
+            description=(
+                f"Plan confidence={conf_value:.2f} is below configured pass-line {pass_line:.2f} — keep for review only, not execution-acceptable"
             ),
         ))
 

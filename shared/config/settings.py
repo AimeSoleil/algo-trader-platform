@@ -526,7 +526,30 @@ class LLMSettings(BaseSettings):
     orchestrator_chunk_size: int = 7
     orchestrator_max_parallel: int = 3
     max_output_plans: int = Field(default=10, ge=1)
-    min_acceptable_confidence: float = Field(default=0.35, ge=0.0, le=1.0)
+    min_emission_confidence: float = Field(default=0.35, ge=0.0, le=1.0)
+    min_pass_confidence: float = Field(default=0.5, ge=0.0, le=1.0)
+    min_acceptable_confidence: float | None = Field(default=None, ge=0.0, le=1.0, exclude=True)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _migrate_legacy_min_acceptable_confidence(cls, data: Any) -> Any:
+        if not isinstance(data, dict):
+            return data
+
+        if "min_emission_confidence" in data or "min_acceptable_confidence" not in data:
+            return data
+
+        migrated = dict(data)
+        migrated["min_emission_confidence"] = migrated["min_acceptable_confidence"]
+        return migrated
+
+    @model_validator(mode="after")
+    def _validate_confidence_threshold_order(self) -> "LLMSettings":
+        if self.min_acceptable_confidence is not None and self.min_emission_confidence == 0.35:
+            self.min_emission_confidence = self.min_acceptable_confidence
+        if self.min_pass_confidence < self.min_emission_confidence:
+            raise ValueError("min_pass_confidence must be greater than or equal to min_emission_confidence")
+        return self
 
     # ── Specialist flow parallel gate (pipeline-level) ──
     specialist_parallel_limit: int = 1

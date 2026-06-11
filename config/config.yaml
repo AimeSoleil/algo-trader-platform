@@ -314,7 +314,8 @@ analysis_service:
   llm:
     provider: "deepseek"                # openai / closeai / deepseek
     max_output_plans: 10                 # max number of symbol_plans emitted in one blueprint
-    min_acceptable_confidence: 0.35      # minimum confidence floor for synthesizer/critic plan emission
+    min_emission_confidence: 0.35        # minimum confidence floor for synthesizer/critic plan emission and emitted-candidate fallback retention
+    min_pass_confidence: 0.50            # review/acceptability pass-line; below this stays reviewable but should not count as execution-acceptable
     openai:
       api_key: ""                       # or env: ANALYSIS_SERVICE__LLM__OPENAI__API_KEY
       model: "claude-opus-4.6"

@@ -23,20 +23,24 @@ from services.analysis_service.app.llm.agents.models import CriticVerdict
 
 logger = get_logger("critic_agent")
 
-_DEFAULT_MIN_ACCEPTABLE_CONFIDENCE = 0.35
+_DEFAULT_MIN_EMISSION_CONFIDENCE = 0.35
 
 
 def _format_prompt_float(value: float) -> str:
   return f"{float(value):.2f}".rstrip("0").rstrip(".")
 
 
-def _resolve_min_acceptable_confidence(settings: Any | None = None) -> float:
+def _resolve_min_emission_confidence(settings: Any | None = None) -> float:
   llm_settings = getattr(getattr(settings, "analysis_service", None), "llm", None)
-  raw_value = getattr(llm_settings, "min_acceptable_confidence", _DEFAULT_MIN_ACCEPTABLE_CONFIDENCE)
+  raw_value = getattr(
+      llm_settings,
+      "min_emission_confidence",
+      getattr(llm_settings, "min_acceptable_confidence", _DEFAULT_MIN_EMISSION_CONFIDENCE),
+  )
   try:
     resolved = float(raw_value)
   except (TypeError, ValueError):
-    return _DEFAULT_MIN_ACCEPTABLE_CONFIDENCE
+    return _DEFAULT_MIN_EMISSION_CONFIDENCE
   return max(0.0, min(1.0, resolved))
 
 
@@ -88,7 +92,7 @@ class CriticAgent:
         settings = get_settings()
 
         prompt = self._build_prompt(blueprint_json, agent_outputs, signals_summary)
-        min_acceptable_confidence = _resolve_min_acceptable_confidence(settings)
+        min_emission_confidence = _resolve_min_emission_confidence(settings)
 
         max_retries = settings.analysis_service.llm.max_retries
         backoff_base = settings.analysis_service.llm.backoff_base_seconds
@@ -102,7 +106,7 @@ class CriticAgent:
             status = "error"
             try:
                 result = await provider.generate(
-                instructions=_build_critic_system_prompt(min_acceptable_confidence),
+                instructions=_build_critic_system_prompt(min_emission_confidence),
                     user_prompt=prompt,
                     temperature=0.0,  # deterministic for review
                     max_tokens=16384,
@@ -245,7 +249,7 @@ Ignore legacy top-level portfolio cap fields during review.
 
 ## Global Constants (Aligned with All Agents)
 GLOBAL_MAX_CONFIDENCE: 0.9
-MIN_ACCEPTABLE_CONFIDENCE: 0.3
+MIN_EMISSION_CONFIDENCE: 0.3
 
 ## Null/Default Protocol (Deterministic)
 - Missing numeric modifiers (`Flow.position_size_modifier`, `Cross-Asset.effective_size_modifier`, `Spread.position_size_modifier`) default to 1.0.
@@ -275,7 +279,7 @@ HE4. Do NOT fail a symbol solely because blocked_reasons contains "extreme_optio
 HE4a. Empty blueprint contradiction: if `symbol_plans` is empty but a specialist hard veto is contradicted by explicit Market Signal Data execution_candidates or by symbol-level emitted valid structure evidence, verdict must be `revise`, not `pass`.
 HE4b. Empty blueprint contradiction also applies when one or more specialists explicitly emit a valid allowed structure that survives hard gates and structure-scope rules. In that case, returning zero symbol_plans without a stronger contradictory hard rule is a logic error requiring revision.
 HE5. Only vertical_spread may be rejected on Spread R:R, and only when Spread.effective_rr is explicitly available and <0.7 or Spread.risk_reward_ratio <0.7. Iron condor, butterfly, calendar, and arbitrage setups must NOT be rejected solely because Spread.effective_rr is null.
-HE7. Any symbol_plan confidence < MIN_ACCEPTABLE_CONFIDENCE → symbol must NOT appear.
+HE7. Any symbol_plan confidence < MIN_EMISSION_CONFIDENCE → symbol must NOT appear.
 
 ### 2. Strategy Structure Errors (Severity: ERROR)
 SE1. strategy_type MUST strictly match the actual legs count and structure.
@@ -408,13 +412,13 @@ Output ONLY valid JSON. No markdown, no extra text, no explanations outside the 
 """
 
 
-def _build_critic_system_prompt(min_acceptable_confidence: float | None = None) -> str:
-  resolved = _DEFAULT_MIN_ACCEPTABLE_CONFIDENCE if min_acceptable_confidence is None else float(min_acceptable_confidence)
+def _build_critic_system_prompt(min_emission_confidence: float | None = None) -> str:
+  resolved = _DEFAULT_MIN_EMISSION_CONFIDENCE if min_emission_confidence is None else float(min_emission_confidence)
   formatted = _format_prompt_float(resolved)
   return _CRITIC_SYSTEM_PROMPT_TEMPLATE.replace(
-    "MIN_ACCEPTABLE_CONFIDENCE: 0.3",
-    f"MIN_ACCEPTABLE_CONFIDENCE: {formatted}",
+    "MIN_EMISSION_CONFIDENCE: 0.3",
+    f"MIN_EMISSION_CONFIDENCE: {formatted}",
   )
 
 
-_CRITIC_SYSTEM_PROMPT = _build_critic_system_prompt(_DEFAULT_MIN_ACCEPTABLE_CONFIDENCE)
+_CRITIC_SYSTEM_PROMPT = _build_critic_system_prompt(_DEFAULT_MIN_EMISSION_CONFIDENCE)

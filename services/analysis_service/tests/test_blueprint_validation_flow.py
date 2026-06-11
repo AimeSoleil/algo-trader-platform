@@ -5,6 +5,7 @@ from types import SimpleNamespace
 
 from shared.models.blueprint import Direction, LLMTradingBlueprint, OptionLeg, StrategyType, SymbolPlan
 import services.analysis_service.app.tasks.blueprint as blueprint_task
+import services.analysis_service.app.evaluation.rule_checker as rule_checker
 from services.analysis_service.app.tasks.blueprint import (
     _apply_deterministic_validation,
     _apply_and_log_deterministic_validation,
@@ -228,6 +229,36 @@ def test_empty_blueprint_after_pruning_is_soft_blocked():
     assert blueprint.symbol_plans == []
     assert summary["empty_after_pruning"] is True
     assert summary["passed"] is False
+    assert _is_blueprint_soft_blocked(blueprint) is True
+
+
+def test_below_pass_line_blueprint_is_soft_blocked_without_pruning(monkeypatch):
+    settings = SimpleNamespace(
+        analysis_service=SimpleNamespace(
+            llm=SimpleNamespace(
+                min_pass_confidence=0.65,
+                precision_first=SimpleNamespace(
+                    enabled=False,
+                    allowed_strategy_types=["single_leg", "vertical_spread", "iron_condor", "calendar_spread"],
+                ),
+            )
+        )
+    )
+    monkeypatch.setattr(blueprint_task, "get_settings", lambda: settings)
+    monkeypatch.setattr(rule_checker, "get_settings", lambda: settings)
+
+    blueprint, summary = _apply_deterministic_validation(
+        _make_blueprint(["MSFT"]),
+        {"MSFT": _signal_map()["MSFT"]},
+        agent_outputs=None,
+    )
+
+    assert [plan.underlying for plan in blueprint.symbol_plans] == ["MSFT"]
+    assert summary["below_pass_line_symbols"] == ["MSFT"]
+    assert summary["pass_line_passed"] is False
+    assert summary["passed"] is False
+
+    blueprint = blueprint.model_copy(update={"reasoning_context": {"deterministic_validation": summary}})
     assert _is_blueprint_soft_blocked(blueprint) is True
 
 

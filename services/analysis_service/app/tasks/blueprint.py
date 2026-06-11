@@ -33,6 +33,17 @@ from services.analysis_service.app.tasks.helpers import (
 logger = get_logger("analysis_tasks")
 
 _TRADE_GATE_AGENT_NAMES = ("trend", "volatility", "flow", "chain", "spread", "cross_asset")
+_DEFAULT_MIN_PASS_CONFIDENCE = 0.5
+
+
+def _resolve_min_pass_confidence(settings: Any | None = None) -> float:
+    llm_settings = getattr(getattr(settings, "analysis_service", None), "llm", None)
+    raw_value = getattr(llm_settings, "min_pass_confidence", _DEFAULT_MIN_PASS_CONFIDENCE)
+    try:
+        resolved = float(raw_value)
+    except (TypeError, ValueError):
+        return _DEFAULT_MIN_PASS_CONFIDENCE
+    return max(0.0, min(1.0, resolved))
 
 
 async def _claim_terminal_notification_slot_async(trading_date: str, outcome: str) -> bool:
@@ -408,9 +419,16 @@ def _apply_deterministic_validation(
         signal_map,
         agent_outputs=agent_outputs,
     )
+    pass_line_issues = [issue for issue in final_check.issues if issue.rule == "confidence_below_pass_line"]
+    below_pass_line_symbols = sorted({issue.symbol.upper() for issue in pass_line_issues if issue.symbol})
+    pass_line_confidence = _resolve_min_pass_confidence(get_settings())
     summary = _summarize_check_result(final_check)
     summary["initial_error_count"] = len(initial_errors)
     summary["initial_warning_count"] = initial_check.warning_count
+    summary["pass_line_confidence"] = pass_line_confidence
+    summary["pass_line_warning_count"] = len(pass_line_issues)
+    summary["below_pass_line_symbols"] = below_pass_line_symbols
+    summary["pass_line_passed"] = bool(blueprint.symbol_plans) and not below_pass_line_symbols
     summary["precision_first_enabled"] = precision_first_enabled
     summary["allowed_strategy_types"] = allowed_strategy_types
     summary["emitted_strategy_scope_pruned_symbols"] = emitted_scope_pruned_symbols
@@ -427,7 +445,7 @@ def _apply_deterministic_validation(
     else:
         summary["trade_gate_summary"] = pre_selection_trade_gate_summary
     summary["empty_after_pruning"] = len(blueprint.symbol_plans) == 0
-    summary["passed"] = bool(summary["passed"] and blueprint.symbol_plans)
+    summary["passed"] = bool(summary["passed"] and blueprint.symbol_plans and summary["pass_line_passed"])
     return blueprint, summary
 
 
@@ -482,7 +500,11 @@ def _resolve_validation_agent_outputs(
 def _is_blueprint_soft_blocked(blueprint: LLMTradingBlueprint) -> bool:
     """Soft-block blueprints with remaining errors or no surviving plans."""
     validation = (blueprint.reasoning_context or {}).get("deterministic_validation", {})
-    return bool(validation.get("error_count", 0) > 0 or not blueprint.symbol_plans)
+    return bool(
+        validation.get("error_count", 0) > 0
+        or validation.get("pass_line_passed") is False
+        or not blueprint.symbol_plans
+    )
 
 
 def _summarize_pre_synthesis_outcome(blueprint: LLMTradingBlueprint) -> dict[str, object]:

@@ -75,6 +75,20 @@ class TestPlanRisk:
         result = check_blueprint(_blueprint(symbol_plans=[_plan(confidence=0.2)]))
         assert any(i.rule == "low_confidence" for i in result.issues)
 
+    def test_confidence_below_pass_line_warning(self, monkeypatch):
+        settings = SimpleNamespace(
+            analysis_service=SimpleNamespace(
+                llm=SimpleNamespace(min_pass_confidence=0.5),
+            )
+        )
+        monkeypatch.setattr(
+            "services.analysis_service.app.evaluation.rule_checker.get_settings",
+            lambda: settings,
+        )
+
+        result = check_blueprint(_blueprint(symbol_plans=[_plan(confidence=0.45)]))
+        assert any(i.rule == "confidence_below_pass_line" and i.severity == "warning" for i in result.issues)
+
     def test_stop_loss_exceeds_max_loss_not_checked_in_manual_trader_mode(self):
         result = check_blueprint(
             _blueprint(symbol_plans=[_plan(stop_loss_amount=700.0, max_loss_per_trade=500.0)])
