@@ -34,6 +34,7 @@
 #   ./scripts/run_workers.sh --env-file .env.local
 #   ./scripts/run_workers.sh --foreground    # keep manager attached to current terminal
 #   ./scripts/run_workers.sh --stop          # stop all workers, beat & flower
+#   ./scripts/run_workers.sh --stop-task-id <task_id>  # revoke/terminate one task
 #   ./scripts/run_workers.sh --status        # show manager/workers status
 #   ./scripts/run_workers.sh --list          # show available worker names
 #   ENABLE_FLOWER=1 ./scripts/run_workers.sh
@@ -69,6 +70,7 @@ LOG_LEVEL="${LOG_LEVEL:-INFO}"
 WORKER_HOST="${WORKER_HOST:-$(hostname -s 2>/dev/null || hostname)}"
 
 FOREGROUND=0
+STOP_TASK_ID=""
 
 ALL_QUEUES=(data signal analysis)
 
@@ -452,6 +454,10 @@ while (( $# > 0 )); do
       fi
       exit 0
       ;;
+    --stop-task-id=*)
+      STOP_TASK_ID="${1#--stop-task-id=}"; shift ;;
+    --stop-task-id)
+      STOP_TASK_ID="${2:?'--stop-task-id requires a value'}"; shift 2 ;;
     --status)
       show_status
       exit 0
@@ -467,7 +473,7 @@ while (( $# > 0 )); do
       ;;
     *)
       echo "[run_workers] 未知参数: $1" >&2
-      echo "  用法: ./scripts/run_workers.sh [--workers=data,signal] [--env-file=.env.local] [--loglevel=DEBUG] [--with-flower] [--foreground] [--stop] [--status] [--diag]" >&2
+      echo "  用法: ./scripts/run_workers.sh [--workers=data,signal] [--env-file=.env.local] [--loglevel=DEBUG] [--with-flower] [--foreground] [--stop] [--stop-task-id=<task_id>] [--status] [--diag]" >&2
       exit 1
       ;;
   esac
@@ -534,6 +540,36 @@ done
 build_active_workers
 
 CELERY_CMD="uv run celery -A shared.celery_app.celery_app"
+
+if [[ -n "$STOP_TASK_ID" ]]; then
+  echo "[run_workers] Stopping task: ${STOP_TASK_ID}"
+  revoke_output=""
+  terminate_output=""
+  set +e
+  revoke_output="$(${CELERY_CMD} control revoke "$STOP_TASK_ID" 2>&1)"
+  revoke_status=$?
+  terminate_output="$(${CELERY_CMD} control terminate SIGTERM "$STOP_TASK_ID" 2>&1)"
+  terminate_status=$?
+  set -e
+
+  if (( revoke_status == 0 && terminate_status == 0 )); then
+    echo "[run_workers] Task stop commands sent successfully (task_id=${STOP_TASK_ID})"
+    echo "[run_workers] 注意: 若任务已经结束，worker 可能不会有额外动作。"
+    exit 0
+  fi
+
+  echo "[run_workers] Failed to fully stop task (task_id=${STOP_TASK_ID}, revoke=${revoke_status}, terminate=${terminate_status})" >&2
+  if (( revoke_status != 0 )); then
+    print_inspect_failure_summary "$revoke_output" "  " >&2
+  fi
+  if (( terminate_status != 0 )); then
+    print_inspect_failure_summary "$terminate_output" "  " >&2
+  fi
+  if (( revoke_status != 0 )); then
+    exit "$revoke_status"
+  fi
+  exit "$terminate_status"
+fi
 
 if [[ "${DIAG_ONLY:-0}" == "1" ]]; then
   run_diag

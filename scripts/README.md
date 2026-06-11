@@ -47,6 +47,9 @@ cp .env.example .env.local
 # Basic: start all workers + beat
 bash scripts/run_workers.sh
 
+# Stop one Celery task by task_id (revoke + terminate)
+bash scripts/run_workers.sh --stop-task-id <task_id>
+
 # With Flower monitoring UI
 bash scripts/run_workers.sh --with-flower
 # or explicitly choose the local env file

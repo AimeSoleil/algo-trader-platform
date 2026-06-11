@@ -336,6 +336,12 @@ uv run uvicorn services.analysis_service.app.main:app --host 0.0.0.0 --port 8003
 ./scripts/run_workers.sh --with-flower
 ```
 
+停止指定 task（按 task_id）：
+
+```bash
+./scripts/run_workers.sh --stop-task-id <task_id>
+```
+
 也可以手动分开启动：
 
 ```bash
