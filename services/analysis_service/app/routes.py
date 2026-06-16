@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import re
+from typing import Literal
 
 from celery.result import AsyncResult
 from fastapi import APIRouter, HTTPException, Query
@@ -96,6 +97,13 @@ class AnalyzeRequest(BaseModel):
             "Defaults to today."
         ),
     )
+    llm_provider: Literal["openai", "closeai", "deepseek"] | None = Field(
+        None,
+        description=(
+            "Optional per-request LLM provider override. "
+            "If omitted, uses analysis_service.llm.provider from settings."
+        ),
+    )
 
 
 class AnalyzeResponse(BaseModel):
@@ -130,16 +138,20 @@ async def trigger_analysis(req: AnalyzeRequest):
 
     task = celery_app.send_task(
         "analysis_service.tasks.manual_analyze",
-        args=[clean_symbols, req.signal_date],
+        args=[clean_symbols, req.signal_date, req.llm_provider],
         queue="analysis",
     )
 
     date_suffix = f" (signal_date={req.signal_date})" if req.signal_date else ""
+    provider_suffix = f" (llm_provider={req.llm_provider})" if req.llm_provider else ""
     return AnalyzeResponse(
         task_id=task.id,
         symbols=clean_symbols,
         status="queued",
-        message=f"Analysis queued for {len(clean_symbols)} symbol(s): {', '.join(clean_symbols)}{date_suffix}",
+        message=(
+            f"Analysis queued for {len(clean_symbols)} symbol(s): "
+            f"{', '.join(clean_symbols)}{date_suffix}{provider_suffix}"
+        ),
     )
 
 

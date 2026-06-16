@@ -89,3 +89,24 @@ class TestAdapterRouting:
 
         with pytest.raises(RuntimeError, match="agents crashed"):
             await adapter.generate_blueprint([_make_sf()])
+
+    @pytest.mark.asyncio
+    async def test_provider_override_forwards_to_orchestrator(self):
+        """Adapter forwards per-request provider override to orchestrator."""
+        mock_bp = _make_blueprint()
+        sf = _make_sf()
+
+        from services.analysis_service.app.llm.adapter import LLMAdapter
+
+        adapter = LLMAdapter()
+
+        mock_orch = AsyncMock()
+        mock_orch.generate = AsyncMock(return_value=mock_bp)
+        adapter._orchestrator = mock_orch
+
+        await adapter.generate_blueprint([sf], provider_name="openai")
+        mock_orch.generate.assert_awaited_once()
+        called_kwargs = mock_orch.generate.await_args.kwargs
+        assert called_kwargs["signal_features"] == [sf]
+        assert called_kwargs["signal_date"] is None
+        assert called_kwargs["provider_name"] == "openai"

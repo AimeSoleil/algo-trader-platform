@@ -823,6 +823,7 @@ async def _run_blueprint_pipeline(
     signal_features: list[SignalFeatures],
     td: date,
     progress_cb=None,
+    llm_provider: str | None = None,
 ):
     """Common pipeline: LLM generation → deterministic validation → return blueprint."""
     logger.debug(
@@ -846,6 +847,7 @@ async def _run_blueprint_pipeline(
     blueprint = await adapter.generate_blueprint(
         signal_features=signal_features,
         signal_date=td,
+        provider_name=llm_provider,
     )
     logger.debug(
         "blueprint.pipeline_generation_finished",

@@ -174,6 +174,7 @@ class AgentOrchestrator:
         signal_features: list[SignalFeatures],
         *,
         signal_date: date | None = None,
+        provider_name: str | None = None,
     ) -> LLMTradingBlueprint:
         """Run the full multi-agent pipeline.
 
@@ -195,7 +196,11 @@ class AgentOrchestrator:
 
         # ── Resolve provider (lazy-create on first call) ──
         provider = self._provider
-        if provider is None:
+        if provider_name is not None:
+            # Request-level override for manual analysis API; do not mutate
+            # the cached default provider to avoid cross-request leakage.
+            provider = _create_agent_provider(provider_name)
+        elif provider is None:
             provider = _create_agent_provider()
             self._provider = provider
 

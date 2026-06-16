@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 from fastapi.testclient import TestClient
 
 import services.analysis_service.app.queries as queries
@@ -137,3 +139,43 @@ def test_get_blueprint_by_id_returns_404(monkeypatch):
 
     assert response.status_code == 404
     assert response.json() == {"detail": f"No blueprint found with id '{blueprint_id}'"}
+
+
+def test_trigger_manual_analysis_with_provider_override(monkeypatch):
+    captured: dict[str, object] = {}
+
+    def fake_send_task(name: str, args: list[object], queue: str):
+        captured["name"] = name
+        captured["args"] = args
+        captured["queue"] = queue
+        return SimpleNamespace(id="task-123")
+
+    monkeypatch.setattr("services.analysis_service.app.routes.celery_app.send_task", fake_send_task)
+
+    response = client.post(
+        "/api/v1/analysis",
+        json={
+            "symbols": ["aapl", "msft"],
+            "signal_date": "2026-03-24",
+            "llm_provider": "openai",
+        },
+    )
+
+    assert response.status_code == 202
+    assert captured["name"] == "analysis_service.tasks.manual_analyze"
+    assert captured["args"] == [["AAPL", "MSFT"], "2026-03-24", "openai"]
+    assert captured["queue"] == "analysis"
+    assert response.json()["task_id"] == "task-123"
+    assert "llm_provider=openai" in response.json()["message"]
+
+
+def test_trigger_manual_analysis_rejects_unknown_provider():
+    response = client.post(
+        "/api/v1/analysis",
+        json={
+            "symbols": ["AAPL"],
+            "llm_provider": "unknown_provider",
+        },
+    )
+
+    assert response.status_code == 422

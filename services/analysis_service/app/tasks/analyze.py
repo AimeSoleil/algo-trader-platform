@@ -5,6 +5,7 @@ import json
 import uuid as _uuid
 from datetime import date
 from time import perf_counter
+from typing import Literal
 
 from sqlalchemy import text
 
@@ -35,6 +36,7 @@ def manual_analyze(
     self,
     symbols: list[str] | str,
     trading_date: str | None = None,
+    llm_provider: Literal["openai", "closeai", "deepseek"] | None = None,
 ) -> dict:
     """Manually trigger LLM analysis for specified symbols.
 
@@ -54,10 +56,11 @@ def manual_analyze(
         task_id=getattr(self.request, "id", None),
         symbols=clean,
         trading_date=trading_date,
+        llm_provider=llm_provider,
         retry=getattr(self.request, "retries", 0),
     )
     try:
-        return run_async(_manual_analyze_async(self, clean, trading_date))
+        return run_async(_manual_analyze_async(self, clean, trading_date, llm_provider))
     except Exception as exc:
         configured_retries = get_settings().analysis_service.llm.max_retries
         current_retry = getattr(self.request, "retries", 0)
@@ -82,6 +85,7 @@ async def _manual_analyze_async(
     task,
     symbols: list[str],
     trading_date_str: str | None = None,
+    llm_provider: Literal["openai", "closeai", "deepseek"] | None = None,
 ) -> dict:
     td = date.fromisoformat(trading_date_str) if trading_date_str else today_trading()
     started = perf_counter()
@@ -91,6 +95,7 @@ async def _manual_analyze_async(
         stage="start",
         symbols=symbols,
         trading_date=str(td),
+        llm_provider=llm_provider,
     )
 
     task.update_state(
@@ -138,7 +143,11 @@ async def _manual_analyze_async(
         meta={"step": "generating_blueprint", "symbols": symbols},
     )
 
-    blueprint = await _run_blueprint_pipeline(signal_features, td)
+    blueprint = await _run_blueprint_pipeline(
+        signal_features,
+        td,
+        llm_provider=llm_provider,
+    )
     _annotate_blueprint_quality(blueprint, signal_features)
 
     # 3) Write to DB with status='manual'

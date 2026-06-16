@@ -30,11 +30,13 @@ class LLMAdapter:
         signal_features: list[SignalFeatures],
         *,
         signal_date: date | None = None,
+        provider_name: str | None = None,
     ) -> LLMTradingBlueprint:
         """Generate blueprint via the multi-agent pipeline only."""
         return await self._generate_agentic(
             signal_features,
             signal_date=signal_date,
+            provider_name=provider_name,
         )
 
     async def _generate_agentic(
@@ -42,6 +44,7 @@ class LLMAdapter:
         signal_features: list[SignalFeatures],
         *,
         signal_date: date | None = None,
+        provider_name: str | None = None,
     ) -> LLMTradingBlueprint:
         """Multi-agent pipeline; failures propagate to caller."""
         started = perf_counter()
@@ -50,6 +53,7 @@ class LLMAdapter:
             blueprint = await orchestrator.generate(
                 signal_features=signal_features,
                 signal_date=signal_date,
+                provider_name=provider_name,
             )
             elapsed_ms = round((perf_counter() - started) * 1000, 2)
             logger.info(
