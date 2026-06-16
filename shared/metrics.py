@@ -9,6 +9,34 @@ Usage in any service's ``main.py``::
 from __future__ import annotations
 
 from prometheus_fastapi_instrumentator import Instrumentator
+from prometheus_fastapi_instrumentator import routing as _instrumentator_routing
+
+_ORIGINAL_GET_ROUTE_NAME = _instrumentator_routing.get_route_name
+_ROUTE_COMPAT_PATCHED = False
+
+
+def _safe_get_route_name(request):
+    """Compatibility wrapper for FastAPI route trees containing _IncludedRouter.
+
+    prometheus-fastapi-instrumentator may access ``route.path`` on objects that
+    do not expose this attribute in newer FastAPI routing trees. In that case,
+    return a generic handler label instead of crashing request processing.
+    """
+    try:
+        return _ORIGINAL_GET_ROUTE_NAME(request)
+    except AttributeError as exc:
+        message = str(exc)
+        if "_IncludedRouter" in message and "path" in message:
+            return "__unknown__"
+        raise
+
+
+def _ensure_instrumentator_route_compat() -> None:
+    global _ROUTE_COMPAT_PATCHED
+    if _ROUTE_COMPAT_PATCHED:
+        return
+    _instrumentator_routing.get_route_name = _safe_get_route_name
+    _ROUTE_COMPAT_PATCHED = True
 
 
 def setup_metrics(app, *, metrics_path: str = "/metrics") -> Instrumentator:
@@ -20,6 +48,8 @@ def setup_metrics(app, *, metrics_path: str = "/metrics") -> Instrumentator:
     - ``http_request_size_bytes``
     - ``http_response_size_bytes``
     """
+    _ensure_instrumentator_route_compat()
+
     instrumentator = Instrumentator(
         should_group_status_codes=False,
         should_ignore_untemplated=True,
