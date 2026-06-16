@@ -46,7 +46,11 @@ def _rows_to_iv_series(rows: list[tuple]) -> pd.Series:
     return pd.Series(values, index=pd.DatetimeIndex(index), dtype=float).sort_index()
 
 
-async def get_historical_iv_series(symbol: str, lookback_days: int | None = None) -> pd.Series:
+async def get_historical_iv_series(
+    symbol: str,
+    lookback_days: int | None = None,
+    as_of_date: date | None = None,
+) -> pd.Series:
     """从 TimescaleDB 获取带日期索引的历史日度 IV 序列。
 
     lookback_days 默认使用 config 中的 signal_service.iv_lookback_days（252 交易日）。
@@ -62,7 +66,8 @@ async def get_historical_iv_series(symbol: str, lookback_days: int | None = None
 
     # Config uses trading-day lookback (e.g. 252), but date math is calendar-day based.
     calendar_days = max(int(round(lookback_days * TRADING_TO_CALENDAR_DAYS)), lookback_days)
-    start_date = today_trading() - timedelta(days=calendar_days)
+    anchor_date = as_of_date or today_trading()
+    start_date = anchor_date - timedelta(days=calendar_days)
 
     # ── 1) Prefer pre-aggregated IV daily summary ──
     async with get_timescale_session() as session:
@@ -124,9 +129,13 @@ async def get_historical_iv_series(symbol: str, lookback_days: int | None = None
     return _rows_to_iv_series(intraday_rows)
 
 
-async def get_historical_iv(symbol: str, lookback_days: int | None = None) -> list[float]:
+async def get_historical_iv(
+    symbol: str,
+    lookback_days: int | None = None,
+    as_of_date: date | None = None,
+) -> list[float]:
     """从 TimescaleDB 获取历史 IV 数值列表。"""
-    historical_iv_series = await get_historical_iv_series(symbol, lookback_days)
+    historical_iv_series = await get_historical_iv_series(symbol, lookback_days, as_of_date=as_of_date)
     return historical_iv_series.tolist()
 
 
@@ -257,7 +266,10 @@ def calculate_term_structure(option_data: pd.DataFrame, underlying_price: float)
     return result
 
 
-def calculate_front_expiry_dte(option_data: pd.DataFrame) -> int | None:
+def calculate_front_expiry_dte(
+    option_data: pd.DataFrame,
+    as_of_date: date | None = None,
+) -> int | None:
     """Return calendar days to the nearest listed expiry in the current snapshot."""
     if option_data.empty or "expiry" not in option_data.columns:
         return None
@@ -273,7 +285,7 @@ def calculate_front_expiry_dte(option_data: pd.DataFrame) -> int | None:
         return None
 
     front_expiry = valid_expiries.min().normalize()
-    trading_day = pd.Timestamp(today_trading()).normalize()
+    trading_day = pd.Timestamp(as_of_date or today_trading()).normalize()
     return max(0, int((front_expiry - trading_day).days))
 
 
@@ -345,7 +357,11 @@ async def _compute_iv_metrics(
     }
 
 
-def _compute_greek_aggregations(option_data: pd.DataFrame) -> dict:
+def _compute_greek_aggregations(
+    option_data: pd.DataFrame,
+    *,
+    as_of_date: date | None = None,
+) -> dict:
     """OI 加权的 Greek 聚合：exposure、gamma peak、theta decay、vanna、charm."""
     weighted_oi = option_data["open_interest"].fillna(0).astype(float)
     total_oi = max(float(weighted_oi.sum()), 1.0)
@@ -390,7 +406,7 @@ def _compute_greek_aggregations(option_data: pd.DataFrame) -> dict:
     if "charm" in option_data.columns and option_data["charm"].notna().any() and (option_data["charm"] != 0).any():
         charm = float((option_data["charm"].fillna(0).astype(float) * weighted_oi).sum() / total_oi)
     else:
-        now_ts = pd.Timestamp.today()  # tz-naive; avoid tz-aware/tz-naive mismatch
+        now_ts = pd.Timestamp(as_of_date or today_trading()).normalize()
         expiry_ts = pd.to_datetime(option_data["expiry"], errors="coerce")
         if expiry_ts.dt.tz is not None:
             expiry_ts = expiry_ts.dt.tz_convert(None)
@@ -458,6 +474,8 @@ def _compute_strategy_metrics(
     option_data: pd.DataFrame,
     underlying_price: float,
     atm_iv: dict[str, float],
+    *,
+    as_of_date: date | None = None,
 ) -> dict:
     """策略类指标：vertical spread、butterfly、box spread、calendar spread.
 
@@ -466,7 +484,11 @@ def _compute_strategy_metrics(
     """
     from services.signal_service.app.filters.option_filters import apply_trading_filter
 
-    tradeable_data, filter_result = apply_trading_filter(option_data, underlying_price)
+    tradeable_data, filter_result = apply_trading_filter(
+        option_data,
+        underlying_price,
+        as_of_date=as_of_date,
+    )
 
     vertical_scores: list[float] = []
     calendar_scores: list[float] = []
@@ -527,7 +549,11 @@ def _compute_strategy_metrics(
             far_theta = float(far["theta"].fillna(0).abs().mean()) if not far.empty else 0.0
             calendar_scores.append(max(near_theta - far_theta, 0.0))
 
-    execution_candidates = _compute_spread_execution_candidates(tradeable_data, underlying_price)
+    execution_candidates = _compute_spread_execution_candidates(
+        tradeable_data,
+        underlying_price,
+        as_of_date=as_of_date,
+    )
     leg_liquidity_floor_profile = _build_leg_liquidity_floor_profile(
         tradeable_data,
         execution_candidates,
@@ -572,11 +598,15 @@ def _expiry_to_str(expiry: object) -> str | None:
     return ts.date().isoformat()
 
 
-def _expiry_to_dte(expiry: object) -> int | None:
+def _expiry_to_dte(
+    expiry: object,
+    as_of_date: date | None = None,
+) -> int | None:
     ts = pd.to_datetime(expiry, errors="coerce")
     if pd.isna(ts):
         return None
-    return max(int((ts.normalize() - pd.Timestamp(today_trading())).days), 0)
+    anchor_ts = pd.Timestamp(as_of_date or today_trading()).normalize()
+    return max(int((ts.normalize() - anchor_ts).days), 0)
 
 
 def _estimate_round_trip_cost(legs: list[tuple[pd.Series, int]]) -> float:
@@ -621,7 +651,11 @@ def _choose_best_candidate(
     return candidate
 
 
-def _build_vertical_execution_candidate(tradeable_data: pd.DataFrame) -> SpreadExecutionCandidate | None:
+def _build_vertical_execution_candidate(
+    tradeable_data: pd.DataFrame,
+    *,
+    as_of_date: date | None = None,
+) -> SpreadExecutionCandidate | None:
     candidates: list[tuple[float, SpreadExecutionCandidate]] = []
     for expiry, group in tradeable_data.groupby("expiry"):
         calls = group[group["option_type"] == "call"].sort_values("strike").copy()
@@ -644,7 +678,7 @@ def _build_vertical_execution_candidate(tradeable_data: pd.DataFrame) -> SpreadE
                 strategy_type="vertical",
                 legs=[(low, 1), (high, 1)],
                 expiry=_expiry_to_str(expiry),
-                expiry_dte=_expiry_to_dte(expiry),
+                expiry_dte=_expiry_to_dte(expiry, as_of_date=as_of_date),
                 long_strike=_round_or_none(float(low["strike"]), 4),
                 short_strike=_round_or_none(float(high["strike"]), 4),
                 width=_round_or_none(width, 4),
@@ -663,6 +697,8 @@ def _build_vertical_execution_candidate(tradeable_data: pd.DataFrame) -> SpreadE
 def _build_iron_condor_execution_candidate(
     tradeable_data: pd.DataFrame,
     underlying_price: float,
+    *,
+    as_of_date: date | None = None,
 ) -> SpreadExecutionCandidate | None:
     candidates: list[tuple[float, SpreadExecutionCandidate]] = []
     for expiry, group in tradeable_data.groupby("expiry"):
@@ -703,7 +739,7 @@ def _build_iron_condor_execution_candidate(
                     strategy_type="iron_condor",
                     legs=[(long_put, 1), (short_put, 1), (short_call, 1), (long_call, 1)],
                     expiry=_expiry_to_str(expiry),
-                    expiry_dte=_expiry_to_dte(expiry),
+                    expiry_dte=_expiry_to_dte(expiry, as_of_date=as_of_date),
                     long_put_strike=_round_or_none(float(long_put["strike"]), 4),
                     short_put_strike=_round_or_none(float(short_put["strike"]), 4),
                     short_call_strike=_round_or_none(float(short_call["strike"]), 4),
@@ -721,7 +757,11 @@ def _build_iron_condor_execution_candidate(
     return _choose_best_candidate(candidates)
 
 
-def _build_butterfly_execution_candidate(tradeable_data: pd.DataFrame) -> SpreadExecutionCandidate | None:
+def _build_butterfly_execution_candidate(
+    tradeable_data: pd.DataFrame,
+    *,
+    as_of_date: date | None = None,
+) -> SpreadExecutionCandidate | None:
     candidates: list[tuple[float, SpreadExecutionCandidate]] = []
     for expiry, group in tradeable_data.groupby("expiry"):
         calls = group[group["option_type"] == "call"].sort_values("strike").copy()
@@ -750,7 +790,7 @@ def _build_butterfly_execution_candidate(tradeable_data: pd.DataFrame) -> Spread
                 strategy_type="butterfly",
                 legs=[(c1, 1), (c2, 2), (c3, 1)],
                 expiry=_expiry_to_str(expiry),
-                expiry_dte=_expiry_to_dte(expiry),
+                expiry_dte=_expiry_to_dte(expiry, as_of_date=as_of_date),
                 lower_strike=_round_or_none(float(k1), 4),
                 center_strike=_round_or_none(float(k2), 4),
                 upper_strike=_round_or_none(float(k3), 4),
@@ -767,7 +807,11 @@ def _build_butterfly_execution_candidate(tradeable_data: pd.DataFrame) -> Spread
     return _choose_best_candidate(candidates)
 
 
-def _build_box_execution_candidate(tradeable_data: pd.DataFrame) -> SpreadExecutionCandidate | None:
+def _build_box_execution_candidate(
+    tradeable_data: pd.DataFrame,
+    *,
+    as_of_date: date | None = None,
+) -> SpreadExecutionCandidate | None:
     candidates: list[tuple[float, SpreadExecutionCandidate]] = []
     for expiry, group in tradeable_data.groupby("expiry"):
         calls = group[group["option_type"] == "call"].copy()
@@ -798,7 +842,7 @@ def _build_box_execution_candidate(tradeable_data: pd.DataFrame) -> SpreadExecut
                     strategy_type="box_arb",
                     legs=[(c_low, 1), (c_high, 1), (p_high, 1), (p_low, 1)],
                     expiry=_expiry_to_str(expiry),
-                    expiry_dte=_expiry_to_dte(expiry),
+                    expiry_dte=_expiry_to_dte(expiry, as_of_date=as_of_date),
                     lower_strike=_round_or_none(float(k_low), 4),
                     upper_strike=_round_or_none(float(k_high), 4),
                     width=_round_or_none(float(k_high - k_low), 4),
@@ -815,14 +859,15 @@ def _build_calendar_execution_candidate(
     tradeable_data: pd.DataFrame,
     *,
     reverse: bool = False,
+    as_of_date: date | None = None,
 ) -> SpreadExecutionCandidate | None:
     if tradeable_data.empty or tradeable_data["expiry"].nunique() < 2:
         return None
     expiry_order = sorted(tradeable_data["expiry"].unique())
     near_expiry = expiry_order[0]
     far_expiry = expiry_order[-1]
-    near_dte = _expiry_to_dte(near_expiry)
-    far_dte = _expiry_to_dte(far_expiry)
+    near_dte = _expiry_to_dte(near_expiry, as_of_date=as_of_date)
+    far_dte = _expiry_to_dte(far_expiry, as_of_date=as_of_date)
     candidates: list[tuple[float, SpreadExecutionCandidate]] = []
 
     for option_type in ("call", "put"):
@@ -876,17 +921,31 @@ def _build_calendar_execution_candidate(
 def _compute_spread_execution_candidates(
     tradeable_data: pd.DataFrame,
     underlying_price: float,
+    *,
+    as_of_date: date | None = None,
 ) -> dict[str, SpreadExecutionCandidate]:
     if tradeable_data.empty:
         return {}
 
     candidates = {
-        "vertical": _build_vertical_execution_candidate(tradeable_data),
-        "iron_condor": _build_iron_condor_execution_candidate(tradeable_data, underlying_price),
-        "calendar": _build_calendar_execution_candidate(tradeable_data, reverse=False),
-        "reverse_calendar": _build_calendar_execution_candidate(tradeable_data, reverse=True),
-        "butterfly": _build_butterfly_execution_candidate(tradeable_data),
-        "box_arb": _build_box_execution_candidate(tradeable_data),
+        "vertical": _build_vertical_execution_candidate(tradeable_data, as_of_date=as_of_date),
+        "iron_condor": _build_iron_condor_execution_candidate(
+            tradeable_data,
+            underlying_price,
+            as_of_date=as_of_date,
+        ),
+        "calendar": _build_calendar_execution_candidate(
+            tradeable_data,
+            reverse=False,
+            as_of_date=as_of_date,
+        ),
+        "reverse_calendar": _build_calendar_execution_candidate(
+            tradeable_data,
+            reverse=True,
+            as_of_date=as_of_date,
+        ),
+        "butterfly": _build_butterfly_execution_candidate(tradeable_data, as_of_date=as_of_date),
+        "box_arb": _build_box_execution_candidate(tradeable_data, as_of_date=as_of_date),
     }
     return {name: candidate for name, candidate in candidates.items() if candidate is not None}
 
@@ -1009,6 +1068,7 @@ async def compute_option_indicators(
     option_data: pd.DataFrame,
     underlying_price: float,
     historical_iv: list[float] | None = None,
+    as_of_date: date | None = None,
 ) -> OptionIndicators:
     """计算完整期权指标集。
 
@@ -1031,16 +1091,21 @@ async def compute_option_indicators(
 
     # Fetch historical IV once (uses config iv_lookback_days, default 252)
     if historical_iv is None:
-        historical_iv = await get_historical_iv(symbol)
+        historical_iv = await get_historical_iv(symbol, as_of_date=as_of_date)
 
     # ── Analysis indicators (all contracts) ──
     iv_metrics = await _compute_iv_metrics(symbol, option_data, underlying_price, historical_iv)
-    greek_metrics = _compute_greek_aggregations(option_data)
+    greek_metrics = _compute_greek_aggregations(option_data, as_of_date=as_of_date)
     flow_metrics = _compute_flow_metrics(option_data)
-    front_expiry_dte = calculate_front_expiry_dte(option_data)
+    front_expiry_dte = calculate_front_expiry_dte(option_data, as_of_date=as_of_date)
 
     # ── Strategy indicators (tradeable contracts only) ──
-    strategy_metrics = _compute_strategy_metrics(option_data, underlying_price, iv_metrics["atm_iv"])
+    strategy_metrics = _compute_strategy_metrics(
+        option_data,
+        underlying_price,
+        iv_metrics["atm_iv"],
+        as_of_date=as_of_date,
+    )
 
     # ── Confidence & flags ──
     quality = _assess_confidence_and_flags(iv_metrics, flow_metrics, greek_metrics, option_data, historical_iv)

@@ -28,6 +28,16 @@ async def _set_started_flag(td: str) -> None:
     await redis.set(_pipeline_started_key(td), "1", ex=_STARTED_FLAG_TTL_SECONDS)
 
 
+async def _try_acquire_started_flag(td: str) -> bool:
+    """Atomically acquire a per-day start flag.
+
+    Returns True only for the first caller that sets the key with NX.
+    """
+    redis = get_redis()
+    acquired = await redis.set(_pipeline_started_key(td), "1", ex=_STARTED_FLAG_TTL_SECONDS, nx=True)
+    return bool(acquired)
+
+
 async def _check_started_flag(td: str) -> bool:
     redis = get_redis()
     return bool(await redis.exists(_pipeline_started_key(td)))
@@ -86,7 +96,18 @@ def run_post_market_pipeline(self, trading_date: str | None = None) -> dict:
     td = trading_date or today_trading().isoformat()
     started = perf_counter()
 
-    run_async(_set_started_flag(td))
+    acquired = run_async(_try_acquire_started_flag(td))
+    if not acquired:
+        logger.warning(
+            "post_market_pipeline.duplicate_start_suppressed",
+            trading_date=td,
+            task_id=getattr(self.request, "id", None),
+        )
+        return {
+            "status": "duplicate_suppressed",
+            "trading_date": td,
+            "task_id": getattr(self.request, "id", None),
+        }
 
     logger.info("post_market_pipeline.start", trading_date=td)
 

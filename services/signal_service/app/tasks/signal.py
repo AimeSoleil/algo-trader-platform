@@ -149,7 +149,7 @@ async def _compute_daily_signals(
                 total_volume = int(bars_df["volume"].iloc[-1])
 
                 # ── Technical indicators ───────────────────
-                historical_iv_series = await get_historical_iv_series(symbol)
+                historical_iv_series = await get_historical_iv_series(symbol, as_of_date=td)
                 historical_iv = historical_iv_series.tolist()
                 stock_indicators = compute_stock_indicators(bars_df)
                 option_indicators = await compute_option_indicators(
@@ -157,6 +157,7 @@ async def _compute_daily_signals(
                     option_df,
                     close_price,
                     historical_iv=historical_iv,
+                    as_of_date=td,
                 )
 
                 # ── Cross-asset indicators ─────────────────

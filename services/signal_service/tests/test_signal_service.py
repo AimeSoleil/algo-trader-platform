@@ -47,6 +47,7 @@ from services.signal_service.app.indicators.option_indicators import (
     calculate_term_structure,
     compute_option_indicators,
 )
+from services.signal_service.app.filters.option_filters import apply_trading_filter
 from services.signal_service.app.signal_generator import generate_signal
 
 
@@ -373,6 +374,22 @@ class TestComputeStockIndicators:
         result = compute_stock_indicators(df)
         assert result.liquidity_threshold == 1_500_000.0
 
+    def test_vwap_fields_have_dual_semantics(self):
+        df = make_bars_df(rows=60)
+        result = compute_stock_indicators(df)
+        # Legacy vwap now follows session semantics for Flow compatibility.
+        assert result.vwap == result.session_vwap
+        assert result.long_term_vwap_1y > 0
+        assert result.session_vwap_source in {"intraday_exact", "daily_proxy"}
+
+    def test_session_vwap_daily_proxy_without_timestamp(self):
+        df = make_bars_df(rows=60).drop(columns=["timestamp"])
+        result = compute_stock_indicators(df)
+        expected_proxy = round(float(((df["high"].iloc[-1] + df["low"].iloc[-1] + df["close"].iloc[-1]) / 3.0)), 4)
+        assert result.session_vwap_source == "daily_proxy"
+        assert result.session_vwap == expected_proxy
+        assert result.vwap == expected_proxy
+
 
 # ===================================================================
 # 3. Option Indicators — sync helpers
@@ -483,35 +500,62 @@ class TestCalculateTermStructure:
         assert "2025-03-15" in result
 
 
+def test_apply_trading_filter_uses_as_of_date_for_dte_window():
+    rows = []
+    for idx in range(12):
+        rows.append(
+            {
+                "expiry": "2025-02-15",
+                "volume": 1_000,
+                "open_interest": 10_000,
+                "bid": 2.0,
+                "ask": 2.1,
+                "delta": 0.3,
+                "option_type": "call" if idx % 2 == 0 else "put",
+                "strike": 100 + idx,
+            }
+        )
+    df = pd.DataFrame(rows)
+
+    cfg = SimpleNamespace(
+        min_volume=10,
+        min_open_interest=100,
+        max_relative_spread=0.2,
+        min_delta=0.05,
+        max_delta=0.95,
+        min_dte=1,
+        max_dte=10,
+    )
+
+    filtered, result = apply_trading_filter(
+        df,
+        underlying_price=100.0,
+        cfg=cfg,
+        as_of_date=date(2025, 2, 12),
+    )
+
+    assert len(filtered) == len(df)
+    assert result.details.get("method") == "config_based"
+    assert "fallback" not in result.details
+
+
 class TestCalculateFrontExpiryDte:
     def test_empty_returns_none(self):
         assert calculate_front_expiry_dte(pd.DataFrame()) is None
 
-    def test_nearest_expiry_returns_calendar_days(self, monkeypatch):
-        monkeypatch.setattr(
-            "services.signal_service.app.indicators.option_indicators.today_trading",
-            lambda: date(2025, 2, 12),
-        )
+    def test_nearest_expiry_returns_calendar_days(self):
         df = make_option_df()
-        result = calculate_front_expiry_dte(df)
+        result = calculate_front_expiry_dte(df, as_of_date=date(2025, 2, 12))
         assert result == 3
 
-    def test_same_day_expiry_preserves_zero(self, monkeypatch):
-        monkeypatch.setattr(
-            "services.signal_service.app.indicators.option_indicators.today_trading",
-            lambda: date(2025, 2, 15),
-        )
+    def test_same_day_expiry_preserves_zero(self):
         df = make_option_df()
-        result = calculate_front_expiry_dte(df)
+        result = calculate_front_expiry_dte(df, as_of_date=date(2025, 2, 15))
         assert result == 0
 
 
 @pytest.mark.asyncio
-async def test_compute_option_indicators_sets_front_expiry_dte(monkeypatch):
-    monkeypatch.setattr(
-        "services.signal_service.app.indicators.option_indicators.today_trading",
-        lambda: date(2025, 2, 12),
-    )
+async def test_compute_option_indicators_sets_front_expiry_dte():
     df = make_option_df()
 
     indicators = await compute_option_indicators(
@@ -519,17 +563,14 @@ async def test_compute_option_indicators_sets_front_expiry_dte(monkeypatch):
         df,
         100.0,
         historical_iv=[0.2, 0.22, 0.24, 0.26, 0.28],
+        as_of_date=date(2025, 2, 12),
     )
 
     assert indicators.front_expiry_dte == 3
 
 
 @pytest.mark.asyncio
-async def test_compute_option_indicators_populates_spread_execution_candidates(monkeypatch):
-    monkeypatch.setattr(
-        "services.signal_service.app.indicators.option_indicators.today_trading",
-        lambda: date(2025, 2, 12),
-    )
+async def test_compute_option_indicators_populates_spread_execution_candidates():
     df = make_option_df(expiries=["2025-02-15", "2025-03-21"])
 
     indicators = await compute_option_indicators(
@@ -537,6 +578,7 @@ async def test_compute_option_indicators_populates_spread_execution_candidates(m
         df,
         100.0,
         historical_iv=[0.2, 0.22, 0.24, 0.26, 0.28],
+        as_of_date=date(2025, 2, 12),
     )
 
     assert "vertical" in indicators.spread_execution_inputs
@@ -566,6 +608,31 @@ async def test_compute_option_indicators_populates_spread_execution_candidates(m
     assert profile.max_worst_leg_bid_ask_spread_ratio == 0.20
     assert profile.tradeable_contract_count > 0
     assert profile.execution_candidate_count == len(indicators.spread_execution_inputs)
+
+
+@pytest.mark.asyncio
+async def test_compute_option_indicators_as_of_date_controls_dte_deterministically():
+    df = make_option_df(expiries=["2025-02-15", "2025-03-21"])
+
+    anchored = await compute_option_indicators(
+        "TEST",
+        df,
+        100.0,
+        historical_iv=[0.2, 0.22, 0.24, 0.26, 0.28],
+        as_of_date=date(2025, 2, 12),
+    )
+    shifted = await compute_option_indicators(
+        "TEST",
+        df,
+        100.0,
+        historical_iv=[0.2, 0.22, 0.24, 0.26, 0.28],
+        as_of_date=date(2025, 2, 14),
+    )
+
+    assert anchored.front_expiry_dte == 3
+    assert shifted.front_expiry_dte == 1
+    assert anchored.spread_execution_inputs["calendar"].front_expiry_dte == 3
+    assert shifted.spread_execution_inputs["calendar"].front_expiry_dte == 1
 
 
 def test_build_leg_liquidity_floor_profile_selects_data_rich_profile(monkeypatch):

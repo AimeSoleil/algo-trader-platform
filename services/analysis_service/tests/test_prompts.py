@@ -223,13 +223,25 @@ class TestSignalStructure:
     def test_stock_flow_serializes_liquidity_threshold(self):
         from services.analysis_service.app.llm.prompts import _serialize_one_signal
 
-        si = StockIndicators(vwap=185.0, cmf_20=0.1, tick_volume_delta=0.2, liquidity_threshold=1_500_000.0)
+        si = StockIndicators(
+            vwap=185.0,
+            session_vwap=184.2,
+            session_vwap_source="daily_proxy",
+            long_term_vwap_1y=156.8,
+            cmf_20=0.1,
+            tick_volume_delta=0.2,
+            liquidity_threshold=1_500_000.0,
+        )
         sf = _make_signal_features(stock_indicators=si)
         text = _serialize_one_signal(sf)
         data = json.loads(text.split("\n", 1)[1])
 
         stock_flow = data.get("stock_flow", {})
         assert stock_flow.get("liquidity_threshold") == 1_500_000.0
+        assert stock_flow.get("vwap") == 184.2
+        assert stock_flow.get("session_vwap") == 184.2
+        assert stock_flow.get("session_vwap_source") == "daily_proxy"
+        assert stock_flow.get("long_term_vwap_1y") == 156.8
 
     def test_all_top_level_sections_present(self):
         from services.analysis_service.app.llm.prompts import _serialize_one_signal
@@ -442,6 +454,8 @@ def test_flow_prompt_defines_volume_anomaly_null_earnings_behavior_and_hard_cap_
 
     assert "volume_anomaly=true if price.volume ≥ 2 × stock_flow.liquidity_threshold" in flow_prompt
     assert "If earnings_proximity_days is null, keep it null and do NOT trigger H1/H2 earnings overrides" in flow_prompt
+    assert "stock_flow.session_vwap_source=\"daily_proxy\"" in flow_prompt
+    assert "SessionVWAPProxy=0.7" in flow_prompt
     assert "Apply the confidence-to-size table first, then clamp by all active hard caps" in flow_prompt
 
 

@@ -12,10 +12,12 @@
 """
 from __future__ import annotations
 
+from datetime import date
+
 import pandas as pd
 
 from shared.config import get_settings
-from shared.utils import get_logger
+from shared.utils import get_logger, today_trading
 
 from shared.models.filter import FilterResult
 
@@ -37,6 +39,7 @@ def apply_trading_filter(
     underlying_price: float = 0.0,
     *,
     cfg=None,
+    as_of_date: date | None = None,
 ) -> tuple[pd.DataFrame, FilterResult]:
     """Stage 3: 交易级过滤 — 用于策略类指标，不影响分析类指标。
 
@@ -94,7 +97,7 @@ def apply_trading_filter(
 
     # DTE filter
     if "expiry" in df.columns:
-        now_date = pd.Timestamp.today().normalize()  # tz-naive
+        now_date = pd.Timestamp(as_of_date or today_trading()).normalize()
         expiry_ts = pd.to_datetime(df["expiry"], errors="coerce")
         # Strip tz if the column came back tz-aware (e.g. timestamptz from PG)
         if expiry_ts.dt.tz is not None:

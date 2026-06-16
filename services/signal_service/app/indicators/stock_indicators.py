@@ -38,6 +38,39 @@ _TREND_ADX_Z_WINDOW = 20
 _TREND_ADX_Z_MIN_POINTS = 5
 
 
+def _compute_vwap_metrics(bars_df: pd.DataFrame) -> tuple[float, float, str]:
+        """Return (session_vwap, long_term_vwap_1y, session_vwap_source).
+
+        session_vwap:
+            - intraday_exact: when multiple bars exist for the latest trading day.
+            - daily_proxy: fallback to latest-day typical price when only daily OHLCV is available.
+
+        long_term_vwap_1y:
+            - cumulative volume-weighted average over the full provided window.
+        """
+        typical_price = (bars_df["high"] + bars_df["low"] + bars_df["close"]) / 3.0
+        volumes = bars_df["volume"].astype(float)
+
+        weighted_sum = float((typical_price * volumes).sum())
+        total_volume = float(volumes.sum())
+        long_term_vwap_1y = round(weighted_sum / total_volume, 4) if total_volume > 0 else 0.0
+
+        if "timestamp" in bars_df.columns:
+                timestamps = pd.to_datetime(bars_df["timestamp"], errors="coerce")
+                if timestamps.notna().any():
+                        latest_day = timestamps.max().normalize()
+                        day_mask = timestamps.dt.normalize() == latest_day
+                        if int(day_mask.sum()) >= 2:
+                                session_weighted_sum = float((typical_price[day_mask] * volumes[day_mask]).sum())
+                                session_total_volume = float(volumes[day_mask].sum())
+                                if session_total_volume > 0:
+                                        session_vwap = round(session_weighted_sum / session_total_volume, 4)
+                                        return session_vwap, long_term_vwap_1y, "intraday_exact"
+
+        session_vwap = round(float(typical_price.iloc[-1]), 4)
+        return session_vwap, long_term_vwap_1y, "daily_proxy"
+
+
 def _adx_series(
     high: pd.Series,
     low: pd.Series,
@@ -177,9 +210,9 @@ def compute_stock_indicators(bars_df: pd.DataFrame) -> StockIndicators:
     hv_20d = round(float(ret.tail(20).std() * np.sqrt(252)), 6) if len(ret) >= 2 else 0.0
     garch_forecast = _garch_like_forecast(close)
 
-    typical_price = (high + low + close) / 3
-    cum_vol = bars_df["volume"].cumsum().replace(0, np.nan)
-    vwap = round(float((typical_price * bars_df["volume"]).cumsum().iloc[-1] / cum_vol.iloc[-1]), 4)
+    session_vwap, long_term_vwap_1y, session_vwap_source = _compute_vwap_metrics(bars_df)
+    # Backward compatibility: legacy `vwap` now follows session semantics used by Flow.
+    vwap = session_vwap
 
     adv_20d = float(bars_df["volume"].tail(20).mean()) if len(bars_df) >= 20 else float(bars_df["volume"].mean())
     # Flow uses a current-bar liquidity hurdle, so derive a numeric threshold from
@@ -274,6 +307,9 @@ def compute_stock_indicators(bars_df: pd.DataFrame) -> StockIndicators:
         hv_20d=hv_20d,
         garch_vol_forecast=garch_forecast,
         vwap=vwap,
+        session_vwap=session_vwap,
+        session_vwap_source=session_vwap_source,
+        long_term_vwap_1y=long_term_vwap_1y,
         liquidity_threshold=liquidity_threshold,
         volume_profile_poc=poc,
         volume_profile_val=val,

@@ -136,6 +136,9 @@ class StockIndicators(BaseModel):
 
     # Professional flow features
     vwap: float = 0.0
+    session_vwap: float = 0.0
+    session_vwap_source: str = "daily_proxy"
+    long_term_vwap_1y: float = 0.0
     liquidity_threshold: float = 0.0
     volume_profile_poc: float = 0.0
     volume_profile_val: float = 0.0

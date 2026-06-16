@@ -69,7 +69,7 @@ Breakout Definition: Bullish breakout-like move = close > stock_flow.vwap + 0.4�
 Global Max Confidence Cap: 0.85 (non-negotiable, aggressive standard)
 
 ## Data Honesty Rules (Non-Negotiable)
-- Use ONLY explicitly provided fields: price.close_price, price.volume, price.daily_return, stock_flow.vwap, stock_flow.liquidity_threshold, stock_flow.volume_profile_poc, stock_flow.volume_profile_val, stock_flow.volume_profile_vah, stock_flow.cmf_20, stock_flow.tick_volume_delta, atr_14, option_vs_stock_volume_ratio, earnings_proximity_days
+- Use ONLY explicitly provided fields: price.close_price, price.volume, price.daily_return, stock_flow.vwap, stock_flow.session_vwap_source, stock_flow.liquidity_threshold, stock_flow.volume_profile_poc, stock_flow.volume_profile_val, stock_flow.volume_profile_vah, stock_flow.cmf_20, stock_flow.tick_volume_delta, atr_14, option_vs_stock_volume_ratio, earnings_proximity_days
 - Do NOT invent xSMA volume ratios, declining-volume sequences, gap-fill failures, or candle-pattern confirmations
 - Do NOT assert quiet deterioration from consecutive bars
 - Do NOT use reversal-candle exhaustion logic
@@ -99,6 +99,7 @@ H4. option_vs_stock_volume_ratio<0.5 = illiquid-options proxy; confidence -=0.1,
 H5. option_vs_stock_volume_ratio>2.5 requires separate event / IV confirmation; otherwise flow_signal=neutral, trade_allowed=true, confidence_cap=0.35, simple_structures_only=true, blocked_reasons=["extreme_option_activity_unconfirmed"]
 H6. CMF & Tick Delta opposite with both >|0.25|: flow_signal=conflicting, trade_allowed=true, confidence_cap=0.3, simple_structures_only=true, position_size_modifier=0.3 advisory-only, blocked_reasons=["conflicting_flow"]
 H7. Non-breakout contexts with 0 global confirming indicators: flow_signal=neutral, confidence_cap=0.3, trade_allowed=true, blocked_reasons=["insufficient_flow_confirmation"]
+H8. stock_flow.session_vwap_source="daily_proxy" (session VWAP unavailable): confidence_cap=0.7, advisory position_size_modifier_cap=0.5, blocked_reasons append "session_vwap_proxy_uncertainty" only when directional conviction depends on VWAP precision
 
 ## False Breakout Detection (BK1-BK3, AGGRESSIVE RELAXATION: Allow 1 confirming indicator)
 VWAP alignment is a breakout prerequisite and does NOT add to BK confirmation count.
@@ -144,12 +145,12 @@ Penalties:
 -0.10 Extended from VWAP (>1.5×ATR)
 -0.08 Low liquidity
 -0.05 Single confirming indicator only
-Hard Caps: Single indicator=0.65 | Earnings 2-3d=0.4 | Hard block=0.2 | Global Max=0.85
+Hard Caps: Single indicator=0.65 | Earnings 2-3d=0.4 | SessionVWAPProxy=0.7 | Hard block=0.2 | Global Max=0.85
 
 ## Advisory Position Size Modifier (Risk Framing Only)
 1.0 (confidence≥0.8) | 0.75 (0.7-0.79) | 0.5 (0.5-0.69) | 0.35 (0.35-0.49) | 0.2 (0.2-0.34) | 0 (<0.2)
 Note: All single-indicator signals automatically cap the advisory position_size_modifier at 0.5 regardless of confidence.
-Treat the confidence-to-size table as advisory risk framing only; trader sets actual size manually. Apply the confidence-to-size table first, then clamp by all active hard caps to derive the advisory modifier only. H1/H2/H3/BK caps always override the advisory table.
+Treat the confidence-to-size table as advisory risk framing only; trader sets actual size manually. Apply the confidence-to-size table first, then clamp by all active hard caps to derive the advisory modifier only. H1/H2/H3/H8/BK caps always override the advisory table.
 
 ## Output Schema (Aligned with Synthesizer & Critic)
 {"symbols":[{"symbol":"TICKER","flow_signal":"strong_buy|moderate_buy|neutral|moderate_sell|strong_sell|conflicting","signal_strength":"single_indicator|dual_indicator|triple_indicator","volume_anomaly":true|false,"vwap_bias":"bullish|bearish|neutral","position_size_modifier":0.0-1.0,"false_breakout_risk":"low|medium|high","event_risk_present":true|false,"earnings_proximity_days":null|number,"liquidity_status":"high|low","trade_allowed":true|false,"confidence_cap":null|number,"simple_structures_only":true|false,"blocked_reasons":[],"confirming_indicators_count":0-3,"reasoning":"","confidence":0.0-0.85}]}

@@ -62,3 +62,19 @@ def test_watchdog_noops_when_pipeline_already_started(monkeypatch):
         "status": "already_started",
         "trading_date": "2026-04-23",
     }
+
+
+def test_run_post_market_pipeline_suppresses_duplicate_start(monkeypatch):
+    def _run_async_duplicate(awaitable):
+        awaitable.close()
+        return False
+
+    monkeypatch.setattr(pipeline, "run_async", _run_async_duplicate)
+
+    result = pipeline.run_post_market_pipeline.run("2026-04-23")
+
+    assert result == {
+        "status": "duplicate_suppressed",
+        "trading_date": "2026-04-23",
+        "task_id": None,
+    }

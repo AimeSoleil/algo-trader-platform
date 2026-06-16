@@ -48,7 +48,8 @@ All specialist agents receive the same signal data. Key unit conventions, calcul
 **linear_reg_slope: Slope of multi-period price linear regression, representing average daily fractional price change (0.001 = +0.1% per day)
 **atr_14: absolute dollar value (e.g. 2.50 = $2.50 average daily trading range)
 **volume_profile_poc / val / vah: absolute price levels in dollars
-**VWAP: Rolling ~1-year volume-weighted average price (long-term metric, NOT intraday VWAP)
+**stock_flow.vwap / stock_flow.session_vwap: session VWAP baseline for flow/breakout rules; when only daily OHLCV is available this may be a daily-proxy value (see stock_flow.session_vwap_source)
+**stock_flow.long_term_vwap_1y: Rolling ~1-year volume-weighted average price for context only (NOT the breakout trigger baseline)
 **delta_adjusted_hedge_ratio: Negative of OI-weighted average portfolio delta per standard options contract (1 contract = 100 shares); >0 suggests buy shares to offset, <0 suggests sell shares to offset; typical range -1 to +1; |value| > 0.3 = meaningful net delta bias
 **portfolio_greeks: OI-weighted average greeks per contract (delta, gamma, theta, vega)
 **delta_exposure_profile: Total market delta exposure for DEX/GEX analysis, calculated as raw sum of delta × open interest
@@ -228,6 +229,9 @@ def _serialize_one_signal(sf: SignalFeatures) -> str:
     if ca.confidence_scores:
         cross_asset["confidence"] = ca.confidence_scores
 
+    session_vwap = si.session_vwap if si.session_vwap > 0 else si.vwap
+    long_term_vwap_1y = si.long_term_vwap_1y if si.long_term_vwap_1y > 0 else si.vwap
+
     data: dict[str, Any] = {
         "price": {
             "close_price": sf.close_price,
@@ -242,7 +246,10 @@ def _serialize_one_signal(sf: SignalFeatures) -> str:
             "garch_vol_forecast": round(si.garch_vol_forecast, 4),
         }),
         "stock_flow": _prune_defaults({
-            "vwap": round(si.vwap, 2),
+            "vwap": round(session_vwap, 2),
+            "session_vwap": round(session_vwap, 2),
+            "session_vwap_source": si.session_vwap_source,
+            "long_term_vwap_1y": round(long_term_vwap_1y, 2),
             "liquidity_threshold": round(si.liquidity_threshold, 4),
             "volume_profile_poc": round(si.volume_profile_poc, 2),
             "volume_profile_val": round(si.volume_profile_val, 2),
