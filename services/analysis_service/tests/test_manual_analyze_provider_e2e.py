@@ -4,6 +4,7 @@ from datetime import date
 
 import pytest
 
+from shared.notifier.base import EventType
 from shared.models.blueprint import LLMTradingBlueprint, OptionLeg, SymbolPlan
 from shared.models.signal import (
     CrossAssetIndicators,
@@ -88,10 +89,12 @@ def _make_blueprint(provider: str) -> LLMTradingBlueprint:
 @pytest.mark.asyncio
 async def test_manual_analyze_provider_override_persists_to_db(monkeypatch):
     db_calls: list[tuple[str, dict | None]] = []
+    notifications = []
     task = _FakeTask()
 
     monkeypatch.setattr(analyze_task, "get_postgres_session", lambda: _FakeSession(db_calls))
     monkeypatch.setattr(analyze_task, "_parse_signal_features", lambda _raw: _make_signal())
+    monkeypatch.setattr(analyze_task, "notify_sync", lambda event: notifications.append(event))
 
     async def _fake_run_blueprint_pipeline(signal_features, td, progress_cb=None, llm_provider=None):
         assert llm_provider == "closeai"
@@ -126,3 +129,9 @@ async def test_manual_analyze_provider_override_persists_to_db(monkeypatch):
     assert insert_params is not None
     assert insert_params["model_provider"] == "closeai"
     assert result["provider"] == "closeai"
+    assert len(notifications) == 2
+    assert notifications[0].event_type == EventType.MANUAL_ANALYSIS_STARTED
+    assert notifications[0].payload["trading_date"] == "2026-03-24"
+    assert notifications[1].event_type == EventType.MANUAL_ANALYSIS_FINISHED
+    assert notifications[1].payload["blueprint_id"] == result["blueprint_id"]
+    assert result["blueprint_id"] in notifications[1].message

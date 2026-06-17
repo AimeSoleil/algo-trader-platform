@@ -14,6 +14,8 @@ from shared.celery_app import celery_app
 from shared.config import get_settings
 from shared.db.session import get_postgres_session
 from shared.models.signal import SignalFeatures
+from shared.notifier.base import EventType, NotificationEvent, Severity
+from shared.notifier.helpers import notify_sync
 from shared.utils import get_logger, today_trading
 
 from services.analysis_service.app.tasks.blueprint import (
@@ -23,6 +25,53 @@ from services.analysis_service.app.tasks.blueprint import (
 from services.analysis_service.app.tasks.helpers import _parse_signal_features
 
 logger = get_logger("analysis_tasks")
+
+
+def _notify_manual_analysis_started(
+    symbols: list[str],
+    trading_date: str,
+    llm_provider: Literal["openai", "closeai", "deepseek"] | None,
+) -> None:
+    notify_sync(NotificationEvent(
+        event_type=EventType.MANUAL_ANALYSIS_STARTED,
+        title="🔎 Manual Analysis Started",
+        message=(
+            f"Manual analysis started for {trading_date}. "
+            f"Symbols: {len(symbols)}, provider: {llm_provider or 'default'}."
+        ),
+        severity=Severity.INFO,
+        payload={
+            "trading_date": trading_date,
+            "symbols_count": str(len(symbols)),
+            "provider": str(llm_provider or "default"),
+        },
+    ))
+
+
+def _notify_manual_analysis_finished(
+    symbols: list[str],
+    trading_date: str,
+    blueprint_id: str,
+    plans_count: int,
+    llm_provider: str | None,
+) -> None:
+    notify_sync(NotificationEvent(
+        event_type=EventType.MANUAL_ANALYSIS_FINISHED,
+        title="✅ Manual Analysis Completed",
+        message=(
+            f"Manual analysis completed for {trading_date}. "
+            f"Blueprint ID: {blueprint_id}. "
+            f"Plans: {plans_count}, provider: {llm_provider or 'unknown'}."
+        ),
+        severity=Severity.INFO,
+        payload={
+            "trading_date": trading_date,
+            "blueprint_id": blueprint_id,
+            "plans_count": str(plans_count),
+            "symbols_count": str(len(symbols)),
+            "provider": str(llm_provider or "unknown"),
+        },
+    ))
 
 
 @celery_app.task(
@@ -89,6 +138,7 @@ async def _manual_analyze_async(
 ) -> dict:
     td = date.fromisoformat(trading_date_str) if trading_date_str else today_trading()
     started = perf_counter()
+    _notify_manual_analysis_started(symbols, str(td), llm_provider)
     logger.debug(
         "manual_analyze.context",
         log_event="task_context",
@@ -200,6 +250,14 @@ async def _manual_analyze_async(
     from services.analysis_service.app.cache import invalidate_blueprint_cache
 
     await invalidate_blueprint_cache(blueprint.trading_date)
+
+    _notify_manual_analysis_finished(
+        symbols,
+        str(blueprint.trading_date),
+        manual_id,
+        len(blueprint.symbol_plans),
+        blueprint.model_provider,
+    )
 
     logger.info(
         "manual_analyze.generated",

@@ -21,6 +21,8 @@ class EventType:
     PIPELINE_SIGNALS_COMPUTED = "pipeline_signals_computed"
     PIPELINE_FAILED = "pipeline_failed"
     PIPELINE_FINISHED = "pipeline_finished"
+    MANUAL_ANALYSIS_STARTED = "manual_analysis_started"
+    MANUAL_ANALYSIS_FINISHED = "manual_analysis_finished"
     EARNINGS_CACHE_REFRESH_STARTED = "earnings_cache_refresh_started"
     EARNINGS_CACHE_REFRESH_FINISHED = "earnings_cache_refresh_finished"
     EARNINGS_CACHE_REFRESH_FAILED = "earnings_cache_refresh_failed"
