@@ -27,6 +27,33 @@ _DOWNSTREAM_STEP_NAMES: list[str] = [
 ]
 
 
+def _extract_signal_error_symbols(results) -> list[str]:
+    """Extract distinct signal symbols from chunk error entries.
+
+    Chunk tasks format errors as ``"SYMBOL: details..."``.
+    This helper keeps first-seen order and ignores malformed entries.
+    """
+    symbols: list[str] = []
+    seen: set[str] = set()
+
+    if not isinstance(results, list):
+        results = [results]
+
+    for chunk_result in results:
+        if not isinstance(chunk_result, dict):
+            continue
+        for entry in chunk_result.get("errors", []):
+            if not isinstance(entry, str):
+                continue
+            symbol = entry.split(":", 1)[0].strip().upper()
+            if not symbol or symbol in seen:
+                continue
+            seen.add(symbol)
+            symbols.append(symbol)
+
+    return symbols
+
+
 @celery_app.task(
     name="data_service.tasks.stage_barrier",
     queue="data",
@@ -44,6 +71,16 @@ def stage_barrier(results, stage_name: str, trading_date: str) -> dict:
         errors = sum(
             len(r.get("errors", [])) for r in results if isinstance(r, dict)
         )
+        error_symbols = _extract_signal_error_symbols(results)
+        preview_limit = 20
+        preview = error_symbols[:preview_limit]
+        extra = len(error_symbols) - len(preview)
+        symbol_suffix = ""
+        if preview:
+            symbol_suffix = f" Failed symbols: {', '.join(preview)}"
+            if extra > 0:
+                symbol_suffix += f", +{extra} more"
+            symbol_suffix += "."
         from shared.notifier.helpers import notify_sync
         from shared.notifier.base import NotificationEvent, EventType, Severity
         notify_sync(NotificationEvent(
@@ -52,12 +89,14 @@ def stage_barrier(results, stage_name: str, trading_date: str) -> dict:
             message=(
                 f"Daily signal features computed for {trading_date}: "
                 f"{chunks} chunk(s), {errors} error(s)."
+                f"{symbol_suffix}"
             ),
             severity=Severity.WARNING if errors else Severity.INFO,
             payload={
                 "trading_date": trading_date,
                 "chunks": str(chunks),
                 "symbol_errors": str(errors),
+                "error_symbols": ",".join(error_symbols),
             },
         ))
 

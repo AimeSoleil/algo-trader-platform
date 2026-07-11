@@ -19,7 +19,13 @@ logger = get_logger("signal_tasks")
 
 # ── Public Celery task ─────────────────────────────────────
 
-@celery_app.task(name="signal_service.tasks.compute_daily_signals", bind=True, max_retries=2)
+@celery_app.task(
+    name="signal_service.tasks.compute_daily_signals",
+    bind=True,
+    max_retries=2,
+    soft_time_limit=1800,
+    time_limit=2400,
+)
 def compute_daily_signals(
     self,
     trading_date: str | None = None,
@@ -264,6 +270,8 @@ async def _compute_daily_signals(
     bind=True,
     max_retries=2,
     queue="signal",
+    soft_time_limit=1800,
+    time_limit=2400,
 )
 def compute_signals_chunk(
     self,

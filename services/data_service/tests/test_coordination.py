@@ -110,3 +110,22 @@ def test_build_downstream_steps_fans_out_analysis_by_daily_chunk_size(monkeypatc
     assert barrier_task["task"] == "data_service.tasks.stage_barrier"
     assert barrier_task["args"] == ["generate_daily_blueprint", "2026-05-08"]
     assert barrier_task["options"]["queue"] == "data"
+
+
+def test_extract_signal_error_symbols_keeps_first_seen_order() -> None:
+    results = [
+        {"errors": ["aapl: missing bars", " msft : provider timeout", "AAPL: retry failed"]},
+        {"errors": ["nvda: no option rows", "MSFT: duplicate"]},
+    ]
+
+    assert coordination._extract_signal_error_symbols(results) == ["AAPL", "MSFT", "NVDA"]
+
+
+def test_extract_signal_error_symbols_ignores_non_string_entries() -> None:
+    results = [
+        {"errors": [None, 123, "", "   ", ": malformed", "tsla: failed"]},
+        "not-a-dict",
+        {"errors": ["TSLA: duplicate", "amzn: failed"]},
+    ]
+
+    assert coordination._extract_signal_error_symbols(results) == ["TSLA", "AMZN"]

@@ -446,6 +446,143 @@ curl "http://localhost:8000/signal/api/v1/signals?symbols=AAPL,MSFT"
 curl "http://localhost:8000/trade/api/v1/trade/portfolio/snapshot"
 ```
 
+### 10.5 查看 PostgreSQL 与 TimescaleDB 表大小
+
+平台默认有两套 PostgreSQL 协议数据库：
+
+- TimescaleDB：`localhost:5432`，默认库名 `algo_trader`，主要存放行情与期权时序数据
+- PostgreSQL：`localhost:5433`，默认库名 `algo_trader_biz`，主要存放 signal features、blueprints 和业务状态
+
+如果你已经用 Docker 启动了基础设施，最直接的方式是进容器执行 SQL。
+
+查看业务库 `algo_trader_biz` 中各表大小：
+
+```bash
+docker exec -it algo_postgres psql -U trader -d algo_trader_biz -c "
+SELECT
+   schemaname,
+   relname AS table_name,
+   pg_size_pretty(pg_relation_size((quote_ident(schemaname) || '.' || quote_ident(relname))::regclass)) AS table_size,
+   pg_size_pretty(pg_indexes_size((quote_ident(schemaname) || '.' || quote_ident(relname))::regclass)) AS indexes_size,
+   pg_size_pretty(pg_total_relation_size((quote_ident(schemaname) || '.' || quote_ident(relname))::regclass)) AS total_size
+FROM pg_stat_user_tables
+ORDER BY pg_total_relation_size((quote_ident(schemaname) || '.' || quote_ident(relname))::regclass) DESC;
+"
+```
+
+查看 TimescaleDB `algo_trader` 中各表大小：
+
+```bash
+docker exec -it algo_timescaledb psql -U trader -d algo_trader -c "
+SELECT
+   schemaname,
+   relname AS table_name,
+   pg_size_pretty(pg_relation_size((quote_ident(schemaname) || '.' || quote_ident(relname))::regclass)) AS table_size,
+   pg_size_pretty(pg_indexes_size((quote_ident(schemaname) || '.' || quote_ident(relname))::regclass)) AS indexes_size,
+   pg_size_pretty(pg_total_relation_size((quote_ident(schemaname) || '.' || quote_ident(relname))::regclass)) AS total_size
+FROM pg_stat_user_tables
+ORDER BY pg_total_relation_size((quote_ident(schemaname) || '.' || quote_ident(relname))::regclass) DESC;
+"
+```
+
+如果你想看 Timescale hypertable 的真实占用，优先用 Timescale 提供的函数：
+
+```bash
+docker exec -it algo_timescaledb psql -U trader -d algo_trader -c "
+SELECT
+   hypertable_schema,
+   hypertable_name,
+   pg_size_pretty(hypertable_size((format('%I.%I', hypertable_schema, hypertable_name))::regclass)) AS total_size
+FROM timescaledb_information.hypertables
+ORDER BY hypertable_size((format('%I.%I', hypertable_schema, hypertable_name))::regclass) DESC;
+"
+```
+
+如果你本机已经安装 `psql`，也可以直接从宿主机连接：
+
+```bash
+PGPASSWORD=trader_dev psql -h localhost -p 5433 -U trader -d algo_trader_biz
+PGPASSWORD=trader_dev psql -h localhost -p 5432 -U trader -d algo_trader
+```
+
+进入 `psql` 后，可以执行相同 SQL，或者只查单表：
+
+```sql
+SELECT pg_size_pretty(pg_total_relation_size('public.signal_features'));
+SELECT pg_size_pretty(pg_total_relation_size('public.option_daily'));
+```
+
+### 10.6 在 TimescaleDB 中删除 3 天前的数据
+
+这个仓库里 TimescaleDB 主要有两类表：
+
+- intraday hypertable：`stock_1min_bars`、`stock_5min_bars`、`option_5min_snapshots`
+- 日级表：`stock_daily`、`option_daily`、`option_iv_daily`
+
+如果你的目标是“删除 3 天前及更早的数据”，对于 hypertable 更推荐按时间条件直接清理：
+
+```bash
+docker exec -it algo_timescaledb psql -U trader -d algo_trader -c "
+DELETE FROM stock_1min_bars
+WHERE timestamp < now() - INTERVAL '3 days';
+
+DELETE FROM stock_5min_bars
+WHERE timestamp < now() - INTERVAL '3 days';
+
+DELETE FROM option_5min_snapshots
+WHERE timestamp < now() - INTERVAL '3 days';
+"
+```
+
+如果你还想同步清理日级表，可以按交易日删除：
+
+```bash
+docker exec -it algo_timescaledb psql -U trader -d algo_trader -c "
+DELETE FROM stock_daily
+WHERE trading_date < current_date - INTERVAL '3 days';
+
+DELETE FROM option_daily
+WHERE snapshot_date < current_date - INTERVAL '3 days';
+
+DELETE FROM option_iv_daily
+WHERE trading_date < current_date - INTERVAL '3 days';
+"
+```
+
+如果你的意思是“只删 3 天前那一天的数据”，可以把条件改成精确日期范围：
+
+```bash
+docker exec -it algo_timescaledb psql -U trader -d algo_trader -c "
+DELETE FROM stock_1min_bars
+WHERE timestamp >= date_trunc('day', now() - INTERVAL '3 days')
+   AND timestamp < date_trunc('day', now() - INTERVAL '2 days');
+"
+```
+
+删除前建议先用 `SELECT COUNT(*)` 确认影响行数，例如：
+
+```bash
+docker exec -it algo_timescaledb psql -U trader -d algo_trader -c "
+SELECT COUNT(*)
+FROM option_5min_snapshots
+WHERE timestamp < now() - INTERVAL '3 days';
+"
+```
+
+如果你希望这类清理长期自动执行，仓库本身已经在初始化流程里支持 retention policy，针对以下 hypertable 自动保留最近 N 天数据：
+
+- `stock_1min_bars`
+- `stock_5min_bars`
+- `option_5min_snapshots`
+
+也就是说，更稳妥的长期方案通常不是手工反复删除，而是调整 retention 配置后重新执行：
+
+```bash
+uv run python -m scripts.init_db
+```
+
+手工删除适合一次性回收历史数据；长期运维更推荐 retention policy。
+
 ## 11. 配置模型
 
 平台配置来自两层：
