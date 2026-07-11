@@ -69,7 +69,6 @@ common:
       # ── Electronic Power & Power Semiconductors (AI Datacenter Power Lifeline) ──
       - "GEV"                          # GE Vernova | AI datacenter grid/power generation equipment leader, gas turbine/HVDC system global top 3, 2026 AI-driven breakout growth, high-liquidity options
       - "ON"                           # ON Semiconductor | Global leader in power semiconductors for AI datacenters, EVs, and industrial automation, core hyperscaler power infrastructure supplier, rising institutional options flow
-      - "MPWR"                         # Monolithic Power Systems | Leader in high-efficiency power semiconductors for AI servers, 2026 revenue growth forecast >25%, ~90k average daily options contracts
       # ── Commercial Space & Aerospace ──
       - "RKLB"                         # Rocket Lab USA | Global commercial rocket launch leader, only SpaceX peer with consistent orbital launch cadence, NASA/defense core supplier, top 3 US aerospace options liquidity
       - "ASTS"                         # AST SpaceMobile | Space-based mobile broadband leader, global cellular coverage from low Earth orbit, high volatility, rising institutional options flow
@@ -263,6 +262,11 @@ data_service:
 signal_service:
   # ── IV 历史回溯 ──
   iv_lookback_days: 252              # 用于 IV Rank / IV Percentile 的历史窗口（交易日）
+
+  # ── Signal Worker 任务时限 ──
+  worker:
+    task_soft_time_limit: 1800       # 秒 — 软超时（抛 SoftTimeLimitExceeded）
+    task_time_limit: 2400            # 秒 — 硬超时（必须 > soft）
 
   # ── 期权策略参数 ──
   option_strategy:

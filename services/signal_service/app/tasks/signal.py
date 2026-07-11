@@ -16,6 +16,10 @@ from shared.utils import get_logger, resolve_trading_date_arg, today_trading
 
 logger = get_logger("signal_tasks")
 
+_signal_worker_settings = get_settings().signal_service.worker
+_SIGNAL_TASK_SOFT_TIME_LIMIT = _signal_worker_settings.task_soft_time_limit
+_SIGNAL_TASK_TIME_LIMIT = _signal_worker_settings.task_time_limit
+
 
 # ── Public Celery task ─────────────────────────────────────
 
@@ -23,8 +27,8 @@ logger = get_logger("signal_tasks")
     name="signal_service.tasks.compute_daily_signals",
     bind=True,
     max_retries=2,
-    soft_time_limit=1800,
-    time_limit=2400,
+    soft_time_limit=_SIGNAL_TASK_SOFT_TIME_LIMIT,
+    time_limit=_SIGNAL_TASK_TIME_LIMIT,
 )
 def compute_daily_signals(
     self,
@@ -270,8 +274,8 @@ async def _compute_daily_signals(
     bind=True,
     max_retries=2,
     queue="signal",
-    soft_time_limit=1800,
-    time_limit=2400,
+    soft_time_limit=_SIGNAL_TASK_SOFT_TIME_LIMIT,
+    time_limit=_SIGNAL_TASK_TIME_LIMIT,
 )
 def compute_signals_chunk(
     self,

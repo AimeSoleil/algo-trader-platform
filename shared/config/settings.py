@@ -426,6 +426,25 @@ class SignalServiceFilterSettings(BaseSettings):
     """signal_service.filters — 按资产类型组织."""
     options: SignalOptionFilterSettings = Field(default_factory=SignalOptionFilterSettings)
 
+
+class SignalWorkerSettings(BaseSettings):
+    """signal_service.worker — Signal 任务执行时限配置."""
+
+    task_soft_time_limit: int = 1800
+    task_time_limit: int = 2400
+
+    @model_validator(mode="after")
+    def _validate_time_limits(self) -> SignalWorkerSettings:
+        if self.task_soft_time_limit <= 0:
+            raise ValueError("signal_service.worker.task_soft_time_limit must be > 0")
+        if self.task_time_limit <= self.task_soft_time_limit:
+            raise ValueError(
+                "signal_service.worker.task_time_limit must be greater than "
+                "signal_service.worker.task_soft_time_limit"
+            )
+        return self
+
+
 class OptionStrategySettings(BaseSettings):
     lookback_days: int = 252
     high_quantile: float = 0.7
@@ -436,6 +455,7 @@ class SignalServiceSettings(BaseSettings):
     iv_lookback_days: int = 252
     option_strategy: OptionStrategySettings = Field(default_factory=OptionStrategySettings)
     filters: SignalServiceFilterSettings = Field(default_factory=SignalServiceFilterSettings)
+    worker: SignalWorkerSettings = Field(default_factory=SignalWorkerSettings)
 
 
 # ── Analysis Service ─────────────────────────────────────────
