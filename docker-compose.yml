@@ -124,43 +124,6 @@ services:
       retries: 5
       start_period: 30s
 
-  # ── Observability ──────────────────────────────────────────
-
-  prometheus:
-    image: prom/prometheus:latest
-    container_name: algo_prometheus
-    ports:
-      - "9090:9090"
-    volumes:
-      - ./config/prometheus.yml:/etc/prometheus/prometheus.yml:ro
-      - prometheus_data:/prometheus
-    networks:
-      algo_trader_net:
-        aliases:
-          - prometheus
-          - algo_prometheus
-    command:
-      - "--config.file=/etc/prometheus/prometheus.yml"
-      - "--storage.tsdb.retention.time=30d"
-
-  grafana:
-    image: grafana/grafana:latest
-    container_name: algo_grafana
-    ports:
-      - "${GRAFANA_PORT:-3300}:3000"
-    environment:
-      GF_SECURITY_ADMIN_USER: admin
-      GF_SECURITY_ADMIN_PASSWORD: admin
-    volumes:
-      - grafana_data:/var/lib/grafana
-    depends_on:
-      - prometheus
-    networks:
-      algo_trader_net:
-        aliases:
-          - grafana
-          - algo_grafana
-
 networks:
   algo_trader_net:
     driver: bridge
@@ -170,5 +133,3 @@ volumes:
   postgres_data:
   redis_data:
   rabbitmq_data:
-  prometheus_data:
-  grafana_data:

@@ -102,19 +102,10 @@ class RabbitMQSettings(BaseSettings):
             vhost_path = self.vhost if self.vhost.startswith("/") else f"/{self.vhost}"
             self.url = f"amqp://{self.user}:{self.password}@{self.host}:{self.port}{vhost_path}"
 
-class PrometheusSettings(BaseSettings):
-    url: str = "http://localhost:9090"
-    scrape_interval: int = 15              # seconds
-
-class GrafanaSettings(BaseSettings):
-    url: str = "http://localhost:3300"
-
 class InfraSettings(BaseSettings):
     database: DatabaseSettings = Field(default_factory=DatabaseSettings)
     redis: RedisSettings = Field(default_factory=RedisSettings)
     rabbitmq: RabbitMQSettings = Field(default_factory=RabbitMQSettings)
-    prometheus: PrometheusSettings = Field(default_factory=PrometheusSettings)
-    grafana: GrafanaSettings = Field(default_factory=GrafanaSettings)
 
 
 # ── Common — Celery / Beat / Flower (shared across all workers) ──────────────

@@ -25,7 +25,6 @@ from typing import Any, Protocol, TypeVar, Union, get_args, get_origin, runtime_
 from pydantic import BaseModel, ValidationError
 
 from shared.config import get_settings
-from shared.metrics import llm_request_duration, llm_retries_total, llm_tokens_total
 from shared.utils import decode_escaped_unicode, get_logger
 
 from services.analysis_service.app.llm.json_utils import parse_llm_json
@@ -432,12 +431,6 @@ class AnalysisAgent(ABC):
 
                 status = "ok"
                 elapsed = perf_counter() - t0
-                llm_tokens_total.labels(
-                    provider=provider.name, direction="prompt",
-                ).inc(result.input_tokens)
-                llm_tokens_total.labels(
-                    provider=provider.name, direction="completion",
-                ).inc(result.output_tokens)
 
                 if usage_tracker is not None:
                     usage_tracker.record(
@@ -475,9 +468,6 @@ class AnalysisAgent(ABC):
 
             except (json.JSONDecodeError, ValueError) as e:
                 last_exc = e
-                llm_retries_total.labels(
-                    provider=provider.name, error_type="parse",
-                ).inc()
                 logger.warning(
                     f"agent.{self.name}.parse_error",
                     analysis_chunk_id=analysis_chunk_id,
@@ -507,9 +497,6 @@ class AnalysisAgent(ABC):
                         backoff_base * (2 ** attempt) + random.uniform(0, 1),
                         backoff_max,
                     )
-                    llm_retries_total.labels(
-                        provider=provider.name, error_type=error_type,
-                    ).inc()
                     logger.warning(
                         f"agent.{self.name}.retryable_error",
                         analysis_chunk_id=analysis_chunk_id,
@@ -532,10 +519,7 @@ class AnalysisAgent(ABC):
                 raise
 
             finally:
-                elapsed = perf_counter() - t0
-                llm_request_duration.labels(
-                    provider=provider.name, agent=self.name, status=status,
-                ).observe(elapsed)
+                _ = perf_counter() - t0
 
         raise last_exc or RuntimeError(f"Agent {self.name} failed after {max_attempts} attempt(s)")
 

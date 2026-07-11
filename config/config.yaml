@@ -194,13 +194,6 @@ infra:
     port: 5672
     vhost: "/"
 
-  prometheus:
-    url: "http://localhost:9090"
-    scrape_interval: 15                    # seconds
-
-  grafana:
-    url: "http://localhost:3300"
-
 
 # ── Data Service — 数据采集与过滤 ───────────────────────────
 

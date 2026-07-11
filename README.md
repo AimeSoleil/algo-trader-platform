@@ -29,8 +29,6 @@
 | PostgreSQL | 5433 | 业务数据：signal features、blueprints、analysis 相关状态 |
 | Redis | 6379 | 缓存、分布式锁、RedBeat、运行态共享 |
 | RabbitMQ | 5672 / 15672 | Celery broker 与管理界面 |
-| Prometheus | 9090 | 指标采集 |
-| Grafana | 3300 | 监控面板 |
 | Flower | 5555 | Celery 任务与 worker 监控 |
 
 ## 2. 从 data 到 analysis 的完整链路
@@ -60,11 +58,6 @@ flowchart LR
       pg[PostgreSQL\nBlueprint Positions Orders]
    end
 
-   subgraph observability[Observability]
-      prom[Prometheus]
-      grafana[Grafana]
-   end
-
    market[Market Data Providers]
 
    user --> data
@@ -90,23 +83,15 @@ flowchart LR
    signal --> redis
    analysis --> redis
 
-   prom --> data
-   prom --> signal
-   prom --> analysis
-   prom --> flower
-   grafana --> prom
-
    classDef edge fill:#f7f7f2,stroke:#6b6b57,color:#1f1f1a,stroke-width:1.5px;
    classDef service fill:#e8f1ff,stroke:#2f6fed,color:#12315f,stroke-width:1.5px;
    classDef orchestration fill:#fff2db,stroke:#d48806,color:#6a4300,stroke-width:1.5px;
    classDef storage fill:#e7f8ee,stroke:#2b8a3e,color:#1f5130,stroke-width:1.5px;
-   classDef observability fill:#f3ebff,stroke:#7b61c9,color:#432b7a,stroke-width:1.5px;
 
    class user,market edge;
    class data,signal,analysis service;
    class rabbit,redis,worker,beat,flower orchestration;
    class tsdb,pg storage;
-   class prom,grafana observability;
 ```
 
 平台的主业务链路是：
@@ -132,14 +117,13 @@ flowchart LR
 - 左到右的主链路是业务链：`data -> signal -> analysis`
 - `celery + rabbitmq + redis + beat` 负责自动化调度和异步执行
 - `timescaledb` 放时序行情，`postgresql` 放业务状态，职责拆分清晰
-- `prometheus + grafana + flower` 负责把服务状态和任务状态可视化
+- `flower` 负责 Celery 任务与 worker 状态可视化
 
 ### 图例
 
 - 蓝色：核心业务服务，真正承载 data → signal → analysis → trade 主链路
 - 橙色：异步编排与运行时基础设施，负责调度、投递、缓存和 worker 执行
 - 绿色：持久化存储，负责保存行情时序、业务状态和对象数据
-- 紫色：观测层，负责指标采集、任务可视化和仪表盘展示
 - 灰色：外部使用方或外部数据源，不属于平台内部服务边界
 
 ## 3. 核心设计思想
@@ -295,8 +279,6 @@ docker compose up -d
 - PostgreSQL
 - Redis
 - RabbitMQ
-- Prometheus
-- Grafana
 
 ### 7.3 初始化数据库与基础数据
 
@@ -412,8 +394,6 @@ uv run python -m scripts.seed_watchlist
 | Analysis Service Docs | `http://localhost:8003/docs` |
 | Trade Service Docs | `http://localhost:8004/docs` |
 | RabbitMQ UI | `http://localhost:15672` |
-| Prometheus | `http://localhost:9090` |
-| Grafana | `http://localhost:3300` |
 | Flower | `http://localhost:5555` |
 
 ## 10. 新用户最常见的操作
@@ -601,12 +581,8 @@ uv run python -m scripts.init_db
 
 平台默认接入：
 
-- Prometheus 指标采集
-- Grafana 可视化
 - Flower 监控 Celery
 - 结构化日志
-
-每个 API 服务都暴露 `/metrics`。
 
 ## 13. 技术栈
 

@@ -24,7 +24,6 @@ from pydantic import ValidationError
 
 from shared.config import get_settings
 from shared.data_quality import DataQualityConfig, should_circuit_break_analysis
-from shared.metrics import llm_request_duration
 from shared.models.blueprint import LLMTradingBlueprint
 from shared.redis_pool import get_redis
 from shared.models.signal import SignalFeatures

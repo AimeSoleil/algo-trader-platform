@@ -14,7 +14,6 @@ from typing import Any
 from pydantic import ValidationError
 
 from shared.config import get_settings
-from shared.metrics import llm_request_duration, llm_retries_total, llm_tokens_total
 from shared.utils import decode_escaped_unicode, get_logger
 
 from services.analysis_service.app.llm.agents.base_agent import AgentLLMProvider, LLMUsageTracker, _default_provider
@@ -75,9 +74,6 @@ class PostMergePortfolioAgent:
                 status = "ok"
                 elapsed = perf_counter() - t0
 
-                llm_tokens_total.labels(provider=provider.name, direction="prompt").inc(result.input_tokens)
-                llm_tokens_total.labels(provider=provider.name, direction="completion").inc(result.output_tokens)
-
                 if usage_tracker is not None:
                     usage_tracker.record(
                         agent="post_merge",
@@ -108,7 +104,6 @@ class PostMergePortfolioAgent:
 
             except (json.JSONDecodeError, ValueError, TypeError) as exc:
                 last_exc = exc
-                llm_retries_total.labels(provider=provider.name, error_type="parse").inc()
                 logger.warning("post_merge.parse_error", provider=provider.name, attempt=attempt + 1, error=decode_escaped_unicode(exc))
                 if attempt < max_attempts - 1:
                     delay = min(backoff_base * (2 ** attempt) + random.uniform(0, 1), backoff_max)
@@ -130,7 +125,6 @@ class PostMergePortfolioAgent:
                     if should_force_500_retry:
                         forced_500_retry_used = True
                     delay = min(backoff_base * (2 ** attempt) + random.uniform(0, 1), backoff_max)
-                    llm_retries_total.labels(provider=provider.name, error_type=error_type).inc()
                     logger.warning("post_merge.retryable_error", provider=provider.name, attempt=attempt + 1, error=decode_escaped_unicode(exc), delay=round(delay, 2))
                     await asyncio.sleep(delay)
                     continue
@@ -139,8 +133,7 @@ class PostMergePortfolioAgent:
                 raise
 
             finally:
-                elapsed = perf_counter() - t0
-                llm_request_duration.labels(provider=provider.name, agent="post_merge", status=status).observe(elapsed)
+                _ = perf_counter() - t0
 
         raise last_exc or RuntimeError(f"Post-merge review failed after {max_attempts} attempt(s)")
 

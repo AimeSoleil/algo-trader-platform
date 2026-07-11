@@ -11,8 +11,6 @@ dependencies = [
     "redis[hiredis]",
     "structlog",
     "pyyaml",
-    "prometheus-client",
-    "prometheus-fastapi-instrumentator",
     "celery-redbeat>=2.0",
 ]
 

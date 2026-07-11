@@ -7,7 +7,6 @@ from fastapi import FastAPI
 
 from services.data_service.app.routes import router
 from shared.config import get_settings
-from shared.metrics import setup_metrics
 from shared.redis_pool import close_redis_pool, get_redis
 from shared.utils import get_logger, setup_logging
 
@@ -51,6 +50,5 @@ app = FastAPI(
     version="0.2.0",
     lifespan=lifespan,
 )
-setup_metrics(app)
 
 app.include_router(router, prefix="/api/v1")
