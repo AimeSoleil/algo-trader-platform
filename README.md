@@ -121,7 +121,7 @@ flowchart LR
 
 ### 图例
 
-- 蓝色：核心业务服务，真正承载 data → signal → analysis → trade 主链路
+- 蓝色：核心业务服务，真正承载 data → signal → analysis 主链路
 - 橙色：异步编排与运行时基础设施，负责调度、投递、缓存和 worker 执行
 - 绿色：持久化存储，负责保存行情时序、业务状态和对象数据
 - 灰色：外部使用方或外部数据源，不属于平台内部服务边界
@@ -388,11 +388,9 @@ uv run python -m scripts.seed_watchlist
 
 | 入口 | URL |
 | --- | --- |
-| Gateway Docs | `http://localhost:8000/docs` |
 | Data Service Docs | `http://localhost:8001/docs` |
 | Signal Service Docs | `http://localhost:8002/docs` |
 | Analysis Service Docs | `http://localhost:8003/docs` |
-| Trade Service Docs | `http://localhost:8004/docs` |
 | RabbitMQ UI | `http://localhost:15672` |
 | Flower | `http://localhost:5555` |
 
@@ -414,16 +412,16 @@ curl -X POST http://localhost:8003/api/v1/analysis \
   -d '{"symbols": ["AAPL", "MSFT"]}'
 ```
 
-### 10.3 通过 gateway 查询 signals
+### 10.3 查询 signals（Signal Service）
 
 ```bash
-curl "http://localhost:8000/signal/api/v1/signals?symbols=AAPL,MSFT"
+curl "http://localhost:8002/api/v1/signals?symbols=AAPL,MSFT"
 ```
 
-### 10.4 通过 gateway 查询 trade portfolio
+### 10.4 查询某日 blueprint（Analysis Service）
 
 ```bash
-curl "http://localhost:8000/trade/api/v1/trade/portfolio/snapshot"
+curl "http://localhost:8003/api/v1/analysis/blueprint/2026-07-10?symbols=AAPL,MSFT"
 ```
 
 ### 10.5 查看 PostgreSQL 与 TimescaleDB 表大小
@@ -607,12 +605,12 @@ docker compose ps
 docker compose logs -f
 ```
 
-### Gateway 能开，但后端接口 502 / 504
+### 服务文档能打开，但调用返回错误
 
 通常是：
 
 - 下游服务没启动
-- gateway 指向了错误的 `GATEWAY_*_URL`
+- 请求路径或端口不匹配（例如仍在调用旧的 gateway 路径）
 
 ### API 能用，但任务不执行
 

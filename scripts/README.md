@@ -42,7 +42,7 @@ uv run python -m scripts.seed_watchlist
 
 ```bash
 # Recommended for local dev
-cp .env.example .env.local
+cp .env.local.example .env.local
 
 # Basic: start all workers + beat
 bash scripts/run_workers.sh
@@ -61,12 +61,12 @@ uv run celery -A shared.celery_app.celery_app beat --loglevel=INFO
 ```
 
 - `run_workers.sh` defaults to `.env.local` when present, otherwise falls back to `.env`.
-- Use `.env.example` as the local-dev template and `.env.docker.example` for Docker deployment.
+- Use `.env.local.example` as the local-dev template and `.env.docker.example` for Docker deployment.
 
 ### Features
 
 - **Auto-restart**: Crashed workers automatically restart with exponential backoff (2s → 60s)
-- **Health watchdog**: Background process pings workers every 30s; kills unresponsive ones after 3 failures
+- **Health watchdog**: Background process pings workers every 60s; kills unresponsive ones after 3 failures
 - **Graceful shutdown**: SIGTERM → 30s grace → SIGKILL (respects `task_acks_late`)
 - **PID management**: PID files in `logs/`, stale process cleanup on startup
 - **Flower** (optional): Celery monitoring UI at `http://localhost:5555`
@@ -78,7 +78,7 @@ uv run celery -A shared.celery_app.celery_app beat --loglevel=INFO
 | `LOG_DIR` | `logs` | Log and PID file directory |
 | `ENV_FILE` | `.env.local -> .env` | Env file loaded by `run_workers.sh` |
 | `RESTART_MAX_BACKOFF` | `60` | Max backoff seconds between restarts |
-| `HEALTH_CHECK_INTERVAL` | `30` | Seconds between health checks |
+| `HEALTH_CHECK_INTERVAL` | `60` | Seconds between health checks |
 | `HEALTH_CHECK_FAILURES` | `3` | Consecutive failures before force kill |
 | `SHUTDOWN_GRACE` | `30` | Seconds to wait before SIGKILL |
 | `ENABLE_FLOWER` | `0` | Set to `1` to start Flower |
